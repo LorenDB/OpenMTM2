@@ -1,11 +1,17 @@
 /*
-  The cockpit art and the finder from `COCKPIT.POD` (MONSTER_EXE_ANALYSIS.md 11), the 640 x 480
-  set: the layout of `DATA\POWERBIG.480`, the four panels, the 15 steering wheel frames, the six
-  shifter frames, the shift light, the mirror frame, and the finder's ring, arrows and dots.
-  Every image is `{ width, height, rgba }` with pure black cut out. The shifter and mirror
-  frames have no palette of their own and use METALCR2's.
+  The cockpit art from `COCKPIT.POD` (MONSTER_EXE_ANALYSIS.md 11).
+
+  `loadCockpit` is the 640 x 480 set: the layout of `DATA\POWERBIG.480`, the four panels, the
+  15 steering wheel frames, the six shifter frames, the shift light, the mirror frame, and the
+  finder's ring, arrows and dots. Every image is `{ width, height, rgba }` with pure black cut
+  out. The shifter and mirror frames have no palette of their own and use METALCR2's.
+
+  `cockpitArt` is the dashboard panel the headset's cab takes its dial faces from, with the
+  needles' angles from the layout (docs/VR.md, "The cab"): the layout `DATA\POWERBIG.<h>` and
+  the front panel it names (`ART\PBIG<h>.RAW` with its `.ACT`), for the screen heights 480, 400
+  and 200.
 */
-import { decodeActPalette, decodeIndexedImage, parseCockpitLayout } from "../vendor/openphotex/index.js";
+import { decodeActPalette, decodeIndexedImage, parseCockpitLayout, podPathTitle } from "../vendor/openphotex/index.js";
 
 const stemOf = (name) => name.replace(/\.raw$/i, "").toUpperCase();
 const WHEEL_KEYS = ["C00", ...[5, 10, 15, 20, 25, 30, 35].flatMap((d) => [`L${String(d).padStart(2, "0")}`, `R${String(d).padStart(2, "0")}`])];
@@ -43,4 +49,32 @@ export async function loadCockpit(vfs) {
   put(out.finder, "dotRed", sprite("FI480RD", 6, 6));
   await Promise.all(jobs);
   return out;
+}
+
+const WIDTHS = Object.freeze({ 480: 640, 400: 640, 200: 320 });
+
+/**
+ * `{ height, speedometer, tachometer, panel: { width, height, rgba } }`, or null when the install
+ * has no cockpit. A gauge is `{ center, radius, zeroAngle, degreesPerUnit }`: pixels on the panel,
+ * degrees clockwise from twelve o'clock, per mph or per rpm.
+ */
+export async function cockpitArt(vfs, { height = 480 } = {}) {
+  for (const h of [height, 480, 400, 200]) {
+    const width = WIDTHS[h];
+    const text = width ? await vfs.read(`DATA\\POWERBIG.${h}`) : null;
+    const layout = text ? parseCockpitLayout(text) : null;
+    const background = layout?.backgrounds[0];
+    if (!background) continue;
+    const stem = podPathTitle(background).replace(/\.raw$/i, "").toUpperCase();
+    const raw = await vfs.read(`ART\\${stem}.RAW`);
+    const palette = decodeActPalette(await vfs.read(`ART\\${stem}.ACT`));
+    if (!raw || !palette || raw.length < width * h) continue;
+    const image = decodeIndexedImage(raw, palette, width, h);
+    const gauge = (g) => ({ center: g.center, radius: g.radius, zeroAngle: g.zeroAngle, degreesPerUnit: g.degreesPerUnit });
+    return {
+      height: h, speedometer: gauge(layout.speedometer), tachometer: gauge(layout.tachometer),
+      panel: { width: image.width, height: image.height, rgba: image.rgba },
+    };
+  }
+  return null;
 }

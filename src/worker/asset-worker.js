@@ -13,7 +13,7 @@ import { buildSky, buildTrackRender, transferablesOf } from "./track-build.js";
 import { lenientKlp } from "../game/sound-model.js";
 import { buildTruckPreview } from "./preview-build.js";
 import { loadingScreen } from "./screen-art.js";
-import { loadCockpit } from "./cockpit-art.js";
+import { loadCockpit, cockpitArt } from "./cockpit-art.js";
 import { loadEffectsArt } from "./effects-art.js";
 import { decodeActPalette, decodeRawTexture, parseKlp, parseLoc, parseMod, parseMtmAmbientSounds, parseMtmSun, renderMod } from "../vendor/openphotex/index.js";
 import { decodeModel } from "./models.js";
@@ -266,6 +266,12 @@ const handlers = {
   async loadingScreen({ raceType } = {}) {
     const image = await loadingScreen(await mounted(), { raceType });
     return image ? withTransfer(image, [image.rgba.buffer]) : null;
+  },
+
+  /** The headset cab's dashboard panel and gauge layout (cockpit-art.js `cockpitArt`), or null. */
+  async cockpitPanel() {
+    const art = await cockpitArt(await mounted());
+    return art ? withTransfer(art, [art.panel.rgba.buffer]) : null;
   },
 };
 

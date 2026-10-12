@@ -6,6 +6,10 @@ import { loadSettings } from "./settings.js";
 import { createStrings } from "../game/strings.js";
 import { loadStrings } from "./strings-store.js";
 import { startMenuAudio } from "./menu-audio.js";
+import { createXr } from "./xr.js";
+import { lobbyMenu } from "./vr-lobby.js";
+import { createOffline } from "./offline.js";
+import { offlineNote } from "../ui/offline-note.js";
 import { WorkerClient } from "../shared/worker-client.js";
 import { mountWatermark } from "../ui/watermark.js";
 
@@ -48,6 +52,9 @@ async function boot() {
     return;
   }
   context.assets = new WorkerClient(new URL("../worker/asset-worker.js", import.meta.url));
+  // The headset, where the browser has one (docs/VR.md). Between races it shows the race setup.
+  context.xr = createXr(context);
+  context.xr.setLobby(() => lobbyMenu(context));
   const { installed, manifest } = await context.assets.call("installStatus");
   // MONSTER.EXE's version, read when the folder was picked: only the retail builds get the classic menus.
   // An install made before the version was recorded (no `exeVersion` key at all) is taken as the retail build it was made for.
@@ -58,7 +65,12 @@ async function boot() {
     // Menu and race sounds share one unlocked audio context; the menu music stops during a race.
     startMenuAudio(context);
   }
+  // A copy of the app in the browser, so the game starts without its server next time
+  // (docs/ARCHITECTURE.md, "Without a server"). It is made in the background.
+  context.offline = createOffline(context);
+  context.offlineNote = offlineNote(context);
   await router.go(installed ? "start" : "install");
+  context.offline.start();
 }
 
 if (typeof document !== "undefined") {

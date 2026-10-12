@@ -17,6 +17,13 @@ const SUN_BASE = 2.2, AMBIENT_BASE = 0.9;
 /** A headlight's pool: about the irradiance of a clear day's sun on the ground it meets. */
 const SPOT_INTENSITY = 2.4;
 const BOX_FT = 90, RAIN_COUNT = 1800, SNOW_COUNT = 1600, SPOTS = 4;
+/*
+  A flake's size. three.js sizes points as if every view were 90 degrees tall, so the same size
+  fills a different angle at another field of view. The size was chosen on the flat screen's 60
+  degrees; it is scaled by the view's vertical focal length against that one, so flakes look
+  the same in a headset, whose view is much taller.
+*/
+const SNOW_SIZE = 1.1, FLAT_FOCAL = 1 / Math.tan(Math.PI / 6);
 
 function sprite() {
   const c = document.createElement("canvas");
@@ -44,12 +51,14 @@ export function createWeatherScene(env) {
   scene.add(root);
   let current = 0, flash = 0, nextBolt = 0, time = 0;
 
-  // Terrain materials, unlit and lit, swapped for the dark weathers.
-  const surfaces = [];
+  // Terrain materials, unlit and lit, swapped for the dark weathers. The terrain's chunks and
+  // the world's copies share one material, so each gets one lit twin.
+  const surfaces = [], lit = new Map();
   world.traverse((o) => {
     if ((o.name === "terrain" || o.name === "groundBoxes") && o.material?.isMeshBasicMaterial) {
       const m = o.material;
-      surfaces.push({ mesh: o, unlit: m, lit: new THREE.MeshLambertMaterial({ map: m.map, vertexColors: m.vertexColors }) });
+      if (!lit.has(m)) lit.set(m, new THREE.MeshLambertMaterial({ map: m.map, vertexColors: m.vertexColors }));
+      surfaces.push({ mesh: o, unlit: m, lit: lit.get(m) });
     }
   });
 
@@ -81,7 +90,7 @@ export function createWeatherScene(env) {
     const positions = new Float32Array(SNOW_COUNT * 3);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const points = new THREE.Points(geometry, new THREE.PointsMaterial({ map: flakeTexture, size: 1.1, transparent: true, depthWrite: false, fog: false }));
+    const points = new THREE.Points(geometry, new THREE.PointsMaterial({ map: flakeTexture, size: SNOW_SIZE, transparent: true, depthWrite: false, fog: false }));
     points.frustumCulled = false;
     const heads = Float32Array.from({ length: SNOW_COUNT * 3 }, () => random() * BOX_FT);
     return { object: points, positions, heads };
@@ -105,7 +114,7 @@ export function createWeatherScene(env) {
     sun.intensity = SUN_BASE * k * w.sun;
     ambient.intensity = AMBIENT_BASE * k;
     env.onSun?.(sun.intensity);
-    for (const { unlit } of surfaces) unlit.color.setScalar(Math.min(1, k));
+    for (const unlit of lit.keys()) unlit.color.setScalar(Math.min(1, k));
   }
 
   let underwater = false;
@@ -177,7 +186,10 @@ export function createWeatherScene(env) {
     time += dt;
     const w = WEATHER_LOOK[current];
     if (w.precipitation === "rain") fall(rain, RAIN_COUNT, dt, 70, 12, true);
-    if (w.precipitation === "snow") fall(snow, SNOW_COUNT, dt, 9, 2, false);
+    if (w.precipitation === "snow") {
+      snow.object.material.size = SNOW_SIZE * camera.projectionMatrix.elements[5] / FLAT_FOCAL;
+      fall(snow, SNOW_COUNT, dt, 9, 2, false);
+    }
     if (w.lightning) {
       if (time >= nextBolt) { flash = 0.28; nextBolt = time + 6 + random() * 18; env.onLightning?.(); }
       if (flash > 0) {
@@ -216,7 +228,7 @@ export function createWeatherScene(env) {
       scene.remove(root);
       flakeTexture?.dispose();
       for (const g of [rain, snow]) { if (g.layer) g.layer.dispose(); else g.object.geometry.dispose(); }
-      for (const { lit } of surfaces) lit.dispose();
+      for (const material of lit.values()) material.dispose();
     },
   };
 }

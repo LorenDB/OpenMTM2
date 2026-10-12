@@ -74,23 +74,26 @@ export function textWidth(font, text, scale = 1) {
  * pairs drawn at the left and right of `width` (`fit` makes it as wide as the text instead),
  * on a `background` colour with `padX` and `padY` sheet pixels around (the caption bar), or `[label, value, middle]` with a second value
  * set just after the label (the HUD's `Place: 1/4     Lap: 1/2`); `rowHeight` is the row pitch. Falls back to plain text when the font is
- * missing. `set(rows)` redraws only when the text changes.
+ * missing. `set(rows)` redraws only when the text changes; `version` counts the redraws, for
+ * whoever copies the canvas elsewhere (the headset's HUD, render/xr/vr-hud.js).
  */
 export function createTextPanel(font, {
   width = 160, scale = 1, color = "#fff", labelColor = color, valueColor = color,
-  align = "left", shadow = "#000", rowHeight = null, background = null, padX = 0, padY = 0, fit = false,
+  align = "left", shadow = "#000", rowHeight = null, background = null, padX = 0, padY = 0, fit = false, backing = null,
 } = {}) {
   // Without the font (an install lacking it) the rows fall back to plain text.
   const canvas = document.createElement(font ? "canvas" : "div");
   canvas.className = "bitmap-text";
-  let last = "";
+  let last = "", version = 0;
   const pad = 2 * scale;
   return {
     element: canvas,
+    get version() { return version; },
     set(rows) {
       const key = JSON.stringify(rows);
       if (key === last) return;
       last = key;
+      version++;
       if (!font) {
         canvas.replaceChildren(...rows.map((r) => {
           const line = document.createElement("div");
@@ -109,6 +112,18 @@ export function createTextPanel(font, {
       canvas.style.height = `${canvas.height}px`;
       const ctx = canvas.getContext("2d");
       if (background) { ctx.fillStyle = background; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+      if (backing) {
+        // A plate behind the text (a headset's boards hang in front of a bright sky): the whole
+        // panel for rows with values, else as wide as the longest row; none behind no text.
+        const longest = Math.max(0, ...rows.map((r) => (Array.isArray(r) ? Infinity : textWidth(font, r, scale))));
+        const w = Math.min(canvas.width, longest + pad * 10);
+        if (longest > 0) {
+          ctx.fillStyle = backing;
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect((canvas.width - w) / 2, 0, w, canvas.height, pad * 3); else ctx.rect((canvas.width - w) / 2, 0, w, canvas.height);
+          ctx.fill();
+        }
+      }
       rows.forEach((row, i) => {
         const y = pad + padY * scale + i * lineH;
         const left = Array.isArray(row) ? row[0] : row, right = Array.isArray(row) ? row[1] : null;

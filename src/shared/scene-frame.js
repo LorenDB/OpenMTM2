@@ -19,6 +19,9 @@ export function toScene(x, y, z, out, offset = 0) {
   return out;
 }
 
+/** A scene point back to the game frame: the mirror is its own inverse. */
+export const fromScene = toScene;
+
 /**
  * A row-major game-frame rotation (body to world) to a column-major 4x4 scene matrix
  * (three.js Matrix4.elements layout), with translation `pos` in game feet.
@@ -39,3 +42,9 @@ export function toSceneMatrix(m, pos, out = new Array(16)) {
 
 /** The world size in feet; the terrain wraps at it. */
 export const WORLD_FT = 8192;
+
+/**
+ * Scene units (feet) in a metre. A headset reports its poses in metres (docs/VR.md); the tracking
+ * space is scaled by this once, where it is placed in the scene, so the world is life size.
+ */
+export const FEET_PER_METRE = 1 / 0.3048;

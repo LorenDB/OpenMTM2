@@ -19,6 +19,11 @@
   The sun disc (SUN02, "drawn with the sky" in SUN.TXT) and the moon that replaces it at night
   go in the sky group, before everything else, so the terrain covers them. The flare is drawn
   over the finished frame and fades with the share of the nine rays that reach the sun.
+
+  In a headset (docs/VR.md) there is no finished frame to draw over: each eye is its own
+  picture. `setStereo(true)` stands the same layers in the scene instead, far off on one plane
+  across the view, where they lie along the same line through the sun for both eyes and have no
+  depth of their own, like a flare in the glass of a visor.
 */
 import * as THREE from "three";
 
@@ -60,13 +65,24 @@ export class SunFlare {
       const u1 = x1 / TEXTURE_UNITS, u2 = x2 / TEXTURE_UNITS, v1 = y1 / TEXTURE_UNITS, v2 = y2 / TEXTURE_UNITS;
       uv.setXY(0, u1, v1); uv.setXY(1, u2, v1); uv.setXY(2, u1, v2); uv.setXY(3, u2, v2);
       const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        // No fog: standing in the scene the layers are far beyond its end, and would add its colour.
         map: this._texture(texture), blending: THREE.AdditiveBlending, transparent: true,
-        depthTest: false, depthWrite: false, toneMapped: false,
+        depthTest: false, depthWrite: false, toneMapped: false, fog: false,
       }));
       mesh.frustumCulled = false;
       this._overlay.add(mesh);
-      return { mesh, axis: axisPosition, radius };
+      // The same layer for the scene, used in a headset.
+      const standing = new THREE.Mesh(geo, mesh.material);
+      standing.frustumCulled = false;
+      standing.renderOrder = 800;
+      standing.visible = false;
+      return { mesh, standing, axis: axisPosition, radius };
     });
+    this._stereo = false;
+    this._standing = new THREE.Group();
+    this._standing.name = "flare";
+    this._standing.add(...this._layers.map((layer) => layer.standing));
+    skyParent.add(this._standing);
     this._sunDisc = this._disc("SUN02", { blending: THREE.AdditiveBlending });
     this._moonDisc = this._disc("MOON", {
       blending: THREE.CustomBlending, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
@@ -99,6 +115,12 @@ export class SunFlare {
     if (mode === "none") this._visibility = 0;
   }
 
+  /** Whether the flare stands in the scene (a headset) or is drawn over the frame by `render`. */
+  setStereo(on) {
+    this._stereo = !!on;
+    if (!on) for (const { standing } of this._layers) standing.visible = false;
+  }
+
   /**
    * Places everything for this frame.
    * @param {THREE.PerspectiveCamera} camera
@@ -121,6 +143,7 @@ export class SunFlare {
       disc.scale.setScalar(2 * distance * discRadius / this._masterRadius);
     }
     this._flareOn = false;
+    for (const { standing } of this._layers) standing.visible = false;
     if (this._mode !== "sun" || !showFlare) return;
     camera.getWorldDirection(_forward);
     if (_forward.dot(toSun) <= 0) return;
@@ -141,11 +164,28 @@ export class SunFlare {
     if (this._visibility <= 0) return;
     this._sunScreen = [_screen.x, _screen.y];
     this._flareOn = true;
+    if (this._stereo) this._stand(camera, distance);
   }
 
-  /** Draws the flare over the frame just rendered. */
+  /*
+    The layers in the scene: on the plane `depth` ahead of the camera, each where its place on
+    the screen points, sized to fill the same angle as on the overlay.
+  */
+  _stand(camera, depth) {
+    const e = camera.projectionMatrix.elements;
+    const [sx, sy] = this._sunScreen;
+    for (const { standing, axis, radius } of this._layers) {
+      standing.visible = true;
+      standing.position.set(sx * axis * depth / e[0], sy * axis * depth / e[5], -depth).applyMatrix4(camera.matrixWorld);
+      standing.quaternion.copy(camera.quaternion);
+      standing.scale.setScalar(2 * depth * radius / this._masterRadius);
+      standing.material.opacity = this._visibility;
+    }
+  }
+
+  /** Draws the flare over the frame just rendered (not in a headset, where it stands in the scene). */
   render(renderer, camera) {
-    if (!this._flareOn) return;
+    if (!this._flareOn || this._stereo) return;
     const size = renderer.getSize(_size);
     const halfW = size.x / 2, halfH = size.y / 2;
     const cam = this._overlayCamera;
@@ -168,6 +208,7 @@ export class SunFlare {
     for (const t of this._textures.values()) t?.dispose();
     this._sunDisc.removeFromParent();
     this._moonDisc.removeFromParent();
+    this._standing.removeFromParent();
   }
 }
 
