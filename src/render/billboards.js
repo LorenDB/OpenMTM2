@@ -2,9 +2,11 @@
   Sprites in the scene from a sheet of cells (the effect art is `grid.x` by `grid.y` cells), as one
   instanced draw: each instance has a position, a size in feet, a cell and a brightness. Black in
   the sheet is background, so the sprites are added to the picture. `flat` lays them on the ground
-  (ripples) instead of facing the camera.
+  (ripples) instead of facing the camera. What is added to the picture cannot be veiled in the
+  fog's colour: each sprite is dimmed by the fog between it and the eye instead.
 */
 import * as THREE from "three";
+import { VEIL_GLSL, veilUniforms } from "./atmosphere.js";
 
 /** A sheet as a texture from `{ width, height, rgba }` (rows from the top). */
 export function sheetTexture({ width, height, rgba }) {
@@ -32,23 +34,25 @@ export function createBillboards({ sheet, grid, capacity, flat = false, tint = [
   geometry.setAttribute("iLight", light);
   geometry.instanceCount = 0;
   const material = new THREE.ShaderMaterial({
-    uniforms: { map: { value: sheetTexture(sheet) }, grid: { value: new THREE.Vector2(grid[0], grid[1]) }, tint: { value: new THREE.Vector3(...tint) } },
+    uniforms: { ...veilUniforms(), map: { value: sheetTexture(sheet) }, grid: { value: new THREE.Vector2(grid[0], grid[1]) }, tint: { value: new THREE.Vector3(...tint) } },
     vertexShader: `
       attribute vec3 iPos; attribute vec2 iSize; attribute float iCell; attribute float iLight;
       uniform vec2 grid; varying vec2 vUv; varying float vLight;
+      ${VEIL_GLSL}
       void main() {
         vec4 view = modelViewMatrix * vec4(iPos, 1.0);
+        float seen = 1.0 - mtmFogVeil(view.xyz).a;
         ${flat
     ? "vec4 world = modelMatrix * vec4(iPos + vec3(position.x * iSize.x, 0.0, -position.y * iSize.y), 1.0); gl_Position = projectionMatrix * viewMatrix * world;"
     : "view.xy += position.xy * iSize; gl_Position = projectionMatrix * view;"}
         vec2 c = vec2(mod(iCell, grid.x), floor(iCell / grid.x));
         vUv = (c + vec2(uv.x, 1.0 - uv.y)) / grid;
-        vLight = iLight;
+        vLight = iLight * seen;
       }`,
     fragmentShader: `
       uniform sampler2D map; uniform vec3 tint; varying vec2 vUv; varying float vLight;
       void main() { gl_FragColor = vec4(texture2D(map, vUv).rgb * tint * vLight, 1.0); }`,
-    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false,
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: true,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;

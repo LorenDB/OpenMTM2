@@ -50,6 +50,19 @@ menus).
   (MPH or KPH), gear strip and the message bar.
 - **Weather and water:** Clear, Cloudy, Fog, Rain, Snow, Dusk, Night and Pitch Black, animated
   water, underwater fog, wheel spray and ripples.
+- **Scenery of the port's own, each part with a switch in Options:** the ground's 32 ft facets
+  rounded off and its cliffs given relief (trucks drive on the same ground as before); water
+  with depth you see into, the sky in it, a shore and a view from under it, wakes and rings
+  where the trucks stir it, and ice in Snow; fog that lies in the valleys as a sea of cloud
+  with a lit, billowing top, in drifting banks, which a truck can climb out of, and rain and
+  snow that fall through the air but not under bridges; puddles where the ground has a low
+  point, which the trucks splash through and stir; snow with depth, deep on level ground and clear along the track, that the trucks
+  plough; ground that stays sharp close up and steady far off; sunlight in the colour of its
+  hour with shadows cast by the hills; the game's own backdrops through the haze; paint that
+  mirrors the sky; lamps that glow, with beams of light in the air, tail lamps that brake
+  bright and a start gantry of real lamps; dust, powder, spray, tire smoke and sparks that take
+  the light, and ruts from every tire; ice that cracks as ice does where a truck lands on it;
+  all of it in the instant replay; and, on the flat screen, lights that glow.
 - **Instant replay:** watch the race again from any truck and any of the ten cameras, with VCR
   controls, and save or open `.rpl` replay files.
 - **Sound and music:** engines, skids, impacts, ambience, objects' own sounds, MOD music.
@@ -149,6 +162,7 @@ original game gets a test.
 | [docs/PLAN.md](docs/PLAN.md) | milestones from an empty repository to a complete game |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the code is organised |
 | [docs/VR.md](docs/VR.md) | the headset mode: running it, the controls, how it works |
+| [docs/VISUALS.md](docs/VISUALS.md) | the port's own scenery: smoothed ground, water, weather, light, ground detail, how far the eye sees, and what each switch does |
 | [docs/MONSTER_EXE_ANALYSIS.md](docs/MONSTER_EXE_ANALYSIS.md) | how the original game works: files, rules, HUD, cameras, weather, network, cheats |
 | [docs/MTM2_PHYSICS.md](docs/MTM2_PHYSICS.md) | the original simulation, specified for reimplementation |
 | [tools/re/README.md](tools/re/README.md) | the reverse-engineering helpers |

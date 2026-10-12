@@ -9,10 +9,12 @@ import * as THREE from "three";
 import { toSceneMatrix, nearestCopy } from "../shared/scene-frame.js";
 import { mtm2Sim } from "../vendor/openphotex/index.js";
 import { smoothNormals } from "../shared/smooth-normals.js";
-import { BAR_HALF_WIDTH_FT, SHOCK_HALF_WIDTH_FT, ribbonCorners, suspensionParts } from "../game/suspension.js";
-import { BRAKE_ON, beamShows, blinkOn, lampHeading, lightIntensity } from "../game/truck-lights.js";
+import { BAR_HALF_WIDTH_FT, SHOCK_HALF_WIDTH_FT, ribbonCorners, ribbonNormal, suspensionParts } from "../game/suspension.js";
+import { BRAKE_ON, beamShows, blinkOn, lampHeading, lampLevel, lampTone, lensGlow, lightIntensity, throwsBeam } from "../game/truck-lights.js";
 import { createModelLibrary, dataTexture } from "./track-scene.js";
-import { BEAM_AXIS, BEAM_INTENSITY, beamGeometry, beamMaterial } from "./light-beam.js";
+import { BEAM_AXIS, BEAM_INTENSITY, SHAFT_INTENSITY, aimShaft, beamGeometry, beamMaterial, shaftGeometry, shaftMaterial } from "./light-beam.js";
+import { GLOSS } from "./gloss.js";
+import { fogDims } from "./atmosphere.js";
 
 function meshesOf(library, model) {
   const group = new THREE.Group();
@@ -23,14 +25,18 @@ function meshesOf(library, model) {
 /**
  * @param {object} truck the asset worker's truck build (worker/truck-build.js)
  * @param {[number, number, number][]} hubs wheel anchors used by the simulation (FR, FL, RR, RL)
+ * @param {string} look the look (settings.look)
+ * @param {{ richLamps?: boolean }} [options] `richLamps` draws the lamps as the port's own ("Truck lamps", docs/VISUALS.md)
  */
-export function createTruckObject(truck, hubs, look) {
+export function createTruckObject(truck, hubs, look, { richLamps = false } = {}) {
   const library = createModelLibrary(
     Object.fromEntries(Object.values(truck.parts).filter(Boolean).map((m) => [m.name, m])), truck.textures, look);
   const root = new THREE.Group();
   root.name = truck.file;
   root.matrixAutoUpdate = false;
   const bodyGroup = meshesOf(library, truck.parts.body);
+  // How strongly each part shines with "Glossy paint" (render/gloss.js): the body's paint in full.
+  bodyGroup.userData.gloss = GLOSS.body;
   root.add(bodyGroup);
   // The body's vertices are copied so that damage can move them (and repair put them back).
   const bodyMeshes = bodyGroup.children.map((mesh) => {
@@ -55,11 +61,13 @@ export function createTruckObject(truck, hubs, look) {
     const spin = new THREE.Group();    // the wheel's roll
     spin.add(meshesOf(library, truck.parts[corners[index]] ?? (hub[0] < 0 ? truck.parts.tireLeft : truck.parts.tireRight)));
     pivot.add(spin);
+    pivot.userData.gloss = GLOSS.tire;
     root.add(pivot);
     return { pivot, spin, hub };
   });
   const axles = [0, 2].map(() => {
     const g = meshesOf(library, truck.parts.axle);
+    g.userData.gloss = GLOSS.gear;
     root.add(g);
     return g;
   });
@@ -71,6 +79,9 @@ export function createTruckObject(truck, hubs, look) {
     const data = truck.textures[name];
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(count * 12), 3).setUsage(THREE.DynamicDrawUsage));
+    // Lit as the rods they stand for (game/suspension.js `ribbonNormal`). Without a normal the light's sum is not a number,
+    // which no fog can veil: the ribbons then stand black under a truck at any distance.
+    geometry.setAttribute("normal", new THREE.BufferAttribute(Float32Array.from({ length: count * 12 }, (_, i) => (i % 3 === 1 ? 1 : 0)), 3).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute("uv", new THREE.BufferAttribute(Float32Array.from({ length: count * 8 }, (_, i) => [0, 0, 1, 0, 1, 1, 0, 1][i % 8]), 2));
     geometry.setIndex(Array.from({ length: count }, (_, q) => [q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3]).flat());
     const material = new THREE.MeshLambertMaterial({ map: data ? dataTexture(data, look) : null, color: data ? 0xffffff : 0x606060, side: THREE.DoubleSide });
@@ -83,11 +94,48 @@ export function createTruckObject(truck, hubs, look) {
   const shocks = suspension ? ribbons(suspension.shockTexture, 8, SHOCK_HALF_WIDTH_FT) : null;
   const shafts = suspension && truck.parts.driveshaft ? [0, 1].map(() => { const g = meshesOf(library, truck.parts.driveshaft); root.add(g); return g; }) : [];
   const eye = new THREE.Vector3(), up = new THREE.Vector3(), forward = new THREE.Vector3(0, 0, 1);
+  // `update` moves the root once a frame, and sparks then ask where a dozen hull points are. Each ask used to
+  // walk the whole truck. The walk is skipped while this frame's pose is the one already in the world matrices.
+  let worldStamp = 0, worldReady = -1;
+  const ensureWorld = () => {
+    if (worldReady === worldStamp && !root.matrixWorldNeedsUpdate) return;
+    root.updateMatrixWorld();
+    worldReady = worldStamp;
+  };
 
   // The lamps (game/truck-lights.js): a glowing lens decal on the body, and for a headlight or beacon a
   // six-sided cone of light that fades along its length. Both add light to what is behind them.
-  const lamps = createLamps(truck, look);
+  const lamps = createLamps(truck, look, richLamps);
   root.add(lamps.group);
+
+  /*
+    The body as it stands now, dents and all, for whoever needs a place on it: the lamps, which a dent carries with
+    the panel they sit on, and sparks, which fly from where the body is and not from where the simulation's hull
+    points say a box round it would be. Places are in the body's own frame as the scene has it (z mirrored).
+  */
+  const _local = new THREE.Vector3();
+  /** The body vertex nearest a place: `{ part, vertex, away }`, searched in the body as built (`original`) or as it is. */
+  function nearestVertex(x, y, z, original = false) {
+    let best = null, least = Infinity;
+    bodyMeshes.forEach((part, index) => {
+      const array = original ? part.original : part.mesh.geometry.getAttribute("position").array;
+      for (let v = 0; v < array.length; v += 3) {
+        const d = (array[v] - x) ** 2 + (array[v + 1] - y) ** 2 + (array[v + 2] - z) ** 2;
+        if (d < least) { least = d; best = { part: index, vertex: v }; }
+      }
+    });
+    return best && { ...best, away: Math.sqrt(least) };
+  }
+  /** How far a dent has moved the body where a place on it was, as built: `[dx, dy, dz]`. Nothing for a place off the body. */
+  function shiftAt(x, y, z) {
+    const near = nearestVertex(x, y, z, true);
+    if (!near || near.away > LAMP_REACH_FT) return [0, 0, 0];
+    const { original, mesh } = bodyMeshes[near.part], now = mesh.geometry.getAttribute("position").array;
+    return [now[near.vertex] - original[near.vertex], now[near.vertex + 1] - original[near.vertex + 1], now[near.vertex + 2] - original[near.vertex + 2]];
+  }
+  /** Each hull point's place on the body as it is, found when first asked for and again after the body changes. */
+  const hullOnBody = new Map();
+  const bodyChanged = () => { hullOnBody.clear(); lamps.fit?.(shiftAt); };
 
   const scratch = new Array(16);
   const m4 = new THREE.Matrix4();
@@ -112,7 +160,7 @@ export function createTruckObject(truck, hubs, look) {
         attribute.needsUpdate = true;
         mesh.geometry.computeBoundingSphere();
       }
-      if (moved) smoothBody();
+      if (moved) { smoothBody(); bodyChanged(); }
       return moved;
     },
     /** Put every vertex back: the damage is repaired. */
@@ -126,20 +174,44 @@ export function createTruckObject(truck, hubs, look) {
         normal.needsUpdate = true;
         mesh.geometry.computeBoundingSphere();
       }
+      bodyChanged();
     },
     /** Where tire `i`'s hub is in the world, game feet `[x, y, z]` (after `update`). */
     tireHub(i) {
-      root.updateMatrixWorld();
+      ensureWorld();
       tires[i].pivot.getWorldPosition(eye);
       return [eye.x, eye.y, -eye.z];
     },
-    /** Where hull point `zone` (1 to 12) is in the world, game feet, or null. */
-    hullPoint(zone) {
+    /**
+     * Where hull point `zone` (1 to 12) is in the world, game feet, or null. The simulation's hull points are the
+     * corners of a box round the truck; with `onBody` the place is the body's own nearest point to that corner, as the
+     * body is now, dents and all: where something that strikes that corner is seen to strike.
+     */
+    hullPoint(zone, onBody = false) {
       const point = truck.scrapePoints?.[zone - 1];
       if (!point) return null;
-      root.updateMatrixWorld();
-      eye.set(point[0], point[1], -point[2]).applyMatrix4(root.matrixWorld);
+      ensureWorld();
+      eye.set(point[0], point[1], -point[2]);
+      if (onBody) {
+        if (!hullOnBody.has(zone)) {
+          const near = nearestVertex(eye.x, eye.y, eye.z);
+          const array = near && bodyMeshes[near.part].mesh.geometry.getAttribute("position").array;
+          hullOnBody.set(zone, near ? [array[near.vertex], array[near.vertex + 1], array[near.vertex + 2]] : [eye.x, eye.y, eye.z]);
+        }
+        eye.fromArray(hullOnBody.get(zone));
+      }
+      eye.applyMatrix4(root.matrixWorld);
       return [eye.x, eye.y, -eye.z];
+    },
+    /** The point of the body, as it is now, nearest a place in the world (game feet), as a place in the world; null without a body. */
+    nearestBodyPoint(x, y, z) {
+      ensureWorld();
+      root.worldToLocal(_local.set(x, y, -z));
+      const near = nearestVertex(_local.x, _local.y, _local.z);
+      if (!near) return null;
+      const array = bodyMeshes[near.part].mesh.geometry.getAttribute("position").array;
+      _local.set(array[near.vertex], array[near.vertex + 1], array[near.vertex + 2]).applyMatrix4(root.matrixWorld);
+      return [_local.x, _local.y, -_local.z];
     },
     /** Hide the truck's body but not its lamps: the player's headlights still shine from inside the cockpit. */
     setBodyHidden(hidden) {
@@ -156,9 +228,12 @@ export function createTruckObject(truck, hubs, look) {
     },
     /**
      * Place the truck from a simulation snapshot (see worker/sim-worker.js). `env` says how the lamps
-     * are used: `{ lamps, clockMs, night, cockpit }` (game/truck-lights.js).
+     * are used: `{ lamps, clockMs, night, cockpit }` (game/truck-lights.js), and for the port's own
+     * lamps `air` (how much there is in the air to show a beam, 0 to 1) and `daylight` (the
+     * weather's brightness).
      */
     update(pose, camera = null, env = {}) {
+      worldStamp++;
       m4.fromArray(toSceneMatrix(pose.matrix, pose.pos, scratch));
       root.matrix.copy(m4);
       root.matrixWorldNeedsUpdate = true;
@@ -178,14 +253,15 @@ export function createTruckObject(truck, hubs, look) {
       });
       let viewerLocal = [0, 8, -30];
       if (camera) {
-        root.updateMatrixWorld();
+        ensureWorld();
         root.worldToLocal(eye.copy(camera.position));
         viewerLocal = [eye.x, eye.y, -eye.z];
       }
       lamps.update({
         lamps: env.lamps ?? 0, night: !!env.night, cockpit: !!env.cockpit,
         braking: (pose.brakeRear ?? 0) > BRAKE_ON, reverse: pose.gear === 2,
-      }, env.clockMs ?? 0, viewerLocal);
+        air: env.air ?? (env.night ? 1 : 0), daylight: env.daylight ?? (env.night ? 0.25 : 1),
+      }, env.clockMs ?? 0, viewerLocal, camera?.position ?? null);
       if (!suspension) return;
       const parts = suspensionParts({
         axles: [0, 1].map((k) => ({ z: tires[k * 2].hub[2], travel: pose.axles[k].travel, articulation: pose.axles[k].articulation })),
@@ -194,11 +270,14 @@ export function createTruckObject(truck, hubs, look) {
       // The viewer in the body's own game axes (the scene's z is mirrored).
       const viewer = viewerLocal;
       for (const { mesh, half, count, list } of [{ ...bars, list: parts.bars }, { ...shocks, list: parts.shocks }]) {
-        const array = mesh.geometry.getAttribute("position").array;
+        const array = mesh.geometry.getAttribute("position").array, normals = mesh.geometry.getAttribute("normal").array;
         list.forEach(([a, b], q) => {
           ribbonCorners(a, b, half, viewer).forEach((c, k) => array.set([c[0], c[1], -c[2]], (q * 4 + k) * 3));
+          const n = ribbonNormal(a, b, viewer);
+          for (let k = 0; k < 4; k++) normals.set([n[0], n[1], -n[2]], (q * 4 + k) * 3);
         });
         mesh.geometry.getAttribute("position").needsUpdate = true;
+        mesh.geometry.getAttribute("normal").needsUpdate = true;
       }
       parts.shafts.forEach((shaft, k) => {
         const g = shafts[k];
@@ -255,7 +334,114 @@ function lampDirection(heading, pitch, out) {
 
 const smoothstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-function createLamps(truck, look) {
+/** A dent carries a lamp with it when the lamp sits within this of the body, feet. */
+const LAMP_REACH_FT = 2;
+
+/** A lamp's lens as the port draws it: a small hot middle in a wide soft glow. One picture for every lamp, tinted by each. */
+let lensPicture = null;
+export function lensTexture() {
+  if (lensPicture) return lensPicture;
+  const size = 64, data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const r = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2) / (size / 2);
+      const v = Math.round(255 * Math.min(1, Math.exp(-((r / 0.17) ** 2)) + 0.3 * Math.max(0, 1 - r) ** 2.5));
+      data.set([v, v, v, 255], (y * size + x) * 4);
+    }
+  }
+  lensPicture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  lensPicture.magFilter = lensPicture.minFilter = THREE.LinearFilter;
+  lensPicture.needsUpdate = true;
+  return lensPicture;
+}
+
+/** The colour a lamp's own art glows in, linear: the mean of its lit texels, for a lamp the port has no colour of its own for. */
+function artTone(image) {
+  if (!image?.rgba) return [1, 1, 1];
+  const toLinear = (byte) => (byte / 255) ** 2.2;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < image.rgba.length; i += 4) {
+    if (Math.max(image.rgba[i], image.rgba[i + 1], image.rgba[i + 2]) < 60) continue;
+    r += toLinear(image.rgba[i]); g += toLinear(image.rgba[i + 1]); b += toLinear(image.rgba[i + 2]); n++;
+  }
+  const most = Math.max(r, g, b) || 1;
+  return n ? [r / most, g / most, b / most] : [1, 1, 1];
+}
+
+/*
+  The lamps as the port draws them ("Truck lamps", docs/VISUALS.md; game/truck-lights.js has the rules): a lens that
+  glows in the lamp's own colour, far brighter than white, so the lens flares it; a headlight's beam as light in the air
+  (render/light-beam.js), seen by what the weather puts in the air; tail lamps that run dim and brake bright; and lamps
+  that a dent carries with the panel they sit on.
+*/
+function createRichLamps(truck) {
+  const group = new THREE.Group();
+  group.name = "lamps";
+  const items = (truck.lights ?? []).map((light) => {
+    const tone = lampTone(light) ?? artTone(truck.lightTextures?.[light.source]);
+    let lens = null, beam = null;
+    if (light.radius > 0) {
+      lens = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({ map: lensTexture(), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false })));
+      lens.scale.setScalar(light.radius * 2.6);
+      lens.renderOrder = 2;
+      lens.visible = false;
+      group.add(lens);
+    }
+    if (throwsBeam(light)) {
+      beam = new THREE.Mesh(shaftGeometry(light.coneLength, light.coneBase, light.coneRim), shaftMaterial(light.coneLength, light.coneBase, light.coneRim, tone));
+      beam.renderOrder = 1;
+      beam.visible = false;
+      beam.frustumCulled = false;
+      group.add(beam);
+    }
+    // Where the lamp is now, body axes: where the TRK has it, until a dent moves the panel it sits on.
+    return { light, lens, beam, tone, at: [...light.pos] };
+  });
+  const dir = new THREE.Vector3(), scene = new THREE.Vector3(), toward = new THREE.Vector3();
+  return {
+    group,
+    /** The body changed: `shiftAt(x, y, z)` says how far it has moved where a place on it was (the scene's local frame). */
+    fit(shiftAt) {
+      for (const item of items) {
+        const [dx, dy, dz] = shiftAt(item.light.pos[0], item.light.pos[1], -item.light.pos[2]);
+        item.at = [item.light.pos[0] + dx, item.light.pos[1] + dy, item.light.pos[2] - dz];
+      }
+    },
+    /** `viewer` is the camera in the body's game axes, `eyeWorld` in the scene's. */
+    update(state, clockMs, viewer, eyeWorld) {
+      const seconds = clockMs / 1000;
+      for (const { light, lens, beam, tone, at } of items) {
+        const level = blinkOn(light, clockMs) ? lampLevel(light, state) : 0;
+        lampDirection(lampHeading(light, seconds), light.pitch, dir);
+        if (lens) {
+          toward.set(viewer[0] - at[0], viewer[1] - at[1], viewer[2] - at[2]);
+          const distance = toward.length() || 1;
+          toward.divideScalar(distance);
+          // Full when the lamp faces the eye, gone when it faces away.
+          const glow = lensGlow(light, level, state.daylight) * smoothstep(-0.15, 0.4, dir.dot(toward));
+          lens.visible = glow > 0.01 && !state.cockpit;
+          if (lens.visible) {
+            lens.material.color.setRGB(tone[0] * glow, tone[1] * glow, tone[2] * glow);
+            const pull = Math.min(light.radius * 0.5, distance * 0.5);
+            lens.position.set(at[0] + toward.x * pull, at[1] + toward.y * pull, -(at[2] + toward.z * pull));
+          }
+        }
+        if (beam) {
+          beam.visible = level > 0 && state.air > 0.01;
+          if (beam.visible) {
+            beam.position.set(at[0], at[1], -at[2]);
+            beam.quaternion.setFromUnitVectors(BEAM_AXIS, scene.set(dir.x, dir.y, -dir.z));
+            beam.material.uniforms.intensity.value = SHAFT_INTENSITY * level * state.air;
+            if (eyeWorld) aimShaft(beam, eyeWorld);
+          }
+        }
+      }
+    },
+  };
+}
+
+function createLamps(truck, look, rich = false) {
+  if (rich) return createRichLamps(truck);
   const group = new THREE.Group();
   group.name = "lamps";
   const textures = new Map();
@@ -272,9 +458,10 @@ function createLamps(truck, look) {
     let lens = null, beam = null;
     const lensMap = texture(light.source);
     if (lensMap && light.radius > 0) {
-      lens = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: lensMap, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false, fog: false,
-      }));
+      // A lens's glow is light added to the view: fog dims it (render/atmosphere.js `fogDims`).
+      lens = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({
+        map: lensMap, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false,
+      })));
       lens.scale.setScalar(light.radius * 2);
       lens.renderOrder = 2;
       lens.visible = false;

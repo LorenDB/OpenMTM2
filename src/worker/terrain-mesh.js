@@ -78,7 +78,33 @@ export function buildTerrainAtlas(decoded, forcedSide = 0) {
       }
     }
   }
-  return { rgba, width, height, rects, tileSide: side };
+  return { rgba, width, height, rects, tileSide: side, padding: ATLAS_PADDING };
+}
+
+/**
+ * A cell's texture coordinates from its .CLR word: u, v for its four corners v0..v3, that is
+ * (row, col), (row, col + 1), (row + 1, col + 1), (row + 1, col), into `out`. The tile is turned
+ * and mirrored as the word says (corner order as JSTrackViewer and JTraxx map it).
+ */
+export function cellTileUvs(word, atlas, out, tileInset = 2) {
+  const slot = Math.min(word & 0x0fff, atlas.rects.length - 1);
+  const mirror = (word >> 12) & 3, rot = (word >> 14) & 3;
+  const [rx, ry, rw, rh] = atlas.rects[slot];
+  // MTM2 overlaps neighbouring terrain tiles by cropping two legacy pixels at each edge.
+  // The atlas skirt outside this rectangle remains available to linear filtering.
+  // (`tileInset`: 4x4 Evolution cuts its tiles from one painted map with no border ring, and crops nothing.)
+  const inset = Math.min(tileInset, Math.max(0, (Math.min(rw, rh) - 1) / 2));
+  const u0 = (rx + inset) / atlas.width, u1 = (rx + rw - inset) / atlas.width;
+  const t0 = (ry + inset) / atlas.height, t1 = (ry + rh - inset) / atlas.height;
+  for (let k = 0; k < 4; k++) {
+    let corner = k;
+    if (mirror & 1) corner = (3 - corner) & 3;
+    if (mirror & 2) corner = (1 - corner) & 3;
+    corner = (rot + corner) & 3;
+    out[k * 2] = corner === 0 || corner === 3 ? u0 : u1;
+    out[k * 2 + 1] = corner < 2 ? t1 : t0;
+  }
+  return out;
 }
 
 /**
@@ -107,6 +133,7 @@ export function buildTerrainMesh({ heights, heightsFt = null, clr, lte, atlas, f
     out[o] = -dx / len; out[o + 1] = 1 / len; out[o + 2] = dz / len;
   };
   const corners = [[0, 0], [0, 1], [1, 1], [1, 0]]; // (dRow, dCol): v0..v3
+  const tile = new Float32Array(8);
 
   for (let row = 0; row < GRID; row++) {
     for (let col = 0; col < GRID; col++) {
@@ -122,25 +149,10 @@ export function buildTerrainMesh({ heights, heightsFt = null, clr, lte, atlas, f
         shade[v + k] = hasLte ? lte[((r & 255) * GRID + (c & 255)) * LTE_BYTES_PER_POINT] / 255 : 1;
       }
 
-      // Texture tile, turned and mirrored (corner order as JSTrackViewer and JTraxx map it).
-      const word = clr[cell];
-      const slot = Math.min(word & 0x0fff, atlas.rects.length - 1);
-      const mirror = (word >> 12) & 3, rot = (word >> 14) & 3;
-      const [rx, ry, rw, rh] = atlas.rects[slot];
-      // MTM2 overlaps neighbouring terrain tiles by cropping two legacy pixels at each edge.
-      // The atlas skirt outside this rectangle remains available to linear filtering.
-      // (`tileInset`: 4x4 Evolution cuts its tiles from one painted map with no border ring, and crops nothing.)
-      const inset = Math.min(tileInset, Math.max(0, (Math.min(rw, rh) - 1) / 2));
-      const u0 = (rx + inset) / atlas.width, u1 = (rx + rw - inset) / atlas.width;
-      const t0 = (ry + inset) / atlas.height, t1 = (ry + rh - inset) / atlas.height;
-      const cu = [u0, u1, u1, u0], cv = [t1, t1, t0, t0];
+      cellTileUvs(clr[cell], atlas, tile, tileInset);
       for (let k = 0; k < 4; k++) {
-        let corner = k;
-        if (mirror & 1) corner = (3 - corner) & 3;
-        if (mirror & 2) corner = (1 - corner) & 3;
-        corner = (rot + corner) & 3;
-        uvs[(v + k) * 2] = cu[corner];
-        uvs[(v + k) * 2 + 1] = cv[corner];
+        uvs[(v + k) * 2] = tile[k * 2];
+        uvs[(v + k) * 2 + 1] = tile[k * 2 + 1];
       }
 
       const i = cell * 6;

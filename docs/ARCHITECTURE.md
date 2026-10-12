@@ -1,7 +1,8 @@
 # OpenMTM2 architecture
 
 How the code is organised and why. The milestones are in `PLAN.md`; the game itself is described
-in `MONSTER_EXE_ANALYSIS.md` and its simulation in `MTM2_PHYSICS.md`.
+in `MONSTER_EXE_ANALYSIS.md` and its simulation in `MTM2_PHYSICS.md`. What the port draws that
+the game did not (smoothed ground, its own water and weather) is specified in `VISUALS.md`.
 
 ## Pieces
 
@@ -13,6 +14,7 @@ in `MONSTER_EXE_ANALYSIS.md` and its simulation in `MTM2_PHYSICS.md`.
 | Race session | `src/game/` | the main thread, driving the sim worker |
 | Rendering | `src/render/` (the only code importing three.js) | the main thread |
 | Headset mode | rules in `src/game/vr/`, drawing in `src/render/xr/`, the app's side in `src/app/xr.js` | the main thread; the rules also Node in tests |
+| The port's own scenery (`VISUALS.md`) | rules in `src/game/` (`terrain-relief.js`, `drawn-ground.js`, `ground-maps.js`, `snow-cover.js`, `atmosphere.js`, `fog-floor.js`, `water.js`, `ice.js`, `lighting.js`, `ground-detail.js`, `particles.js`, `truck-lights.js`, `replay-effects.js`, `visuals.js`), the mesh in `src/worker/relief-mesh.js`, drawing in `src/render/` (`scenery.js` and what it makes) | the asset worker and the main thread; the rules also Node in tests |
 | Screens | `src/ui/` (HTML), `src/app/` (boot, router, settings) | the main thread |
 
 ## Threads
@@ -127,6 +129,65 @@ x right, y up, z forward; orientation as `theta` (pitch), `phi` (roll), `psi` (y
 editor space (2 units per foot horizontally, 2 ft height steps) is converted once, when the sim
 world is built. `src/render/world-frame.js` is the only place that converts game feet into scene
 units.
+
+## The port's own scenery
+
+`VISUALS.md` specifies it; this is how it sits in the code.
+
+- **The simulation is not touched.** The smoothed ground is a second surface that is only
+  drawn. It is one pure function of position (`src/game/terrain-relief.js`) that the asset
+  worker cuts into a mesh and the main thread asks where the ground is, so the two agree to the
+  last bit. A drawn truck is moved onto it; the truck the simulation steps is not.
+- **Each part has a switch** (`src/game/visuals.js`), and a part switched off is not built: the
+  track comes from the asset worker as it always did (`trackVisuals` says what to build), and
+  the screen draws it with the code it always had. The Scenery page sets the switches by a
+  preset, Auto, Off, Low, High or Max, or one by one on Custom (`src/game/graphics.js`). Auto
+  picks among Low, High and Max from the graphics card (`src/app/graphics-hardware.js`).
+- **One assembly.** `src/render/scenery.js` makes the parts that are on for whichever screen
+  draws a track. The weather scene (`src/render/weather-scene.js`) still decides the weather's
+  fog colour, light and lightning, and hands the drawing of them to the parts it is given.
+- **Fog is in every material.** three.js's fog shader chunks are replaced once, before the
+  first material is compiled (`src/render/atmosphere.js`), so nothing in the scene needs to
+  know about it and nothing is drawn twice.
+- **Nothing reads the picture back.** The water takes its depth, and the rain and snow their
+  floor, from a map of the ground made when the track loads (with what stands over the ground,
+  so nothing falls under a bridge), and the fog its floor from another, not from the depth of
+  the frame being drawn. No part needs a second pass over the scene, which is what lets a headset run it.
+  The lens (`src/render/lens.js`) glows what is bright in the finished picture, and anti-aliasing,
+  when an optional method is chosen (`src/render/aa.js`), reads that picture too. TAA also reads
+  the scene's depth, to drop a point that moved. Both are the flat screen's only, and `scenery.draw`
+  decides, each frame, whether a frame goes through them. The puffs of dust and smoke are drawn
+  after the scene, over it (`src/render/over-scene.js`): through the lens reading its depth,
+  without the lens straight over it, reading nothing. Where they fill the picture many times
+  over they are drawn into a smaller picture by the scene's depth. On the plain screen that
+  depth is the screen's own, copied into a texture by the browser (the one call in the port
+  made on the WebGL context past three.js, which has no such copy). Where a browser will not
+  copy it the scene is drawn into a picture of its own first, one the materials colour as they
+  colour the screen. three.js keeps that for the screen and a headset's pictures, so
+  `over-scene.js` marks its pictures as the second (r169's `isXRRenderTarget`): it is the one
+  place that leans on how three.js is made inside.
+- **One part runs on the graphics card between frames.** The ripples and wakes of the water and
+  the puddles (`src/render/water-ripples.js`) are one field of waves about the eye, stepped in a
+  picture of their own by `scenery.draw` before the scene is drawn, and read by the water's
+  shader and the ground's. They draw nothing of the
+  scene and read nothing back, and they are drawn with the headset's own drawing set aside, so a
+  headset runs them as the flat screen does.
+- **Several parts dress one material.** The ground's material takes lines of shader from the
+  weather, from the ground's detail and from the shadow cascades; a truck's from the paint and
+  the cascades. three.js gives a material one hook, so `src/render/shader-hooks.js` keeps a
+  list behind it, run in a set order, with a key a hook that tells two materials' shaders
+  apart.
+- **The fog stays in the world.** Its floor and its banks are places in the world and its
+  clock is the wind's: nothing in it is tied to where the eye is but what is seen from there, so
+  a camera that moves fast does not move the fog.
+- **The replay draws what the race drew.** `src/ui/screens/replay.js` makes the same scenery
+  and the same lamps, and since the game's replay records no wheel contacts or hull strikes,
+  reads them off the drawn trucks against the drawn ground (`src/game/replay-effects.js`) for
+  the tire effects to throw from.
+- **The light is the weather scene's to time and the rig's to make.** `weather-scene.js` still
+  says when the light changes (a weather beginning, a flash); with "Natural light" it asks
+  `src/render/light-rig.js` for the lights, which takes its numbers from `src/game/lighting.js`
+  and its colours from the level's own sky and ground art.
 
 ## The headset
 

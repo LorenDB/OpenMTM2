@@ -19,6 +19,46 @@ test("old saved settings move to the enhanced look and the listed hidden tracks 
   delete globalThis.localStorage;
 });
 
+test("the track backdrops stay off by default, and a saved choice sticks", async () => {
+  const store = new Map([["openmtm2.settings", JSON.stringify({ version: 5, backdrops: false, look: "classic" })]]);
+  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
+  const { DEFAULT_SETTINGS, loadSettings, saveSettings } = await import("../src/app/settings.js");
+  assert.equal(DEFAULT_SETTINGS.backdrops, false);
+  const first = loadSettings();
+  assert.equal(first.backdrops, false);
+  assert.equal(first.look, "classic", "what an earlier version settled is left alone");
+  assert.equal(first.version, 7);
+  saveSettings({ ...first, backdrops: true });
+  assert.equal(loadSettings().backdrops, true);
+  delete globalThis.localStorage;
+});
+
+test("a save from before the scenery presets follows Auto, and one that turned a part off stays Custom", async () => {
+  const store = new Map();
+  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
+  const { loadSettings } = await import("../src/app/settings.js");
+  store.set("openmtm2.settings", JSON.stringify({ version: 6, aa: "taa", look: "classic" }));
+  const plain = loadSettings();
+  assert.equal(plain.graphics, "auto");
+  assert.equal(plain.version, 7);
+  assert.equal(plain.lensEffects, true);
+  assert.equal(plain.aa, "taa");
+  assert.equal(plain.look, "classic");
+  store.set("openmtm2.settings", JSON.stringify({ version: 6, naturalLight: false, look: "classic" }));
+  const custom = loadSettings();
+  assert.equal(custom.graphics, "custom");
+  assert.equal(custom.naturalLight, false);
+  assert.equal(custom.look, "classic");
+  assert.equal(custom.terrainSmoothing, true);
+  store.set("openmtm2.settings", JSON.stringify({ version: 7, graphics: "low", lensEffects: true }));
+  const kept = loadSettings();
+  assert.equal(kept.graphics, "low");
+  assert.equal(kept.lensEffects, true);
+  store.set("openmtm2.settings", JSON.stringify({ version: 7, graphics: "dlss", aa: "msaa" }));
+  assert.equal(loadSettings().graphics, "auto");
+  delete globalThis.localStorage;
+});
+
 test("the front views ease their heading for two seconds, then hold it rigidly", () => {
   const flat = () => -1000;
   const cam = createChaseCamera();

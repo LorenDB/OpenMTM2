@@ -12,6 +12,10 @@ import { buildEvoSky, buildEvoTrackRender } from "./evo-track-build.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { loadLevel, loadTextureSource } from "./level-load.js";
 import { buildTerrainAtlas, buildTerrainMesh, decodeTerrainTextures } from "./terrain-mesh.js";
+import { buildReliefMesh } from "./relief-mesh.js";
+import { buildReliefData, createRelief } from "../game/terrain-relief.js";
+import { COVER_MIN_WIDTH_FT, GROUND_MAP_SIDE, buildCoverMap, buildGroundMap, buildPuddleMap, buildShelterMap } from "../game/ground-maps.js";
+import { createSnowCover } from "../game/snow-cover.js";
 import { decodeModel } from "./models.js";
 import { resolveKeyframeModel } from "./keyframes.js";
 import { buildGroundBoxMesh } from "./ground-box-mesh.js";
@@ -118,6 +122,34 @@ export function boxIsDrawn(box, { levelType, raceType, detailLevel }) {
   return levelType === OLD_MTM_LEVEL && raceType !== "drag" && name[3] !== "O";
 }
 
+/** An object wider than this holds no more ground to the game's than this, feet: something that size is scenery, not something standing on the ground. */
+const KEEPOUT_MAX_FT = 400;
+/** A model whose lowest point is this far above the ground at its place stands on nothing, feet. */
+const KEEPOUT_CLEAR_FT = 15;
+
+/**
+ * What stands on the ground, for the drawn ground to stay the game's under it (game/terrain-relief.js):
+ * every drawn object by its model's reach, and every ramp by its box.
+ */
+export function groundKeepouts({ objects, boxes, ramps, models, groundAt }) {
+  const out = [];
+  for (const object of objects) {
+    const box = boxes[object.sitIndex], bounds = models[object.model]?.bounds;
+    if (!box?.positionFt || !bounds) continue;
+    const [x, y, z] = box.positionFt;
+    if (y + bounds.min[1] > groundAt(x, z) + KEEPOUT_CLEAR_FT) continue;
+    const reachX = Math.max(Math.abs(bounds.min[0]), Math.abs(bounds.max[0])), reachZ = Math.max(Math.abs(bounds.min[2]), Math.abs(bounds.max[2]));
+    // Camera-facing scenery is a flat picture: it reaches as far as it is wide, whichever way it turns.
+    out.push({ x, z, radius: Math.min(KEEPOUT_MAX_FT, object.billboard ? reachX : Math.hypot(reachX, reachZ)) });
+  }
+  for (const ramp of ramps) {
+    // A SIT box's size is its length, width and height.
+    const [length = 0, width = 0] = ramp.sizeFt ?? [];
+    out.push({ x: ramp.positionFt[0], z: ramp.positionFt[2], radius: Math.min(KEEPOUT_MAX_FT, Math.hypot(length, width) / 2) });
+  }
+  return out;
+}
+
 /**
  * The blimp (game/blimp.js) and the recovery helicopter (game/heli-flight.js), which are MTM2's on every track:
  * GOODY.BIN, HELI.BIN and the pterodactyl's four wing frames (TERYL.BIN lists TERYL1 to TERYL4), each with its textures.
@@ -154,9 +186,14 @@ export async function loadRex(mtm, truckPalettes) {
 /**
  * @param {ReturnType<import("./vfs.js").createVfs>} vfs
  * @param {string} sitPath
- * @param {{ detailLevel?: number, raceType?: string, truckFiles?: string[] }} [options] `truckFiles`: more trucks to build models for
+ * @param {{ detailLevel?: number, raceType?: string, truckFiles?: string[], weather?: number,
+ *   visuals?: { smoothing?: boolean, groundMap?: boolean, puddles?: boolean, snow?: boolean } }} [options]
+ *   `truckFiles`: more trucks to build models for. `visuals` (docs/VISUALS.md): `smoothing`
+ *   builds the terrain as the drawn ground, `groundMap` the map of its height for the water
+ *   and the weather, `puddles` the map of where rain stands, `snow` the depth of settled snow
+ *   on every vertex of the terrain.
  */
-export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap } = {}) {
+export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {} } = {}) {
   // A Terminal Velocity, Fury3 or Hellbender level has no SIT: it is named by its LVL (worker/tv-track-build.js).
   if (/\.LVL$/i.test(sitPath)) return buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap });
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
@@ -209,7 +246,6 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   // MTM1 does not overlap its ground tiles (unless the option asks for MTM2's two pixels).
   // `tileOverlap` (the console's `overlap`) says so outright for this race, whatever the track.
   const tileInset = (tileOverlap ?? !(sit.origin === "MTM1" && !mtm1?.overlap)) ? 2 : 0;
-  const mesh = buildTerrainMesh({ heights: level.heights, heightsFt: level.heightsFt, clr: level.clr, lte: cpr ? null : level.lte, atlas, footprint: cells, tileInset });
   const groundBoxes = cpr ? null : buildGroundBoxMesh(level.groundBoxes, atlas, level.lte, level.heights, cells);
   const road = cpr ? await buildCprRoadLayer(vfs, level) : null;
   // The ground of a CPR track as the simulation has it: the terrain, and the road layer over it.
@@ -351,6 +387,53 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     ramps.push({ positionFt: box.positionFt, theta: box.theta, phi: box.phi, psi: box.psi, sizeFt: box.sizeFt, mass: box.mass, bounds: name ? boundsOf[name] : null });
   }
 
+  // The ground itself, once what stands on it is known: the game's own two triangles a cell, or with
+  // "Smooth terrain" the drawn ground (game/terrain-relief.js), which keeps to the game's under all of that.
+  // For a race in Snow the mesh also carries the snow that will lie on it (game/snow-cover.js), whatever ground is drawn.
+  // (A CART Precision Racing level, finer than the byte heightfield they are built from, has none of them.)
+  if (cpr) visuals = {};
+  let mesh, reliefData = null, snowData = null, drawnGround = cpr ? null : createRelief({ heights: level.heights });
+  // What stands over the ground and keeps the rain and the snow off it (game/ground-maps.js): the ground boxes, and
+  // every placed model that stays where it is and is wide enough to be a roof. Camera-facing pictures are not.
+  let cover = null, sampledGround = null;
+  if (visuals.cover) {
+    const shapes = groundBoxes ? [{ positions: groundBoxes.positions, indices: groundBoxes.indices }] : [];
+    for (const object of objects) {
+      const bounds = models[object.model]?.bounds;
+      if (object.billboard || object.type === 10 || object.type === BOX_MOVING || !bounds) continue;
+      if (Math.min(bounds.max[0] - bounds.min[0], bounds.max[2] - bounds.min[2]) < COVER_MIN_WIDTH_FT) continue;
+      for (const part of models[object.model].meshes ?? []) shapes.push({ positions: part.positions, matrix: object.matrix });
+    }
+    if (shapes.length) {
+      const top = buildCoverMap(shapes, GROUND_MAP_SIDE);
+      const shelter = buildShelterMap(top, drawnGround.heightAt, GROUND_MAP_SIDE);
+      if (shelter) cover = { side: GROUND_MAP_SIDE, top, shelter };
+    }
+  }
+  if (visuals.smoothing || visuals.snow) {
+    // Every course a truck may be put on: the primary one, and Professional's (MONSTER_EXE_ANALYSIS.md 9).
+    const courses = [sit.primaryCourse, ...(sit.extendedCourses ?? [])].map((course) => course?.segments ?? []).filter((segments) => segments.length);
+    const data = buildReliefData({
+      clr: level.clr, textureValues: level.textureValues, ra0: level.groundBoxes.ra0, ra1: level.groundBoxes.ra1, footprint: cells,
+      objects: groundKeepouts({ objects, boxes: sit.boxes, ramps, models, groundAt: drawnGround.simAt }),
+      courses,
+    });
+    if (visuals.smoothing) {
+      reliefData = data;
+      drawnGround = createRelief({ heights: level.heights, ...data });
+    }
+    if (visuals.snow) snowData = { calm: data.calm, held: data.smooth, shelter: cover?.shelter ?? null };
+    const snow = snowData ? createSnowCover({ relief: drawnGround, ...snowData }) : null;
+    const relief = buildReliefMesh({ heights: level.heights, clr: level.clr, lte: level.lte, atlas, footprint: cells, relief: drawnGround, snow, sunVector: level.lvl.sunVector, courses, tileInset });
+    mesh = { relief: { fine: relief.fine, coarse: relief.coarse }, hasLte: relief.hasLte };
+    // The ground map's samples lie on the mesh's own: it reads the heights the mesh was cut from.
+    sampledGround = relief.heightAtSample;
+  } else {
+    mesh = buildTerrainMesh({ heights: level.heights, heightsFt: level.heightsFt, clr: level.clr, lte: cpr ? null : level.lte, atlas, footprint: cells, tileInset });
+  }
+  const groundMap = visuals.groundMap || visuals.puddles ? buildGroundMap(sampledGround ?? drawnGround.heightAt, GROUND_MAP_SIDE) : null;
+  const puddles = visuals.puddles ? buildPuddleMap(groundMap, { side: GROUND_MAP_SIDE, waterLevelFt: level.waterLevelFt, wraps: !cells }) : null;
+
   // The stadium (SIT "*** Stadium ***", MONSTER.EXE 0x564ca0): at cell (x, z), unrotated, at
   // the ground height of its footprint's low corner.
   if (sit.arena?.modelName) {
@@ -428,11 +511,22 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     /** The level's music file in MUSIC.POD (the LVL names it), e.g. "farm.wav"; null when it names none. */
     musicName: level.lvl.musicName ?? null,
     trackName: sit.trackName,
+    // The atlas with its layout (worker/terrain-mesh.js `buildTerrainAtlas`): a tile of `tileSide` texels a slot, `padding` around each.
     terrain: {
-      ...mesh, atlas: { rgba: atlas.rgba, width: atlas.width, height: atlas.height },
+      ...mesh, atlas: { rgba: atlas.rgba, width: atlas.width, height: atlas.height, tileSide: atlas.tileSide, padding: atlas.padding, slots: atlas.rects.length },
       normalAtlas: normalAtlas ? { rgba: normalAtlas.rgba, width: normalAtlas.width, height: normalAtlas.height } : null,
       detail: terrainDetail,
     },
+    /** What the drawn ground is made from besides the heights (game/terrain-relief.js), or null when it is the game's own. */
+    relief: reliefData,
+    /** What the settled snow's depth is made from besides the drawn ground (game/snow-cover.js), or null when the race is not in Snow. */
+    snowCover: snowData,
+    /** The drawn ground's height, `side` x `side` samples over the world (game/ground-maps.js), or null. */
+    groundMap: groundMap ? { side: GROUND_MAP_SIDE, heights: groundMap } : null,
+    /** What stands over the ground, the same samples: `top` its height and `shelter` where the ground is under cover (game/ground-maps.js), or null where nothing does. */
+    cover,
+    /** Where rain stands, the same samples (game/ground-maps.js), or null. */
+    puddles: puddles ? { side: GROUND_MAP_SIDE, depth: puddles } : null,
     groundBoxes,
     /** CPR's road layer for drawing (worker/cpr-road.js), or null. */
     road: road?.render ?? null,

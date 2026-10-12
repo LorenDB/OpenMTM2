@@ -72,3 +72,17 @@ export function ribbonCorners(a, b, half, eye) {
   const minus = (p, s) => [p[0] - s[0], p[1] - s[1], p[2] - s[2]];
   return [plus(a, side), minus(a, side), minus(b, side), plus(b, side)];
 }
+
+/**
+ * The way such a ribbon faces, for its light: a ribbon stands for a rod, and the side of a rod the eye sees faces the eye,
+ * square to the rod's own length. A unit vector; straight up when the eye looks along the ribbon. A ribbon drawn without
+ * one has no light to be lit by, and no colour at all.
+ */
+export function ribbonNormal(a, b, eye) {
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const view = [eye[0] - (a[0] + b[0]) / 2, eye[1] - (a[1] + b[1]) / 2, eye[2] - (a[2] + b[2]) / 2];
+  const along = (d[0] * view[0] + d[1] * view[1] + d[2] * view[2]) / (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] || 1);
+  const n = [view[0] - d[0] * along, view[1] - d[1] * along, view[2] - d[2] * along];
+  const length = Math.hypot(...n);
+  return length < 1e-9 ? [0, 1, 0] : n.map((v) => v / length);
+}

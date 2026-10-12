@@ -30,12 +30,13 @@ import { currentDriver, getProfiles } from "../../app/profile-store.js";
 import { createKeyboardInput } from "../../game/input/keyboard.js";
 import { mergeBindings } from "../../game/input/bindings.js";
 import { SunFlare } from "../../render/sun-flare.js";
-import { SunShadows } from "../../render/sun-shadows.js";
+import { enableSunShadows } from "../../render/sun-shadows.js";
 import { mtm2Sim } from "../../vendor/openphotex/index.js";
 import { COCKPIT_EYE, CAMERA_MODES, INERTIA_MODE, cameraMode, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextMode, raceCamera, zoomToFov } from "../../game/cameras.js";
 import { createBlimp, hasBlimp } from "../../game/blimp.js";
 import { soundRange, surfaceFamily } from "../../game/sound-model.js";
 import { createTireEffects } from "../../render/tire-effects.js";
+import { createStartLamps } from "../../render/start-lamps.js";
 import { createTrackLights } from "../../render/track-lights.js";
 import { createHelicopters } from "../../render/heli-object.js";
 import { createNameTags } from "../../render/name-tags.js";
@@ -48,7 +49,7 @@ import { createTruckAudio } from "../../audio/truck-audio.js";
 import { createWorldAudio } from "../../audio/world-audio.js";
 import { createWeatherScene } from "../../render/weather-scene.js";
 import { WEATHER_LOOK, WEATHER_NAMES, isUnderwater, resolveWeather, waterOffsetFt } from "../../game/weather.js";
-import { lampsAtStart, toggleLamps } from "../../game/truck-lights.js";
+import { beamAir, lampsAtStart, toggleLamps } from "../../game/truck-lights.js";
 import { createGoldMode } from "../gold-mode.js";
 import { createGamepadInput } from "../../game/input/gamepad.js";
 import { createTextPanel, loadFont } from "../../render/bitmap-text.js";
@@ -58,6 +59,7 @@ import { createReplayRecorder } from "../../game/replay.js";
 import { createRaceEnd } from "../../game/race-end.js";
 import { createDragTree } from "../drag-tree.js";
 import { DQ_CODE, OUT } from "../../game/drag-race.js";
+import { createFpsCounter } from "../fps-counter.js";
 import { createCrashDamage, crashDamageMessage } from "../../game/crash-damage.js";
 import { createCaption } from "../../render/caption.js";
 import { courseLoop, createCourseMap } from "../../render/minimap.js";
@@ -66,6 +68,11 @@ import { formatRaceTime, raceEntrants, summitBoard } from "../../game/race-setup
 import { createModelLibrary, createTrackWorld, disposeObject, moveObjects, setStartLights, skyColor, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
+import { conformPose, createRelief, tireRadiusFt } from "../../game/terrain-relief.js";
+import { trackVisuals, visualSettings } from "../../game/visuals.js";
+import { applyGraphics } from "../../game/graphics.js";
+import { graphicsHardware } from "../../app/graphics-hardware.js";
+import { createScenery } from "../../render/scenery.js";
 import { createMenu, cycle } from "../../game/vr/menu.js";
 import { SEAT_STEP_FT } from "../../game/vr/seat.js";
 import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS } from "../../game/vr/settings.js";
@@ -74,6 +81,10 @@ import { vrButton } from "../vr-button.js";
 
 /** The race HUD text is a light grey with a one-pixel black shadow (the game's own look). */
 const HUD_GREY = "#cfcfcf";
+/** A headset draws everything twice: the smoothed ground is drawn fine less far out than on the flat screen (render/track-scene.js). */
+const HEADSET_FINE_RANGE_FT = 800;
+/** About how tall a headset's picture is for one eye, pixels: rain and snow are kept no thinner than one of them. */
+const HEADSET_VIEW_HEIGHT = 1800;
 
 const DEMO_CAPTION = "Demo mode. Press any key to begin", DEMO_CAMERA_S = 8;
 /** How much of the race the pause menu's instant replay shows. */
@@ -157,6 +168,8 @@ async function mountRace(container, context, params) {
   const summit = track.raceType === "summit";
   const dragRace = track.raceType === "drag";
   const dragTree = createDragTree();
+  // The toggleable FPS counter, in the top right (below the drag tree on a drag strip).
+  const fpsCounter = createFpsCounter({ visible: !!context.settings.fpsCounter });
   // The app's one renderer and its canvas (render/xr/xr-host.js); a headset shows this note meanwhile.
   context.xr.setBoard(createMenu({ title: "Loading", lines: [track.name] }));
   const host = await context.xr.host();
@@ -190,7 +203,7 @@ async function mountRace(container, context, params) {
   // The Names key (game/names.js): what the course map and the labels over the trucks say.
   let namesMode = 0;
   const enterVr = vrButton(context, "race-vr");
-  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, dragTree.element, gauges.element, caption.element, enterVr.element, pauseMenu, loading);
+  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, dragTree.element, fpsCounter.element, gauges.element, caption.element, enterVr.element, pauseMenu, loading);
   container.append(view);
 
   let disposed = false;
@@ -218,9 +231,13 @@ async function mountRace(container, context, params) {
 
   const truckName = (file) => catalogTrucks.find((t) => t.file === file)?.name ?? file;
   const mtm1Options = { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap };
+  // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
+  applyGraphics(context.settings, graphicsHardware());
   const build = await context.assets.call("trackRender", {
     path: track.path, scope: track.scope, detailLevel: context.settings.detailLevel, raceType: track.raceType,
     truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap,
+    // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
+    visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
   });
   if (disposed) return { unmount };
   if (build.problems?.length && !demo) {
@@ -263,8 +280,10 @@ async function mountRace(container, context, params) {
   const sunTravel = sun.position.clone().negate();
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
   scene.add(sun, ambientLight);
+  // What "Natural light" changes of the world itself (docs/VISUALS.md, "Light"): it is the enhanced look's.
+  const naturalLight = look === "enhanced" && visualSettings(context.settings).light;
   const world = createTrackWorld(build, look, {
-    backdrops: !!context.settings.backdrops, drawDistance,
+    backdrops: !!context.settings.backdrops, drawDistance, naturalLight,
     terrainDetail: context.settings.terrainDetail !== false, reflections: context.settings.reflections !== false,
   });
   scene.add(world);
@@ -319,11 +338,23 @@ async function mountRace(container, context, params) {
   });
   const forwardVector = new THREE.Vector3();
   const terrain = terrainOfBuild(build);
+  // With "Smooth terrain" the ground drawn is not quite the ground driven on (game/terrain-relief.js).
+  const relief = build.relief ? createRelief({ heights: build.heights, ...build.relief }) : null;
   let shadows = null, flare = null, flareBlocked = () => false;
   audio.setRange?.(soundRange(weatherId));
+  // The port's own weather, ground and water, each where its switch is on (render/scenery.js; docs/VISUALS.md).
+  const scenery = createScenery({
+    scene, camera, world, sun, build, settings: context.settings, ground: relief ? relief.heightAt : groundHeightFn(terrain), relief,
+    ambient: ambientLight, renderer, look,
+  });
+  cleanups.push(() => scenery.dispose());
+  // What follows the ground (cameras, lights, dust, tracks, spray) follows what is drawn: the drawn ground, and the snow lying on it.
+  const ground = scenery.surfaceAt;
   const weatherScene = createWeatherScene({
     scene, camera, world, sun, ambient: ambientLight, skyAverage: background, look, drawDistance, backdrops: !!context.settings.backdrops, art: effectsArt,
-    onSun: (i) => shadows?.setIntensity(i), onLightning: () => worldAudio.thunder(),
+    onSun: (_, shadow) => shadows?.follow(sun, shadow), onLightning: () => worldAudio.thunder(),
+    volume: scenery.volume, groundSurface: scenery.groundSurface, lightRig: scenery.lightRig,
+    groundDetail: scenery.groundDetail, dressGround: scenery.dressGround, gloss: scenery.gloss, water: scenery.water, richLamps: visualSettings(context.settings).lamps,
   });
   weatherScene.set(weatherId);
   cleanups.push(() => weatherScene.dispose());
@@ -339,10 +370,13 @@ async function mountRace(container, context, params) {
   // The renderer is the app's: it is handed back, with the headset's rig taken out of the scene first.
   cleanups.push(() => { host.release(); disposeObject(scene); });
 
+  // The lamps as the port draws them, where "Truck lamps" is on (docs/VISUALS.md, "Lamps").
+  const richLamps = visualSettings(context.settings).lamps;
   // One drawn truck per entrant, at the TRK's own anchors (the simulation clamps the wheelbase, §3.1).
   const drawn = entrants.map((e) => {
     const model = build.truckModels[e.file];
-    const object = createTruckObject(model, model.anchors, look);
+    const object = createTruckObject(model, model.anchors, look, { richLamps });
+    scenery.gloss?.dress(object.object);
     scene.add(object.object);
     return object;
   });
@@ -359,7 +393,8 @@ async function mountRace(container, context, params) {
 
   // The enhanced look (settings.look): the sun's shadows, and the sun, moon and lens flare.
   if (look === "enhanced") {
-    shadows = enableShadows({ renderer, scene, camera, world, sun, drawn });
+    shadows = enableSunShadows({ renderer, scene, camera, world, sun, trucks: drawn.map((truck) => truck.object), natural: !!scenery.lightRig });
+    shadows.follow(sun, scenery.lightRig?.rig?.shadow ?? 1);
     const data = await context.assets.call("flare").catch(() => null);
     if (data) {
       flare = new SunFlare(world, data);
@@ -607,6 +642,11 @@ async function mountRace(container, context, params) {
       hud.element.hidden = context.settings.timingHud === false;
       saveSettings(context.settings);
     }
+    // The FPS counter key switches the frames per second in the corner.
+    if (keyMap.fps?.includes(e.code) && !e.repeat) {
+      context.settings.fpsCounter = fpsCounter.toggle();
+      saveSettings(context.settings);
+    }
     // The Headlights key (L) switches the player's lamps; every other truck keeps what the weather gave it.
     if (keyMap.headlights.includes(e.code) && !e.repeat && !e.ctrlKey) lamps[0] = toggleLamps(lamps[0]);
     if (keyMap.crashDamage.includes(e.code) && !e.repeat && physics === "mtm1") flash("No crash damage in Monster Truck Madness physics", performance.now(), 3);
@@ -651,6 +691,7 @@ async function mountRace(container, context, params) {
     if (host.presenting) return;
     const { clientWidth: w, clientHeight: h } = canvas;
     renderer.setSize(w, h, false);
+    scenery.setSize(canvas.width, canvas.height);
     camera.aspect = w / Math.max(1, h);
     camera.updateProjectionMatrix();
   };
@@ -667,19 +708,39 @@ async function mountRace(container, context, params) {
   }));
 
   // The ten views (game/cameras.js): chase cameras as the exe places them, and the port's own BlimpCam and RaceCam.
-  const ground = groundHeightFn(terrain);
+  // A drawn truck is seated on the drawn ground, wheel by wheel; the simulation's truck stays where it is.
+  const seats = entrants.map((e) => {
+    const model = build.truckModels[e.file];
+    return { hubs: model.anchors, radius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft) };
+  });
+  // The shade each truck keeps the sky's light off (render/contact-shade.js): strongest where the sun's own shadow is faint.
+  const contactShade = scenery.contactShade(seats);
+  if (contactShade) cleanups.push(() => contactShade.dispose());
+  // Seated on the ground as its mesh is drawn (render/scenery.js `groundAt`), against the game's own ground under the wheel.
+  const seat = relief ? { simAt: relief.simAt, simSlopeAt: relief.simSlopeAt, offsetAt: (x, z) => scenery.groundAt(x, z) - relief.simAt(x, z) } : null;
+  const seated = (pose, i) => (seat ? conformPose(pose, seat, seats[i].hubs, seats[i].radius, weatherScene.weather === 5 ? build.waterLevelFt ?? null : null) : pose);
   // Community Patch 3 track lights (box type 12), lit at night (render/track-lights.js).
-  const trackLights = createTrackLights(scene, build.trackLights, ground);
+  const trackLights = createTrackLights(scene, build.trackLights, ground, { shafts: richLamps });
   if (trackLights) cleanups.push(() => trackLights.dispose());
+  // The start gantry's lamps as lamps, with "Truck lamps" (render/start-lamps.js); else the game's coloured faces.
+  const startLamps = richLamps ? createStartLamps({ world, scene, dark: !!WEATHER_LOOK[weatherId]?.headlights }) : null;
+  if (startLamps) cleanups.push(() => startLamps.dispose());
   // Ice over the water in Snow, and the spray and ripples of wheels in water (render/water-effects.js).
-  const waterFx = createWaterEffects({ scene, art: effectsArt, levelFt: build.waterLevelFt ?? null, ground });
+  // Every copy of the world has its own water plane (render/track-scene.js): they bob and are surfaced together.
+  const waters = [];
+  world.traverse((object) => { if (object.name === "water") waters.push(object); });
+  const waterFx = createWaterEffects({ scene, art: effectsArt, levelFt: build.waterLevelFt ?? null, ground, legacyIce: !scenery.water, blobs: !scenery.particles, rings: !scenery.particles && !scenery.water });
   cleanups.push(() => waterFx.dispose());
   // Dust, tire tracks and sparks (render/tire-effects.js), each switched in Options.
-  const tireFx = createTireEffects({ scene, art: effectsArt, ground, count: entrants.length });
+  // In the dark a shower of sparks lights what is about it.
+  const tireFx = createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: entrants.length, rich: scenery.particles, dark: !!WEATHER_LOOK[weatherId]?.headlights });
   cleanups.push(() => tireFx.dispose());
   const effectFlags = () => ({ dust: context.settings.dustEffects !== false, tracks: context.settings.tireTracks !== false, sparks: context.settings.sparks !== false, splash: context.settings.waterSplash !== false });
-  const waterSurface = createWaterSurface(world.getObjectByName("water"), effectsArt, look);
-  cleanups.push(() => waterSurface?.dispose());
+  // The water's surface: the port's own (render/water-surface.js) or the game's frames.
+  const waterSurface = scenery.water ?? createWaterSurface(waters, effectsArt, look);
+  if (!scenery.water) cleanups.push(() => waterSurface?.dispose());
+  /** The water's level as it stands this frame, bob included, or null. */
+  let waterLevelNow = build.waterLevelFt ?? null;
   const chase = createChaseCamera();
   const straights = raceCourse, centroid = courseCentroid(straights);
   // The blimp flies the course (game/blimp.js); the BlimpCam hangs over the course's centre (game/cameras.js).
@@ -704,18 +765,34 @@ async function mountRace(container, context, params) {
   const mirrorCamera = new THREE.PerspectiveCamera(40, mirrorWindow ? mirrorWindow[2] / mirrorWindow[3] : 1, 0.5, drawDistance);
   const mirrorPixels = mirrorTarget ? new Uint8Array(mirrorTarget.width * mirrorTarget.height * 4) : null;
   const flipBack = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-  let mirrorTick = 0;
+  let mirrorTick = 0, mirrorReading = false, mirrorWarmed = false;
   const renderMirror = () => {
     if (!mirrorTarget) return;
     if (viewMode !== 0 || cockpitMode() !== 0) { cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height, false); return; }
-    if (mirrorTick++ % 2) return;
+    // Every other frame, and not while the picture before is still on its way back.
+    if (mirrorTick++ % 2 || mirrorReading) return;
     mirrorCamera.position.copy(cockpitEye.position);
     mirrorCamera.quaternion.copy(cockpitEye.quaternion).multiply(flipBack);
     renderer.setRenderTarget(mirrorTarget);
+    // The first time the mirror is drawn: the scene's shaders for the mirror's picture, which are not the screen's,
+    // all built now and not one by one as each thing first comes into the mirror (render/weather-scene.js `warmPools`).
+    if (!mirrorWarmed) {
+      mirrorWarmed = true;
+      weatherScene.warmPools(() => renderer.compile(scene, mirrorCamera));
+      if (scenery.particles?.over) renderer.compile(scenery.particles.over.scene, mirrorCamera);
+    }
     renderer.render(scene, mirrorCamera);
-    renderer.readRenderTargetPixels(mirrorTarget, 0, 0, mirrorTarget.width, mirrorTarget.height, mirrorPixels);
+    // The dust and smoke drawn over the scene (render/over-scene.js).
+    scenery.drawOver(mirrorCamera);
+    // The picture is asked for and not waited for: the graphics card hands it over once it has drawn it, a frame or
+    // two on, and the mirror shows it then. Waiting here held every other frame for as long as the card was behind,
+    // 15 to 50 ms on a small chip.
+    mirrorReading = true;
+    renderer.readRenderTargetPixelsAsync(mirrorTarget, 0, 0, mirrorTarget.width, mirrorTarget.height, mirrorPixels)
+      .then(() => { if (!disposed && viewMode === 0 && cockpitMode() === 0) cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height); })
+      .catch(() => {})
+      .finally(() => { mirrorReading = false; });
     renderer.setRenderTarget(null);
-    cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height);
   };
   cleanups.push(() => mirrorTarget?.dispose());
   let waterClock = 0, shownPoses = null;
@@ -819,7 +896,8 @@ async function mountRace(container, context, params) {
     // The gantry's lamps change only when the countdown state does (6.1).
     if (lightsOn !== !race.started) {
       lightsOn = !race.started;
-      setStartLights(world, lightsOn, build.startLightColours);
+      if (startLamps) startLamps.set(lightsOn);
+      else setStartLights(world, lightsOn, build.startLightColours);
     }
     // A watched race shows the watched truck's times.
     const me = race.trucks[spectator ? cameraTarget : 0] ?? race.trucks[0];
@@ -893,11 +971,11 @@ async function mountRace(container, context, params) {
     context.router.go("results", { track, laps: race.laps ?? laps, difficulty, rows, mode: track.raceType, truck: playerTruck, tournament: !!params.tournament }, { replace: true });
   };
 
-  let busy = false, latest = null, drawnAt = performance.now();
+  let busy = false, latest = null, drawnAt = performance.now(), poolsWarmed = false;
   let drawnCells = drawDistance / TERRAIN_CELL_FT;
   const movedBoxes = new Set();
   const movedPositions = new Map();
-  window.__openmtm2Race = { audio, scene, camera, renderer, sim, entrants, musicName, host, vr, get latest() { return latest; } };
+  window.__openmtm2Race = { audio, scene, camera, renderer, sim, entrants, musicName, host, vr, scenery, tireFx, get latest() { return latest; } };
   cleanups.push(() => { delete window.__openmtm2Race; });
   /** One frame, from the window or from the headset (the host's loop): `now` as performance.now(). */
   const loop = (_dt, now) => {
@@ -906,6 +984,9 @@ async function mountRace(container, context, params) {
     if (!host.presenting && context.settings.fpsLimit && now - drawnAt < 1000 / Math.max(10, context.settings.fpsLimitValue ?? 60) - 1) return;
     const dt = Math.min(0.1, Math.max(0, (now - drawnAt) / 1000));
     drawnAt = now;
+    // The FPS counter follows the Options at once (Apply in the pause menu's dialog).
+    if (fpsCounter.visible !== !!context.settings.fpsCounter) fpsCounter.setVisible(!!context.settings.fpsCounter);
+    fpsCounter.update(dt);
     if (replaying) return;
     // The draw distance follows the Options at once (Apply in the pause menu's dialog).
     const cells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
@@ -948,7 +1029,7 @@ async function mountRace(container, context, params) {
         .finally(() => { busy = false; });
     }
     if (latest) {
-      const shown = latest.poses.map((p) => interpolatePose(p.previous, p.current, latest.alpha));
+      const shown = latest.poses.map((p, i) => seated(interpolatePose(p.previous, p.current, latest.alpha), i));
       // The world is a torus (MONSTER_EXE_ANALYSIS.md "The wrapping world"): every truck is drawn, heard and labelled
       // at the copy nearest the one the camera is on, as the game draws each at the copy nearest the view.
       // The picture's own space runs on without a seam: the watched truck is drawn at the copy nearest where it was drawn
@@ -964,13 +1045,29 @@ async function mountRace(container, context, params) {
       tireFx.update({
         dt: paused ? 0 : dt, listener: [camera.position.x, camera.position.y, -camera.position.z], flags: effectFlags(),
         noDust: weatherScene.weather === 4 || weatherScene.weather === 5,
-        trucks: shown.map((p, i) => ({ object: drawn[i], pose: p, surface: latest.poses[i].sound ? { family: surfaceFamily(latest.poses[i].sound.surface), type: latest.poses[i].sound.surface } : null })),
+        // With the light as the weather has it, dust is as dim as the ground it rose from.
+        light: scenery.lightRig ? Math.min(1, weatherScene.lightLevel() * 1.15) : 1,
+        // For "Rich particles": what each wheel stands on follows the weather and the snow, and what is thrown takes the scene's lights.
+        weather: weatherScene.weather, camera, lights: { sun, ambient: ambientLight, hemisphere: scenery.lightRig?.hemisphere ?? null },
+        snowDown: scenery.groundSurface?.snowDown ?? 0, viewHeight: host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height, lite: host.presenting,
+        trucks: shown.map((p, i) => ({
+          object: drawn[i], pose: p, surface: latest.poses[i].sound ? { family: surfaceFamily(latest.poses[i].sound.surface), type: latest.poses[i].sound.surface } : null,
+          // What the simulation says of each tire (its grip, the force through it, how fast it turns), for sliding and spinning.
+          tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius,
+        })),
       });
+      contactShade?.update(shown, scenery.lightRig?.rig?.shadow ?? 1, weatherScene.weather === 5 ? build.waterLevelFt ?? null : null);
       helicopters?.update(shown.map((p) => p.heli ?? null), paused ? 0 : dt);
       lampClockMs += paused ? 0 : dt * 1000;
       const night = !!WEATHER_LOOK[weatherScene.weather]?.headlights;
       trackLights?.update(camera, night);
-      shown.forEach((p, i) => drawn[i].update(p, camera, { lamps: lamps[i], clockMs: lampClockMs, night, cockpit: i === 0 && viewMode === 0 }));
+      const lampWeather = weatherScene.weather;
+      startLamps?.update(camera, { daylight: WEATHER_LOOK[lampWeather]?.light ?? 1 });
+      shown.forEach((p, i) => drawn[i].update(p, camera, {
+        lamps: lamps[i], clockMs: lampClockMs, night, cockpit: i === 0 && viewMode === 0,
+        // For the port's own lamps: what there is in the air to show a beam, and how light the day is.
+        air: beamAir(lampWeather), daylight: WEATHER_LOOK[lampWeather]?.light ?? 1,
+      }));
       if (!latest.damageHandled) {
         latest.damageHandled = true;
         latest.poses.forEach((p, i) => {
@@ -998,7 +1095,8 @@ async function mountRace(container, context, params) {
       camera.getWorldDirection(forwardVector);
       audio.setListener(camera.position, forwardVector, camera.up);
       nameTags.update(camera, view.clientWidth, view.clientHeight, entrants.map((e, i) => nameLabel(namesMode, e, truckName)), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0));
-      weatherScene.update(dt, shown.map((p) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2] })));
+      weatherScene.update(dt, shown.map((p, i) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: lamps[i] === 2 })),
+        { floorFt: waterLevelNow, viewHeight: host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height, lite: host.presenting });
       // In a headset the seat follows the player's truck and the flat camera takes the head's place. The
       // RaceCam's truck (cameraTarget, another one once the player has finished) is the flat camera's only:
       // the cab and the seat's settings are the player's truck's, and a headset is never moved without warning.
@@ -1042,11 +1140,14 @@ async function mountRace(container, context, params) {
       blimpHum?.then((v) => v?.setPosition(blimp.state.pos));
     }
     waterClock += dt;
-    const water = world.getObjectByName("water");
-    if (water) water.position.y = waterOffsetFt(waterClock, weatherScene.weather);
-    waterSurface?.update(dt, weatherScene.weather);
+    const water = waters[0];
+    const bob = waterOffsetFt(waterClock, weatherScene.weather);
+    for (const plane of waters) plane.position.y = bob;
+    waterLevelNow = water ? water.userData.levelFt + bob : null;
     const under = isUnderwater(camera.position.y, water ? water.userData.levelFt + water.position.y : null, weatherScene.weather);
     weatherScene.setUnderwater(under);
+    // How far under the eye is, for the lens: it comes on over the first half foot (docs/VISUALS.md, "Under water").
+    scenery.underwater(under && water ? (water.userData.levelFt + water.position.y - camera.position.y) / 0.5 : 0);
     tireFx.setWater(water ? water.userData.levelFt + water.position.y : null);
     if (latest && shownPoses) {
       waterFx.update(dt, {
@@ -1059,9 +1160,13 @@ async function mountRace(container, context, params) {
     // The sky goes with the camera, up as well as across: it is never reached (render/track-scene.js `placeSky`).
     if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
     if (latest?.crush) world.userData.crush = latest.crush;
+    // After the sky is placed: the port's water shows it.
+    // The wheels stir the water and the puddles (render/water-ripples.js).
+    if (shownPoses) scenery.stir(shownPoses.map((p, i) => (p && drawn[i] ? { hubs: p.tires.map((_, k) => drawn[i].tireHub(k)), radiusFt: seats[i].radius } : null)), paused ? 0 : dt);
+    waterSurface?.update(dt, weatherScene.weather, { sun, light: weatherScene.lightLevel(), sky, fog: scene.fog, background, levelFt: water ? water.userData.levelFt + water.position.y : null });
     // A headset draws everything twice: terrain past the fog's end, which nothing can be seen of, is left out.
     const sight = vr.sight(scene.fog);
-    updateTrackWorld(world, camera, dt, { viewRange: host.presenting ? sight : undefined });
+    updateTrackWorld(world, camera, dt, { viewRange: host.presenting ? sight : undefined, fineRange: host.presenting ? HEADSET_FINE_RANGE_FT : undefined });
     animateRex(paused ? 0 : dt);
     if (shadows) {
       shadows.setupMaterials();
@@ -1073,7 +1178,12 @@ async function mountRace(container, context, params) {
       flare.setStereo(host.presenting);
       flare.update(camera, sunTravel, true, weatherScene.weather <= 1, flareBlocked);
     }
-    renderer.render(scene, host.presenting ? host.camera : camera);
+    // The lens is the flat screen's (render/lens.js): a headset draws each eye straight to its display.
+    if (host.presenting) scenery.draw(host.camera, { plain: true }); else scenery.draw(camera);
+    // Once the scene has been drawn with the trucks in it, so every material is as it will be and what waits unseen
+    // (the helicopters) is there: the shaders of all of it, and for the headlights' pools shown and hidden, built
+    // before a rescue or the Headlights key needs them (render/weather-scene.js `warmPools`).
+    if (!poolsWarmed && latest) { poolsWarmed = true; weatherScene.warmPools(() => scenery.compile(camera)); }
     if (!host.presenting) renderMirror();
     flare?.render(renderer, camera);
     gold?.afterRender(dt, build.title ?? track.name);
@@ -1249,6 +1359,17 @@ async function mountRace(container, context, params) {
           return `Sound ${said(on)}.`;
         },
       },
+      fps: {
+        usage: "fps <0|1>", help: "the FPS counter on or off",
+        run: ([word]) => {
+          const on = onOff(word);
+          if (on === null) return `Usage: fps <0|1>. Now ${said(!!context.settings.fpsCounter)}.`;
+          context.settings.fpsCounter = on;
+          fpsCounter.setVisible(on);
+          saveSettings(context.settings);
+          return `FPS counter ${said(on)}.`;
+        },
+      },
       addbot: {
         usage: "addbot [truck]", help: "adds a computer opponent (restarts the race)", complete: truckNames,
         run: (args, rest) => {
@@ -1368,59 +1489,6 @@ async function mountRace(container, context, params) {
 /** What the sky shows besides the weather's art: the sun with its flare, the moon, or nothing. */
 function celestialFor(weather) {
   return weather <= 1 ? "sun" : weather === 7 ? "moon" : "none";
-}
-
-/**
- * Turn on the sun's shadows: the cascades replace the plain sun light, the world's models and
- * the trucks cast, and everything lit receives. Only the middle copy of the wrapped world casts.
- */
-function enableShadows({ renderer, scene, camera, world, sun, drawn }) {
-  renderer.shadowMap.enabled = true;
-  // Soft-edged shadows (PCFSoft), as JSTrackViewer's scene draws them with its cascades.
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.shadowMap.autoUpdate = true;
-  const tile = world.getObjectByName("tile");
-  world.traverse((o) => {
-    if (!o.isMesh || o.name === "sky") return;
-    o.receiveShadow = true;
-  });
-  // Solid things cast, ground boxes among them; terrain and water do not, nor do blended (see-through) surfaces. A caster
-  // is drawn into the shadow map on the same side it is drawn on, which keeps thin walls from leaking light.
-  const casts = (o) => {
-    const m = o.material;
-    if (!m || (m.transparent && !(m.alphaTest > 0))) return false;
-    m.shadowSide = m.side;
-    return true;
-  };
-  tile?.traverse((o) => {
-    if (o.isMesh && o.name !== "terrain" && o.name !== "water" && o.name !== "road" && casts(o)) o.castShadow = true;
-  });
-  for (const truck of drawn) truck.object.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
-  // The placed models are instanced over every copy; only the original's instances cast (track-scene.js).
-  world.getObjectByName("objects")?.traverse((o) => { if (o.isInstancedMesh) o.castShadow = true; });
-  // A facing object (type 8 and 9 billboards) turns to the camera, which would swing its shadow around with the
-  // view. Its shadow comes from an invisible copy held square to the sun instead (updateTrackWorld keeps it there).
-  world.userData.shadowFacing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(sun.position.x, sun.position.z));
-  tile?.traverse((group) => {
-    if (group.name !== "placedObject" || !group.userData.billboard) return;
-    for (const mesh of [...group.children]) {
-      if (!mesh.isMesh) continue;
-      mesh.castShadow = false;
-      const source = mesh.material;
-      const proxy = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({
-        map: source.map ?? null, alphaTest: source.alphaTest ?? 0, transparent: !!source.transparent,
-        side: THREE.DoubleSide, colorWrite: false, depthWrite: false,
-      }));
-      proxy.castShadow = true;
-      proxy.userData.shadowProxy = true;
-      group.add(proxy);
-    }
-  });
-  const shadows = new SunShadows({ scene, camera, color: 0xffffff, intensity: sun.intensity, maxFar: 10240 });
-  shadows.setDirection(sun.position.clone().negate());
-  shadows.setEnabled(true);
-  sun.visible = false;
-  return shadows;
 }
 
 /** Whether the ground between a point and the horizon toward the sun hides the sun (scene frame in, game frame out). */

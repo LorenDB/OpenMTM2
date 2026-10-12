@@ -54,30 +54,95 @@ export function dustPuffs({ speedFtS, onGround, dusty, random }) {
   return out;
 }
 
-/** Tire tracks: a mark every this many feet of travel, as wide as the tire, kept this long (the last part fading). */
-export const TRACK_STEP_FT = 3, TRACK_WIDTH_FT = 2.2, TRACK_LIFE_S = 70, TRACK_FADE_S = 25, TRACK_POOL = 30000;
-/** Every truck lays tracks wherever it is (no distance limit); the pool is large enough for a full field. */
+/**
+ * Tire tracks: a mark every `TRACK_STEP_FT` of travel, as wide as the tire, held in a ring of `TRACK_POOL` pieces. No
+ * clock wipes a track: it stays until the ring comes round to it, and fades over the oldest `TRACK_FADE_SHARE` of the
+ * ring, so it is gone before its place is taken. With few trucks a track lasts for minutes; with a full field, as long
+ * as the ring holds.
+ */
+export const TRACK_STEP_FT = 3, TRACK_WIDTH_FT = 2.2, TRACK_POOL = 65536, TRACK_FADE_SHARE = 0.125;
+export const TRACK_FADE_PIECES = Math.round(TRACK_POOL * TRACK_FADE_SHARE);
+/**
+ * Where tracks come among the see-through things a scene draws (three.js's render order): after the level's water
+ * (0), whose ice a rut can lie on, so the rut is over it; before the shade under a truck (1) and what is thrown (3).
+ */
+export const TRACK_ORDER = 0.5;
+/** Every truck lays tracks wherever it is (no distance limit). */
 export const TRACK_RANGE_FT = Infinity;
 /** A jump longer than this between marks (a reset, the helicopter) starts a new strip. */
 export const TRACK_BREAK_FT = 10;
-
-/** The opacity of a mark that is `age` seconds old: full, then fading to nothing at its end. */
-export const trackOpacity = (age) => (age >= TRACK_LIFE_S ? 0 : age <= TRACK_LIFE_S - TRACK_FADE_S ? 1 : (TRACK_LIFE_S - age) / TRACK_FADE_S);
+/**
+ * A piece is laid only where every point of it lies within this of the ground under the tire, feet: a track never
+ * hangs off a bridge's deck into the gully under it, or bridges a ledge (`trackLevel`).
+ */
+export const TRACK_LEDGE_FT = 2;
+/** Whether the points of a piece's edge (`[x, height, z, ...]` each) all lie within `TRACK_LEDGE_FT` of `floorFt`, the ground under the tire. */
+export const trackLevel = (edge, floorFt) => edge.every((point) => Math.abs(point[1] - floorFt) <= TRACK_LEDGE_FT);
 
 /**
- * Sparks, uneven and not many (the rates are the port's own): while a hull contact scrapes faster than SPARK_MIN_SPEED,
- * each SPARK_INTERVAL_S of contact has a SPARK_CHANCE of throwing one (about four a second); a hit harder than
- * SPARK_HIT_FORCE throws a burst of ten at most, each of its sparks with SPARK_HIT_CHANCE. A tire against a tire throws
- * them too, at TIRE_SPARK_SHARE of those chances.
+ * How much of a piece of track is shown when `behind` pieces have been laid since it (0 for the newest): all of it,
+ * then fading to nothing as the ring comes round to it. The piece whose place is taken next (`pool - 1` behind) shows
+ * nothing.
  */
-export const SPARK_INTERVAL_S = 0.125, SPARK_CHANCE = 0.5, SPARK_MIN_SPEED = 6, SPARK_POOL = 320, SPARK_HIT_FORCE = 800, SPARK_HIT_CHANCE = 0.7;
+export const trackShown = (behind, pool = TRACK_POOL, fade = TRACK_FADE_PIECES) => Math.min(1, Math.max(0, (pool - 1 - behind) / fade));
+
+/**
+ * While a tire runs on straight over even ground, the piece it is laying is drawn on to where the tire is instead of a
+ * new one being begun: up to `TRACK_LONGEST_FT` long, while it presses within `TRACK_PRESS_SAME` of how it pressed
+ * when the piece began, and while every place the piece has passed lies within `TRACK_TRUE_FT` of where the longer
+ * piece would draw it (`edgeHolds`). So a track takes fewer pieces where it runs straight, and the ring holds more of it.
+ */
+export const TRACK_LONGEST_FT = 15, TRACK_TRUE_FT = 0.03, TRACK_PRESS_SAME = 0.05;
+
+/**
+ * Whether a piece drawn straight from edge `from` to edge `to` still passes through edge `passed`, which a tire laid on
+ * the way. Each edge is a list of the same points across the track, `[x, height, z, snowDepth]` each (game feet). A
+ * passed point must lie within `trueFt` of the line from its fellow on `from` to its fellow on `to`: across, in height
+ * and in the snow's depth there.
+ */
+export function edgeHolds(from, to, passed, trueFt = TRACK_TRUE_FT) {
+  for (let k = 0; k < passed.length; k++) {
+    const a = from[k], b = to[k], p = passed[k];
+    const abx = b[0] - a[0], abz = b[2] - a[2], long2 = abx * abx + abz * abz;
+    if (!(long2 > 1e-9)) return false;
+    const t = Math.min(1, Math.max(0, ((p[0] - a[0]) * abx + (p[2] - a[2]) * abz) / long2));
+    if (Math.hypot(p[0] - a[0] - abx * t, p[2] - a[2] - abz * t) > trueFt) return false;
+    if (Math.abs(p[1] - (a[1] + (b[1] - a[1]) * t)) > trueFt) return false;
+    if (Math.abs((p[3] ?? 0) - ((a[3] ?? 0) + ((b[3] ?? 0) - (a[3] ?? 0)) * t)) > trueFt) return false;
+  }
+  return true;
+}
+
+/**
+ * Sparks, uneven and not many while scraping (the rates are the port's own): while a hull contact scrapes faster than
+ * `SPARK_MIN_SPEED`, each `SPARK_INTERVAL_S` of contact has a `SPARK_CHANCE` of throwing one (about four a second);
+ * a hit harder than `SPARK_HIT_FORCE` throws a burst of ten at most, each of its sparks with `SPARK_HIT_CHANCE`.
+ * A tire against a tire throws them too, at `TIRE_SPARK_SHARE` of those chances. Steel strikes sparks from stone only
+ * at a fair speed (0x531e40): a truck that leans on a wall with its throttle open, or creeps on after a crash, presses
+ * as hard as one that hits it and throws none. So a scrape needs `SPARK_MIN_SPEED` of slide, feet a second (about
+ * 8 mph; the game says only "while the truck is moving"), and a hit `SPARK_HIT_SPEED` as well as its force, with
+ * fewer sparks the slower it is.
+ */
+export const SPARK_INTERVAL_S = 0.125, SPARK_CHANCE = 0.5, SPARK_MIN_SPEED = 12, SPARK_HIT_SPEED = 9, SPARK_POOL = 320, SPARK_HIT_FORCE = 800, SPARK_HIT_CHANCE = 0.7;
 export const TIRE_SPARK_SHARE = 0.2;
-export const sparksForHit = (force, random = Math.random, share = 1) => {
-  if (force < SPARK_HIT_FORCE) return 0;
-  let thrown = 0;
-  for (let n = Math.min(10, 2 + Math.floor(force / 1500)); n > 0; n--) if (random() < SPARK_HIT_CHANCE * share) thrown++;
-  return thrown;
-};
+/**
+ * How many sparks a hit of `force` throws. With a function second argument it is thrown unevenly: up to ten sparks
+ * (never a shower), each with `SPARK_HIT_CHANCE` times `share`. With a speed (or none) it is counted from the force
+ * and the speed, all of them from 30 ft/s on. Either way, none below `SPARK_HIT_FORCE`, and with a speed, none below
+ * `SPARK_HIT_SPEED`.
+ */
+export function sparksForHit(force, speedOrRandom = Infinity, share = 1) {
+  if (typeof speedOrRandom === "function") {
+    if (force < SPARK_HIT_FORCE) return 0;
+    const random = speedOrRandom;
+    let thrown = 0;
+    for (let n = Math.min(10, 2 + Math.floor(force / 1500)); n > 0; n--) if (random() < SPARK_HIT_CHANCE * share) thrown++;
+    return thrown;
+  }
+  const speedFtS = speedOrRandom;
+  if (force < SPARK_HIT_FORCE || speedFtS < SPARK_HIT_SPEED) return 0;
+  return Math.round(Math.min(28, 6 + force / 250) * Math.min(1, 0.35 + speedFtS / 45));
+}
 /** A truck's hits throw a burst no more often than this, seconds: a contact that lasts is one hit, not one a frame. */
 export const SPARK_BURST_GAP_S = 0.35;
 export const puffsForHit = (force) => (force < 600 ? 0 : Math.min(5, 1 + Math.floor(force / 1500)));

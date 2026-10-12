@@ -3,6 +3,8 @@
 */
 import { Router } from "./router.js";
 import { loadSettings } from "./settings.js";
+import { applyGraphics } from "../game/graphics.js";
+import { graphicsHardware } from "./graphics-hardware.js";
 import { createStrings } from "../game/strings.js";
 import { loadStrings } from "./strings-store.js";
 import { startMenuAudio } from "./menu-audio.js";
@@ -46,6 +48,8 @@ export function missingFeatures(env = globalThis) {
 async function boot() {
   const container = document.getElementById("app");
   const context = { settings: loadSettings(), t: createStrings() };
+  // The scenery preset writes its switches for this machine before any screen reads them.
+  applyGraphics(context.settings, graphicsHardware());
   const router = new Router(container, context, screens);
   context.router = router;
 
