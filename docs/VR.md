@@ -539,8 +539,10 @@ eye see further than the weather does, and the flat screen is not touched. On Sc
 heaviest stock track, from the start line and both eyes together: about 690 thousand triangles
 at Full, 410 thousand at Medium, 320 thousand at Short.
 
-The enhanced look's shadows are four cascades drawn besides; on a standalone headset the classic
-look (the default) is the one to use. Sharpness and Edge detail trade picture for speed too.
+The enhanced look's shadows are four cascades drawn besides, and with Natural light
+(`VISUALS.md`, "Light") the ground is drawn into them too; on a standalone headset the classic
+look (the default) is the one to use. Of the port's newer scenery a headset takes the ground's
+grain from above only and has no lens and no anti-aliasing pass (`VISUALS.md`, "Cost"). Sharpness and Edge detail trade picture for speed too.
 
 ## Not done, not known
 

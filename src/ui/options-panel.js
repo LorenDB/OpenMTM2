@@ -8,6 +8,10 @@ import { locName } from "../game/strings.js";
 import { ACTIONS, DEFAULT_BINDINGS, codeLabel, conflictFor, mergeBindings } from "../game/input/bindings.js";
 import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS, vrSettings } from "../game/vr/settings.js";
 import { VOICE_COMMENTARY_ENABLED } from "../audio/commentary-audio.js";
+import { AA_HINT, AA_MODES, aaChoice } from "../game/aa.js";
+import { GRAPHICS_HINT, GRAPHICS_NOTES, GRAPHICS_PRESETS, applyGraphics, detectGraphics, graphicsChoice, graphicsLabel } from "../game/graphics.js";
+import { graphicsHardware } from "../app/graphics-hardware.js";
+import { VISUAL_OPTIONS } from "../game/visuals.js";
 
 /*
   The controls edit a draft. Apply puts it to use at once (this session), Save also stores it, and Close asks whether to
@@ -145,6 +149,21 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       }), " Start without the server"),
     offlineLine) : "";
 
+  // The port's own scenery (docs/VISUALS.md). A preset sets every part; Custom is the one that shows each switch.
+  const sceneryNote = el("p", { class: "muted" });
+  const scenerySwitches = el("div", { class: "opt-switches" });
+  const hardware = graphicsHardware();
+  const detected = detectGraphics(hardware);
+  const showScenery = () => {
+    const choice = graphicsChoice(settings.graphics);
+    scenerySwitches.replaceChildren(...(choice === "custom"
+      ? VISUAL_OPTIONS.map((option) => toggle(option.label, option.key, option.hint))
+      : []));
+    const machine = choice === "auto" ? ` This machine: ${graphicsLabel(detected)}.` : "";
+    sceneryNote.textContent = `${GRAPHICS_NOTES[choice]}${machine} Takes effect from the next race.`;
+  };
+  showScenery();
+
   const locFiles = await context.assets.call("locFiles").catch(() => []);
   const wording = row("Localization", el("select", { "aria-label": "Wording" },
     el("option", { value: "", selected: !settings.wording }, "Standard"),
@@ -188,6 +207,10 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ]],
     ["Display", [
       choose("Look", "look", ["Classic", "Enhanced"], ["classic", "enhanced"]), choose("Detail", "detailLevel", ["Low", "Medium", "High"]),
+      row("Anti-aliasing", el("select", {
+        "aria-label": "Anti-aliasing", title: AA_HINT,
+        onchange: (event) => { settings.aa = event.target.value; save(); },
+      }, ...AA_MODES.map((mode) => el("option", { value: mode.id, selected: mode.id === aaChoice(settings.aa) }, mode.label))), AA_HINT),
       // In terrain cells (32 ft each), as the game counts its view; 128 is the standard.
       slider("Draw distance", { min: 16, max: 256, step: 16, value: Math.min(256, settings.drawCells ?? 128), format: (v) => `${v} cells`, set: (v) => { settings.drawCells = v; save(); } }),
       toggle("V-sync", "vsync", "Draw with the display's refresh. Off draws as fast as the browser allows; a browser still shows no more frames than the display has"),
@@ -196,12 +219,27 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         el("select", { "aria-label": "Frame rate limit value", onchange: (event) => { settings.fpsLimitValue = Number(event.target.value); save(); } },
           ...[24, 30, 45, 60, 75, 90, 120, 144, 240].map((n) => el("option", { value: n, selected: n === (settings.fpsLimitValue ?? 60) }, `${n} FPS`)))),
       "Hold the race to this many frames a second"),
+      toggle("FPS counter", "fpsCounter", "Show the frames per second in the corner of a race or replay (the FPS counter key switches it)"),
       toggle("Backdrops", "backdrops"),
       toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1 tracks: the track's own flat sky (EARTHSKY) in place of MTM2's"),
       toggle("MTM1 terrain overlap", "mtm1TerrainOverlap", "Monster Truck Madness 1 tracks: overlap the ground tiles by two pixels, as MTM2 does"),
       toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
       toggle("CP3 Reflections", "reflections", "Community Patch 3 materials: the sky reflected in glass and paint (Enhanced look)"),
       menus, wording, offlineRow,
+    ]],
+    // The port's own scenery (docs/VISUALS.md): one preset, and on Custom each part on its own switch.
+    ["Scenery", [
+      row("Enhanced graphics", el("select", {
+        "aria-label": "Enhanced graphics", title: GRAPHICS_HINT,
+        onchange: (event) => {
+          settings.graphics = graphicsChoice(event.target.value);
+          applyGraphics(settings, hardware);
+          showScenery();
+          save();
+        },
+      }, ...GRAPHICS_PRESETS.map((preset) => el("option", { value: preset.id, selected: preset.id === graphicsChoice(settings.graphics) }, preset.label))), GRAPHICS_HINT),
+      scenerySwitches,
+      sceneryNote,
     ]],
     ["Headset", [headset]],
     ["Effects", [

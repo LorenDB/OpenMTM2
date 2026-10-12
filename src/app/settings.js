@@ -6,6 +6,10 @@
   lives in OPFS instead, through the workers.
 */
 
+import { AA_MODES } from "../game/aa.js";
+import { GRAPHICS_PRESETS } from "../game/graphics.js";
+import { VISUAL_OPTIONS } from "../game/visuals.js";
+
 const KEY = "openmtm2.settings";
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -34,10 +38,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   mtm1EarthSky: true,         // MTM1 tracks: their own flat sky (EARTHSKY and the like) in place of MTM2's dome
   mtm1TerrainOverlap: false,  // MTM1 tracks: MTM2's two-pixel overlap of the ground tiles
   vsync: true,                // draw with the display's refresh; off draws as fast as the browser allows
+  aa: "msaa",                 // anti-aliasing (game/aa.js): off, msaa, fxaa, smaa or taa. The next race takes it up
   fpsLimit: false,            // hold the frame rate to `fpsLimitValue`
   fpsLimitValue: 60,
   opponentFps: 30,            // the frame rate the computer trucks drive as if the game ran at (the 1998 game's is about 30)
   timingHud: true,            // the times, laps and place in the corner (the Timing display key, O, switches them in every view)
+  fpsCounter: false,          // the frames per second in the corner (the FPS counter key switches it)
   shortViewCycle: false,      // the Camera key steps through the cockpit, Chase Near and Chase Far only
   zModeCameras: false,        // Z mode's zoom and cameras in any race, without GOLD or slew mode, and the Inertia view
   fullAutopilot: false,       // the game's "Full Autopilot": the player's truck drives itself
@@ -48,10 +54,22 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sonicTrucks: false,         // Professional only: the computer trucks drive as on a Sonic track, whatever the SIT's fly-by line says
   defaultOpponents: 3,        // computer trucks in a race until the player picks their own (MONSTER.INI defaultOpponents)
   drawCells: 128,             // terrain cells (32 ft each): how far the world is drawn (the camera's far plane and the fog)
-  backdrops: false,           // the SIT's backdrop models behind the world (off by default)
+  backdrops: true,            // the SIT's backdrop models behind the world
   terrainDetail: true,        // Community Patch 3: the terrain's detail normals where a track paints a mask, and HD tiles' normal maps
   reflections: true,          // Community Patch 3: the sky reflected in materials that ask for it (glass, paint)
   showHiddenTracks: true,     // the two hidden tracks are listed unless this is turned off
+  graphics: "auto",           // the scenery preset (game/graphics.js): auto, off, low, high, max or custom. Auto picks for this machine
+  terrainSmoothing: true,     // the ground's facets rounded and cliffs given relief (game/terrain-relief.js; docs/VISUALS.md)
+  enhancedWater: true,        // water with waves, reflections and a shore, and solid ice in Snow (render/water-surface.js)
+  volumetricWeather: true,    // fog in drifting layers, rain and snow falling through the air (render/atmosphere.js, precipitation.js)
+  rainPuddles: true,          // wet ground and standing water in Rain (game/ground-maps.js)
+  snowCover: true,            // snow settling on the ground in Snow (render/ground-surface.js)
+  groundDetail: true,         // grain over the ground's textures, which are filtered for the distance (render/ground-detail.js)
+  naturalLight: true,         // the sun's colour, sky and ground light, terrain shadows and the tone curve (render/light-rig.js)
+  glossyPaint: true,          // trucks mirror the sky and glint in the sun (render/gloss.js)
+  lensEffects: true,          // bright lights glow, on the flat screen (render/lens.js)
+  truckLamps: true,           // lamps that glow in their own colour, beams as light in the air, tail lamps that brake bright (render/truck-object.js, light-beam.js)
+  richParticles: true,        // dust, spray, snow and sparks that are lit and fogged, and tracks pressed into the ground (render/particles.js, tire-tracks.js)
   vr: Object.freeze({}),      // the headset's preferences, see game/vr/settings.js (docs/VR.md)
   offline: true,              // keep a copy of the app in the browser, to start without a server (app/offline.js)
 });
@@ -67,8 +85,19 @@ export function loadSettings() {
     if (!(stored.version >= 4)) stored.skin = "auto";
     // Version 5 counts the draw distance in terrain cells, 128 the standard; the feet saved before are dropped.
     if (!(stored.version >= 5)) delete stored.drawDistance;
-    stored.version = 5;
+    // Version 6 drew the track backdrops by default, once the haze could stand in front of them.
+    if (!(stored.version >= 6)) stored.backdrops = true;
+    // Version 7 sets the scenery from a preset. A save that had turned a part off keeps that
+    // mix as Custom. One that had not was the default, every part on, so it follows Auto.
+    if (!(stored.version >= 7) && !GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) {
+      if (VISUAL_OPTIONS.some((option) => stored[option.key] === false)) stored.graphics = "custom";
+      else delete stored.graphics;
+    }
+    stored.version = 7;
     delete stored.showHiddenTrucks;
+    // A value that is not one of the choices draws the default.
+    if (!AA_MODES.some((mode) => mode.id === stored.aa)) delete stored.aa;
+    if (!GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) delete stored.graphics;
     return { ...DEFAULT_SETTINGS, ...stored };
   } catch {
     return { ...DEFAULT_SETTINGS };

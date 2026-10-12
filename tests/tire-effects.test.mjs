@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dustPuffs, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, trackOpacity } from "../src/game/tire-effects.js";
+import {
+  SPARK_HIT_SPEED, SPARK_MIN_SPEED, TRACK_FADE_PIECES, TRACK_FADE_SHARE, TRACK_LEDGE_FT, TRACK_LONGEST_FT, TRACK_ORDER, TRACK_POOL, TRACK_PRESS_SAME, TRACK_STEP_FT, TRACK_TRUE_FT,
+  dustPuffs, edgeHolds, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, trackLevel, trackShown,
+} from "../src/game/tire-effects.js";
+
+const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) < e, `${a} is not ${b}`);
 
 test("a puff lives 1.5 to 3.5 s, starts 1.5 to 2.5 ft across and runs through twelve frames", () => {
   assert.equal(puffLife(0), 1.5);
@@ -35,11 +40,59 @@ test("which surfaces raise dust and keep a tread", () => {
   assert.equal(keepsTread("gravel", 7), true);
 });
 
-test("tracks fade over their last 25 s", () => {
-  assert.equal(trackOpacity(0), 1);
-  assert.equal(trackOpacity(45), 1);
-  assert.ok(Math.abs(trackOpacity(57.5) - 0.5) < 1e-9);
-  assert.equal(trackOpacity(70), 0);
+test("a track lasts until the ring of 65536 pieces comes round to it, fading over its oldest eighth: no clock wipes it", () => {
+  assert.equal(TRACK_POOL, 65536);
+  assert.equal(TRACK_FADE_SHARE, 0.125);
+  assert.equal(TRACK_FADE_PIECES, 8192);
+  assert.equal(trackShown(0), 1, "the newest");
+  assert.equal(trackShown(TRACK_POOL - 1 - TRACK_FADE_PIECES), 1, "whole until the oldest eighth");
+  near(trackShown(TRACK_POOL - 1 - TRACK_FADE_PIECES / 2), 0.5);
+  assert.equal(trackShown(TRACK_POOL - 1), 0, "the piece whose place is taken next shows nothing");
+  // It fades evenly, never coming back.
+  let last = 1;
+  for (let behind = TRACK_POOL - 1 - TRACK_FADE_PIECES; behind < TRACK_POOL; behind += 512) {
+    assert.ok(trackShown(behind) <= last, `at ${behind}`);
+    last = trackShown(behind);
+  }
+});
+
+test("tracks are drawn after the water, whose ice a rut can lie on, and before the shade under a truck and what is thrown", () => {
+  // The water is drawn at three.js's render order 0, the contact shade at 1, dust, sparks and drops at 3.
+  assert.ok(TRACK_ORDER > 0 && TRACK_ORDER < 1);
+});
+
+test("a tire running straight over even ground draws on the piece it is laying, up to 15 ft, instead of beginning another", () => {
+  assert.equal(TRACK_LONGEST_FT, 15);
+  assert.ok(TRACK_LONGEST_FT > TRACK_STEP_FT * 4);
+  assert.equal(TRACK_TRUE_FT, 0.03);
+  assert.equal(TRACK_PRESS_SAME, 0.05);
+  // Two points across a track running along z, [x, height, z, snow depth] each.
+  const edge = (x, z, y = 0, deep = 0, lean = 0) => [[x - 1, y, z, deep], [x + 1, y + lean, z, deep]];
+  // Straight and level: the place passed lies on the longer piece.
+  assert.ok(edgeHolds(edge(0, 0), edge(0, 12), edge(0, 6)));
+  // So it does up an even slope, and with the ground leaning across it, and in snow that deepens evenly.
+  assert.ok(edgeHolds(edge(0, 0, 0), edge(0, 12, 1.2), edge(0, 6, 0.6)));
+  assert.ok(edgeHolds(edge(0, 0, 0, 0, 0.3), edge(0, 12, 0, 0, 0.3), edge(0, 6, 0, 0, 0.3)));
+  assert.ok(edgeHolds(edge(0, 0, 0, 0.2), edge(0, 12, 0, 0.6), edge(0, 6, 0, 0.4)));
+  // A bend, a bump, a hollow, or snow that does not deepen evenly: a new piece.
+  assert.equal(edgeHolds(edge(0, 0), edge(0, 12), edge(0.1, 6)), false);
+  assert.equal(edgeHolds(edge(0, 0), edge(0, 12), edge(0, 6, 0.05)), false);
+  assert.equal(edgeHolds(edge(0, 0), edge(0, 12), edge(0, 6, -0.05)), false);
+  assert.equal(edgeHolds(edge(0, 0, 0, 0.2), edge(0, 12, 0, 0.2), edge(0, 6, 0, 0.3)), false);
+  // Within a hair of the line it holds.
+  assert.ok(edgeHolds(edge(0, 0), edge(0, 12), edge(0.02, 6, 0.02)));
+  // A piece with no length holds nothing.
+  assert.equal(edgeHolds(edge(0, 0), edge(0, 0), edge(0, 0)), false);
+});
+
+test("a track never hangs off a bridge's deck or bridges a ledge: every point within 2 ft of the ground under the tire", () => {
+  assert.equal(TRACK_LEDGE_FT, 2);
+  // Across a slope, or on the deck: laid.
+  assert.ok(trackLevel([[0, 101.2, 0], [2.7, 98.8, 0]], 100));
+  assert.ok(trackLevel([[0, 110, 0], [2.7, 110, 0]], 110));
+  // One edge off the deck, down in the gully under it: not.
+  assert.equal(trackLevel([[0, 110, 0], [2.7, 72, 0]], 110), false);
+  assert.equal(trackLevel([[0, 102.5, 0], [2.7, 100, 0]], 100), false);
 });
 
 test("sparks: two every eighth of a second of scraping at speed, none when slow, more for a harder hit", () => {
@@ -50,4 +103,17 @@ test("sparks: two every eighth of a second of scraping at speed, none when slow,
   assert.deepEqual(scrapeSparks(0.1, 0.5, 2), { timer: 0, sparks: 0 });
   assert.equal(sparksForHit(300), 0);
   assert.ok(sparksForHit(3000) > sparksForHit(700));
+});
+
+test("steel strikes sparks only at a fair speed: leaning on a wall or creeping after a crash throws none", () => {
+  // A scrape needs 12 ft/s of slide (about 8 mph); a hit 9 ft/s as well as its force.
+  assert.equal(SPARK_MIN_SPEED, 12);
+  assert.equal(SPARK_HIT_SPEED, 9);
+  assert.equal(scrapeSparks(0.1, 0.5, 11).sparks, 0);
+  assert.ok(scrapeSparks(0.1, 0.5, 13).sparks > 0);
+  assert.equal(sparksForHit(5000, 8), 0, "pressed hard against a wall, barely moving");
+  // The slower the hit, the fewer; from 30 ft/s on, all there are.
+  assert.ok(sparksForHit(3000, 10) < sparksForHit(3000, 20) && sparksForHit(3000, 20) < sparksForHit(3000, 30));
+  assert.equal(sparksForHit(3000, 30), sparksForHit(3000));
+  assert.equal(sparksForHit(1e6), 28);
 });

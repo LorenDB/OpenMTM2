@@ -27,6 +27,10 @@ import { NO_CALIBRATION, calibrate } from "../../game/vr/pose.js";
 import { vrSettings } from "../../game/vr/settings.js";
 import { createIdleStage } from "./idle-stage.js";
 import { createVrMenu } from "./vr-panel.js";
+import { installAtmosphere } from "../atmosphere.js";
+
+// Before this renderer compiles its first material: the fog's shader chunks (render/atmosphere.js).
+installAtmosphere();
 
 /** The eyes' near and far planes, metres: 10 cm, and the flat camera's 20000 ft. */
 const NEAR_M = 0.1, FAR_M = 20000 / FEET_PER_METRE;

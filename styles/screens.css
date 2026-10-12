@@ -84,6 +84,11 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 .drag-lamp { width: 13px; height: 13px; border-radius: 50%; background: #262626; border: 1px solid #000; box-shadow: inset 0 0 2px #000; }
 .drag-lamp.lit { background: var(--lit); box-shadow: 0 0 8px var(--lit); }
 .race-hud { position: absolute; z-index: 3; top: 4px; left: 6px; color: #fff; font: 600 15px/1.35 ui-monospace, monospace; image-rendering: pixelated; }
+/* The toggleable FPS counter: a small readout in the top right, below the drag tree. */
+.fps-counter { position: absolute; z-index: 3; top: 8px; right: 10px; padding: 4px 8px; background: rgba(0, 0, 0, 0.55); border: 1px solid #555; color: #cfcfcf; font: 600 12px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.fps-counter[hidden] { display: none; }
+/* On a drag strip the Christmas tree sits in the top right, so the counter drops below it. */
+.drag-tree:not([hidden]) ~ .fps-counter { top: 84px; }
 .race-gauges { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; pointer-events: none; }
 .race-pause { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0, 0, 0, 0.55); }
 .race-pause[hidden], .race-loading[hidden] { display: none; }
@@ -279,7 +284,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .opt-switch { width: 18px; height: 18px; }
 .opt-fixed { color: var(--muted, #aab); }
 .opt-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
-.opt-page > .muted, .opt-page > .bindings { grid-column: 1 / -1; }
+.opt-page > .muted, .opt-page > .bindings, .opt-page > .opt-switches { grid-column: 1 / -1; }
+.opt-page > .opt-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
+.opt-page > .opt-switches:empty { display: none; }
 .opt-page > .bindings { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
 .opt-page > .bindings .form-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; height: 36px; margin: 0; padding: 0 10px; border: 1px solid var(--panel-edge); border-radius: 6px; }
 /* On the modern stage the controls that sit in the art's openings have no box of their own either. */

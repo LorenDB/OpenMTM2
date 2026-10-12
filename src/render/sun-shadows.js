@@ -48,6 +48,7 @@
 
 import * as THREE from "three";
 import { CSM } from "three/addons/csm/CSM.js";
+import { SHADOW_CASCADE_ENDS_FT, SHADOW_FAR_FT } from "../game/lighting.js";
 
 const CASCADES = 4;
 const MAP_SIZE = 2048;
@@ -67,7 +68,8 @@ const isLit = (material) => material && (material.isMeshLambertMaterial || mater
   || material.isMeshStandardMaterial || material.isMeshToonMaterial);
 
 export class SunShadows {
-  constructor({ scene, camera, color, intensity = 1, maxFar = 10240 }) {
+  /** `cascadeEnds` is where the first three cascades end, feet from the eye; the last runs on to `maxFar`. */
+  constructor({ scene, camera, color, intensity = 1, maxFar = 10240, cascadeEnds = CASCADE_ENDS }) {
     this._scene = scene;
     this._camera = camera;
     this._seen = new WeakSet();
@@ -80,7 +82,7 @@ export class SunShadows {
       customSplitsCallback: (amount, near, far, target) => {
         for (let i = 1; i < amount; i++) {
           // Fixed distances, squeezed evenly if the view distance is shorter than they are.
-          const end = CASCADE_ENDS[i - 1] ?? far;
+          const end = cascadeEnds[i - 1] ?? far;
           target.push(Math.min(end / far, i / amount));
         }
         target.push(1);
@@ -136,10 +138,27 @@ export class SunShadows {
     for (const light of this._csm.lights) light.color.set(color);
   }
 
+  /** How dark the shadows are, 0 (none) to 1: an overcast sky's are faint. */
+  setStrength(value) {
+    for (const light of this._csm.lights) light.shadow.intensity = value;
+  }
+
   /** The direction the sunlight travels, as the scene's own sun uses it. */
   setDirection(direction) {
     this._csm.lightDirection.copy(direction).normalize();
     this.invalidate();
+  }
+
+  /**
+   * Take the scene's sun as it stands now: its strength, its colour and where it is, and
+   * `strength`, how dark its shadows are. The weather changes all four (render/light-rig.js).
+   */
+  follow(sun, strength = 1) {
+    this.setIntensity(sun.intensity);
+    this.setColor(sun.color);
+    this.setStrength(strength);
+    _center.copy(sun.position).normalize().negate();
+    if (_center.distanceToSquared(this._csm.lightDirection) > 1e-8) this.setDirection(_center);
   }
 
   /** After the camera's aspect or far plane changes: the cascades are cut from its frustum. */
@@ -172,6 +191,9 @@ export class SunShadows {
 
   _setup(material) {
     const own = Object.prototype.hasOwnProperty.call(material, "onBeforeCompile") ? material.onBeforeCompile : null;
+    // What tells this material's own shader from another's: the key it gives itself, or else its hook's text. Two
+    // materials may share a hook's text and differ in what the hook was made with (render/ground-surface.js).
+    const ownKey = own ? material.customProgramCacheKey() : "";
     this._csm.setupMaterial(material);
     if (!own) return;
     const csmHook = material.onBeforeCompile;
@@ -179,7 +201,7 @@ export class SunShadows {
       own.call(material, shader, renderer);
       csmHook.call(material, shader, renderer);
     };
-    const key = `${own.toString()}|${csmHook.toString()}`;
+    const key = `${ownKey}|${csmHook.toString()}`;
     material.customProgramCacheKey = () => key;
     material.needsUpdate = true;
   }
@@ -257,3 +279,69 @@ const _inverse = new THREE.Matrix4();
 const _center = new THREE.Vector3();
 const _zero = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Turn on the sun's shadows for a track being drawn: the cascades replace the plain sun light,
+ * the world's models and the trucks cast, and everything lit receives. `trucks` are the trucks'
+ * root objects. Only the middle copy of the wrapped world's models casts.
+ *
+ * With `natural` ("Natural light", docs/VISUALS.md) the ground casts as well, in every copy of
+ * the world, so a cliff shades the canyon under it, and the cascades are drawn in closer, so a
+ * truck's shadow is sharp.
+ */
+export function enableSunShadows({ renderer, scene, camera, world, sun, trucks = [], natural = false }) {
+  renderer.shadowMap.enabled = true;
+  // Soft-edged shadows (PCFSoft), as JSTrackViewer's scene draws them with its cascades.
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.autoUpdate = true;
+  const tile = world.getObjectByName("tile");
+  world.traverse((o) => {
+    if (!o.isMesh || o.name === "sky") return;
+    o.receiveShadow = true;
+    // The ground is one sheet with nothing under it, and is drawn into the shadow map from behind (three.js's way with a
+    // one-sided surface): the slopes turned from the sun cast, and a slope in the sun never shades itself.
+    if (natural && o.name === "terrain") o.castShadow = true;
+  });
+  // Solid things cast, ground boxes among them; water does not, nor does CART Precision Racing's road surface (it would
+  // shade itself and the ground it lies on; its walls do), nor do blended (see-through) surfaces. A caster
+  // is drawn into the shadow map on the same side it is drawn on, which keeps thin walls from leaking light.
+  const casts = (o) => {
+    const m = o.material;
+    if (!m || (m.transparent && !(m.alphaTest > 0))) return false;
+    m.shadowSide = m.side;
+    return true;
+  };
+  tile?.traverse((o) => {
+    if (o.isMesh && o.name !== "terrain" && o.name !== "water" && o.name !== "road" && casts(o)) o.castShadow = true;
+  });
+  // A truck's lamps are light, not things: a beam drawn in the air casts no shadow.
+  for (const truck of trucks) truck.traverse((o) => { if (o.isMesh && o.parent?.name !== "lamps") { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
+  // The placed models are instanced over every copy; only the original's instances cast (track-scene.js).
+  world.getObjectByName("objects")?.traverse((o) => { if (o.isInstancedMesh) o.castShadow = true; });
+  // A facing object (type 8 and 9 billboards) turns to the camera, which would swing its shadow around with the
+  // view. Its shadow comes from an invisible copy held square to the sun instead (updateTrackWorld keeps it there).
+  world.userData.shadowFacing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(sun.position.x, sun.position.z));
+  tile?.traverse((group) => {
+    if (group.name !== "placedObject" || !group.userData.billboard) return;
+    for (const mesh of [...group.children]) {
+      if (!mesh.isMesh) continue;
+      mesh.castShadow = false;
+      const source = mesh.material;
+      const proxy = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({
+        map: source.map ?? null, alphaTest: source.alphaTest ?? 0, transparent: !!source.transparent,
+        side: THREE.DoubleSide, colorWrite: false, depthWrite: false,
+      }));
+      proxy.castShadow = true;
+      proxy.userData.shadowProxy = true;
+      group.add(proxy);
+    }
+  });
+  const shadows = new SunShadows({
+    scene, camera, color: sun.color, intensity: sun.intensity,
+    ...(natural ? { maxFar: SHADOW_FAR_FT, cascadeEnds: SHADOW_CASCADE_ENDS_FT } : { maxFar: 10240 }),
+  });
+  shadows.setDirection(sun.position.clone().negate());
+  shadows.setEnabled(true);
+  sun.visible = false;
+  return shadows;
+}

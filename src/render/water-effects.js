@@ -10,7 +10,8 @@
     life, gravity of 32 ft/s squared, moving about as fast as the truck). A blob that falls back
     to the water leaves a `SPLATRIP` ripple (0x560740, 0x5609c0). The port gives the blobs an upward
     kick and the ripples a short life that widens and fades: the game's constants for both are not
-    all read.
+    all read. In Snow the water is ice, which the game does not count as water (MTM2_PHYSICS.md
+    2.3): nothing there throws blobs, and no ripple spreads on it.
 */
 import * as THREE from "three";
 import { iceMosaic } from "../game/sheets.js";
@@ -25,13 +26,19 @@ const WHEELS = [[3.5, 6], [-3.5, 6], [3.5, -6], [-3.5, -6]];
 /** The ice's opacity after `seconds` of Snow. */
 export const iceOpacity = (seconds) => Math.min(ICE_MAX, ICE_START + Math.max(0, seconds / ICE_FULL_SECONDS) * ICE_MAX);
 
-export function createWaterEffects({ scene, art, levelFt, ground, random = Math.random }) {
+/**
+ * `legacyIce` false leaves out the game's ice overlay: the port's own water freezes by itself (render/water-surface.js).
+ * `blobs` false leaves the blobs undrawn: with "Rich particles" the spray is drops of the port's own
+ * (render/tire-effects.js). `rings` false leaves out the ripples: the port's own water, and the port's own particles,
+ * stir rings in the water itself (render/water-ripples.js). With neither, nothing is thrown.
+ */
+export function createWaterEffects({ scene, art, levelFt, ground, random = Math.random, legacyIce = true, blobs: showBlobs = true, rings: showRings = true }) {
   const root = new THREE.Group();
   root.name = "waterEffects";
   scene.add(root);
 
   let ice = null;
-  if (art?.ice?.every(Boolean) && levelFt !== null && levelFt !== undefined) {
+  if (legacyIce && art?.ice?.every(Boolean) && levelFt !== null && levelFt !== undefined) {
     const mosaic = iceMosaic(art.ice);
     const texture = new THREE.DataTexture(new Uint8Array(mosaic.rgba), mosaic.width, mosaic.height, THREE.RGBAFormat);
     texture.flipY = false;
@@ -49,9 +56,9 @@ export function createWaterEffects({ scene, art, levelFt, ground, random = Math.
     root.add(ice);
   }
 
-  const blobs = art?.blob ? createBillboards({ sheet: art.blob, grid: [1, 1], capacity: BLOBS }) : null;
-  const ripples = art?.ripple ? createBillboards({ sheet: art.ripple, grid: [1, 1], capacity: RIPPLES, flat: true }) : null;
-  if (blobs) root.add(blobs.object);
+  const blobs = art?.blob && (showBlobs || showRings) ? createBillboards({ sheet: art.blob, grid: [1, 1], capacity: BLOBS }) : null;
+  const ripples = art?.ripple && showRings ? createBillboards({ sheet: art.ripple, grid: [1, 1], capacity: RIPPLES, flat: true }) : null;
+  if (blobs) { blobs.object.visible = showBlobs; root.add(blobs.object); }
   if (ripples) root.add(ripples.object);
 
   const spray = [];
@@ -60,12 +67,12 @@ export function createWaterEffects({ scene, art, levelFt, ground, random = Math.
   let iceSeconds = 0, clock = 0, wheel = 0;
   const lastSpawn = new Map();
 
-  function spawn(index, truck, level, rain) {
+  function spawn(index, truck, level, rain, frozen) {
     const [right, forward] = WHEELS[wheel++ % 4];
     const s = Math.sin(truck.yaw), c = Math.cos(truck.yaw);
     const x = truck.pos[0] + right * c + forward * s, z = truck.pos[2] - right * s + forward * c;
     const bed = ground(x, z);
-    const inWater = level !== null && bed < level;
+    const inWater = level !== null && bed < level && !frozen;
     if (!inWater && !rain) return;
     if (truck.pos[1] - bed > 8) return;
     const speed = Math.hypot(truck.vel[0], truck.vel[2]);
@@ -99,7 +106,7 @@ export function createWaterEffects({ scene, art, levelFt, ground, random = Math.
         if (Math.hypot(truck.vel[0], truck.vel[2]) < MIN_SPEED) return;
         if (Math.hypot(truck.pos[0] - camera[0], truck.pos[2] - camera[2]) > NEAR_FT) return;
         const due = (lastSpawn.get(i) ?? 0) + dt;
-        if (due >= SPAWN_EVERY) { lastSpawn.set(i, due - SPAWN_EVERY); spawn(i, truck, level, weather === 4); } else lastSpawn.set(i, due);
+        if (due >= SPAWN_EVERY) { lastSpawn.set(i, due - SPAWN_EVERY); spawn(i, truck, level, weather === 4, snowing); } else lastSpawn.set(i, due);
       });
       // Blobs fly; one that falls to the water leaves a ripple.
       for (let n = spray.length - 1; n >= 0; n--) {
@@ -109,13 +116,14 @@ export function createWaterEffects({ scene, art, levelFt, ground, random = Math.
         p.life -= dt;
         const floor = p.water && level !== null ? level : ground(p.x, p.z);
         if (p.vy < 0 && p.y < floor) {
-          if (p.water && rings.length < RIPPLES) rings.push({ x: p.x, y: floor, z: p.z, age: 0 });
+          if (p.water && ripples && rings.length < RIPPLES) rings.push({ x: p.x, y: floor, z: p.z, age: 0 });
           p.life = 0;
         }
         if (p.life <= 0) spray.splice(n, 1);
       }
       spray.forEach((p, i) => blobs.set(i, p.x, p.y, -p.z, 1.4 + (BLOB_LIFE - p.life) * 0.7, 1.4 + (BLOB_LIFE - p.life) * 0.7, 0, 0.55 * Math.min(1, p.life)));
       blobs.commit(spray.length);
+      if (!ripples) return;
       for (let n = rings.length - 1; n >= 0; n--) { rings[n].age += dt; if (rings[n].age >= RIPPLE_LIFE) rings.splice(n, 1); }
       rings.forEach((r, i) => {
         const k = r.age / RIPPLE_LIFE, size = 2 + 5 * k;
@@ -138,10 +146,13 @@ export function cropWaterFrame({ width, rgba }) {
 /**
  * The water plane drawn as the game draws it (0x5043e0): the eight `RIPPL` frames in their
  * ping-pong order, one copy of the texture for each 32 ft cell, with the weather's translucency
- * and lit by the scene. The plane is seen from both sides. `water` is the track's water mesh.
+ * and lit by the scene. The plane is seen from both sides. `water` is the track's water mesh, or
+ * every one of them: each copy of the world has its own (render/track-scene.js), and all take the
+ * surface.
  */
 export function createWaterSurface(water, art, look = "enhanced") {
-  if (!water || !art?.water?.every(Boolean)) return null;
+  const meshes = [water].flat().filter(Boolean);
+  if (!meshes.length || !art?.water?.every(Boolean)) return null;
   const frames = art.water.map((image) => {
     const frame = cropWaterFrame(image);
     const texture = new THREE.DataTexture(frame.rgba, frame.width, frame.height, THREE.RGBAFormat);
@@ -154,9 +165,8 @@ export function createWaterSurface(water, art, look = "enhanced") {
     return texture;
   });
   const material = new THREE.MeshLambertMaterial({ map: frames[0], transparent: true, opacity: 0.75, depthWrite: false, side: THREE.DoubleSide });
-  water.material.dispose();
-  // Every copy of the water: the world is drawn nine times over (render/track-scene.js), each with its own water mesh.
-  (water.parent?.parent ?? water).traverse((o) => { if (o.name === "water") o.material = material; });
+  for (const old of new Set(meshes.map((mesh) => mesh.material))) old.dispose();
+  for (const mesh of meshes) mesh.material = material;
   let clock = 0;
   return {
     update(dt, weather) {

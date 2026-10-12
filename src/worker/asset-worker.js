@@ -114,8 +114,8 @@ const handlers = {
 
   /** Everything needed to draw a track; `{ path }` is its SIT, e.g. "WORLD\\TPARK.SIT". */
   /** `scope` is the track's lookup family (the catalogue's `scope`), for a track of another game than MTM. */
-  async trackRender({ path, scope, detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap }) {
-    const build = await buildTrackRender(scoped(await mounted(), scope), path, { detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap });
+  async trackRender({ path, scope, detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals }) {
+    const build = await buildTrackRender(scoped(await mounted(), scope), path, { detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals });
     return withTransfer(build, transferablesOf(build));
   },
 

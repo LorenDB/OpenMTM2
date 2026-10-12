@@ -9,6 +9,10 @@
     .LTE's baked ground brightness; textures are point-sampled.
   - "enhanced": the same art, lit by the level's sun with smooth normals and filtered textures.
 
+  The ground is the game's own two triangles a cell, or with "Smooth terrain" the drawn ground
+  (game/terrain-relief.js, cut by worker/relief-mesh.js), which comes at two levels of detail:
+  the chunks near the camera are drawn fine and the rest coarse.
+
   What it costs to draw. The world wraps, so it is drawn nine times over (the original and its
   eight neighbours), and a headset draws everything twice. Three things keep that affordable:
   - the terrain is cut into chunks, each its own mesh, so what lies outside the view is skipped
@@ -20,9 +24,19 @@
 */
 import * as THREE from "three";
 import { WORLD_FT } from "../shared/scene-frame.js";
+import { bleedCutout } from "../game/cutouts.js";
+import { installAtmosphere, screenColor, veilBackdropShader, veilSky } from "./atmosphere.js";
+
+// The fog every material here is built with (render/atmosphere.js): three.js's own until "Volumetric weather" turns it on.
+installAtmosphere();
 
 /** The terrain grid: cells per side, feet per cell, and a chunk's side in cells. */
 const GRID = 256, CELL_FT = 32, CHUNK_CELLS = 64;
+/**
+ * How near the camera a chunk of the drawn ground is drawn at its fine level, feet from the
+ * chunk's edge, and the play that keeps one at that range from changing back and forth.
+ */
+export const FINE_RANGE_FT = 2400, FINE_PLAY_FT = 160;
 /** Where the world is drawn, in worlds: the original first, then its eight neighbours. */
 const WORLD_COPIES = Object.freeze([[0, 0], [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]);
 /** What `updateTrackWorld` and `moveObjects` work on, per world, found once when it is made. */
@@ -248,10 +262,36 @@ export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.at
     if (terrain.detail?.mask) addTerrainDetail(material, terrain.detail, look);
   }
   if (terrain.roadMask) addRoadMask(material, terrain.roadMask);
-  const shared = meshGeometry(terrain);
   const group = new THREE.Group();
   group.name = "terrainChunks";
   const side = CHUNK_CELLS * CELL_FT;
+  if (terrain.relief) {
+    // The drawn ground: every chunk at both levels of detail, the fine one shown when the camera is near (updateTrackWorld).
+    for (const [detail, lod] of [["coarse", terrain.relief.coarse], ["fine", terrain.relief.fine]]) {
+      const attributes = {
+        position: new THREE.BufferAttribute(lod.positions, 3), normal: new THREE.BufferAttribute(lod.normals, 3, true),
+        uv: new THREE.BufferAttribute(lod.uvs, 2), color: new THREE.BufferAttribute(lod.colors, 3, true),
+        // In a race in Snow: how deep the snow lies on each vertex once settled (render/ground-surface.js lifts the ground by it).
+        ...(lod.snow ? { snowDepth: new THREE.BufferAttribute(lod.snow, 1, true) } : {}),
+      };
+      for (const chunk of lod.chunks) {
+        const geometry = new THREE.BufferGeometry();
+        for (const [name, attribute] of Object.entries(attributes)) geometry.setAttribute(name, attribute);
+        geometry.setIndex(new THREE.BufferAttribute(lod.indices.subarray(chunk.start, chunk.start + chunk.count), 1));
+        geometry.boundingSphere = new THREE.Sphere(
+          new THREE.Vector3((chunk.col + 0.5) * side, (chunk.low + chunk.high) / 2, -(chunk.row + 0.5) * side),
+          Math.hypot(side / 2, side / 2, (chunk.high - chunk.low) / 2));
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = "terrain";
+        mesh.userData.chunk = chunk.row * (GRID / CHUNK_CELLS) + chunk.col;
+        mesh.userData.detail = detail;
+        mesh.visible = detail === "coarse";
+        group.add(mesh);
+      }
+    }
+    return group;
+  }
+  const shared = meshGeometry(terrain);
   for (let chunkRow = 0; chunkRow < GRID / CHUNK_CELLS; chunkRow++) {
     for (let chunkCol = 0; chunkCol < GRID / CHUNK_CELLS; chunkCol++) {
       const indices = new Uint32Array(CHUNK_CELLS * CHUNK_CELLS * 6);
@@ -359,11 +399,25 @@ function modelMaterial(mesh, map, normalMap, aoMap = null, look = "enhanced") {
   return material;
 }
 
-/** One geometry and material set per model, shared by every object that uses it. */
-export function createModelLibrary(models, modelTextures, look) {
+/**
+ * One geometry and material set per model, shared by every object that uses it. `cleanEdges`
+ * ("Natural light", docs/VISUALS.md) rids cut-out pictures of their dark outline and draws their
+ * edges soft where the picture is antialiased.
+ */
+export function createModelLibrary(models, modelTextures, look, { cleanEdges = false } = {}) {
   const textures = new Map();
+  // The textures some face cuts out, known before any is made: their see-through texels take the picture's colour.
+  const cutouts = new Set();
+  if (cleanEdges) {
+    for (const model of Object.values(models)) {
+      for (const mesh of model?.meshes ?? []) if (mesh.textureName && (mesh.cutout || (mesh.material?.flags ?? 0) & 0x2008)) cutouts.add(mesh.textureName);
+    }
+  }
   const textureFor = (name) => {
-    if (!textures.has(name)) textures.set(name, modelTextures[name] ? dataTexture(modelTextures[name], look, true) : null);
+    if (!textures.has(name)) {
+      if (cutouts.has(name) && modelTextures[name]) bleedCutout(modelTextures[name]);
+      textures.set(name, modelTextures[name] ? dataTexture(modelTextures[name], look, true) : null);
+    }
     return textures.get(name);
   };
   // A texture's normal map and occlusion (Community Patch 3: `<stem>_N`, `<stem>_AO`), linear data rather than colour.
@@ -398,6 +452,8 @@ export function createModelLibrary(models, modelTextures, look) {
       if (cycleKey && !textures.has(cycleKey)) textures.set(cycleKey, cycleTexture(frames, look, true));
       const map = cycleKey ? textures.get(cycleKey) : mesh.textureName ? textureFor(mesh.textureName) : null;
       const material = modelMaterial(mesh, map, normalFor(mesh), normalFor(mesh, "_AO"), look);
+      // A cut-out's edge is spread over the samples of an antialiased picture instead of being a stair of whole pixels.
+      if (cleanEdges && material.alphaTest > 0) material.alphaToCoverage = true;
       material.userData.textureName = mesh.textureName?.toUpperCase() ?? null;
       return { geometry, material, frameCount: model.keyframes?.length ?? 0 };
     });
@@ -474,21 +530,29 @@ const FACING_PARS = facingPars("cameraPosition");
 */
 const VIEWER = { value: new THREE.Vector3() };
 const FACING_DEPTH_PARS = `uniform vec3 mtmViewer;\n${facingPars("mtmViewer")}`;
-const facingMaterials = new WeakMap(), facingDepthMaterials = new WeakMap();
+const facingMaterials = new WeakMap(), roundedMaterials = new WeakMap(), facingDepthMaterials = new WeakMap();
+/*
+  A camera-facing model is a flat card, and lit as one it brightens and darkens as the camera goes round it. `rounded`
+  ("Natural light") lights it as the round thing it pictures instead: its face leans up, toward the camera and outward
+  from its middle, so a tree has a sunny side and a crown lit from above, wherever it is seen from.
+*/
+const ROUNDED_NORMAL = "objectNormal = normalize( vec3( clamp( position.x * 0.09, - 0.75, 0.75 ), 0.6, 0.55 ) );";
 
-/** A model part's material, with its vertices turned to face the camera. One per source material. */
-function facingMaterial(material) {
-  if (!facingMaterials.has(material)) {
+/** A model part's material, with its vertices turned to face the camera. One per source material and way of lighting. */
+function facingMaterial(material, rounded = false) {
+  const made = rounded ? roundedMaterials : facingMaterials;
+  if (!made.has(material)) {
     const facing = material.clone();
     facing.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", `#include <common>\n${FACING_PARS}`)
-        .replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\n\tvec2 mtmTurn = mtmFacing();\n\tobjectNormal = mtmFace( objectNormal, mtmTurn );")
+        .replace("#include <beginnormal_vertex>", `#include <beginnormal_vertex>\n\tvec2 mtmTurn = mtmFacing();\n\t${rounded ? ROUNDED_NORMAL : ""}\n\tobjectNormal = mtmFace( objectNormal, mtmTurn );`)
         .replace("#include <begin_vertex>", "#include <begin_vertex>\n\ttransformed = mtmFace( transformed, mtmTurn );");
     };
-    facingMaterials.set(material, facing);
+    facing.customProgramCacheKey = () => `mtm-facing|${rounded}`;
+    made.set(material, facing);
   }
-  return facingMaterials.get(material);
+  return made.get(material);
 }
 
 /** The depth material for a camera-facing part's shadow, turned the same way. One per source material: three.js gives it that material's texture. */
@@ -535,9 +599,9 @@ function fillBlock(mesh, block, offset) {
  *
  * The instances are kept in blocks, one copy of the world each; `order` says which copy a block
  * holds. The original is always the first block; `orderObjects` brings the copies in view to
- * the front and draws only those.
+ * the front and draws only those. `rounded` lights the camera-facing ones as round things.
  */
-export function placeObjects(library, objects, copies = [[0, 0]]) {
+export function placeObjects(library, objects, copies = [[0, 0]], { rounded = false } = {}) {
   const byKey = new Map();
   // Where each SIT box is drawn, for moving it later: its meshes' name and its place among their instances.
   const slots = {};
@@ -559,7 +623,7 @@ export function placeObjects(library, objects, copies = [[0, 0]]) {
   for (const [key, { parts, facing, matrices }] of byKey) {
     const perCopy = matrices.length, total = perCopy * offsets.length;
     for (const { geometry, material } of parts) {
-      const instanced = new THREE.InstancedMesh(geometry, facing ? facingMaterial(material) : material, total);
+      const instanced = new THREE.InstancedMesh(geometry, facing ? facingMaterial(material, rounded) : material, total);
       instanced.name = key;
       // `places` is the model's placements in the original world, shared by the model's parts.
       Object.assign(instanced.userData, { perCopy, facing, places: matrices, blocks: offsets.length });
@@ -706,7 +770,7 @@ export function createBackdrops(build, look) {
   const library = createModelLibrary(build.models, build.modelTextures, look);
   const group = new THREE.Group();
   group.name = "backdrops";
-  const uniforms = { backdropTint: { value: new THREE.Color(0xffffff) }, backdropSaturation: { value: 1 } };
+  const uniforms = { backdropTint: { value: new THREE.Color(0xffffff) }, backdropSaturation: { value: 1 }, backdropVeil: { value: new THREE.Vector4(0, 0, 0, 0) } };
   // After the sky dome, before ordinary depth-writing world geometry. three.js sorts by the nearest Group's renderOrder
   // first (the sky dome counts as part of `world`, order 0), so this group keeps 0 and its meshes carry the -0.5; a group
   // order below the sky's would draw the backdrop first and the dome would paint over it.
@@ -746,17 +810,28 @@ function installBackdropShader(material, uniforms) {
       .replace("#include <map_fragment>", `#include <map_fragment>
         float backdropGrey = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
         diffuseColor.rgb = mix(vec3(backdropGrey), diffuseColor.rgb, backdropSaturation) * backdropTint;`);
+    // The fog between the eye and the backdrop, or the darkness (render/atmosphere.js).
+    veilBackdropShader(shader);
   };
-  material.customProgramCacheKey = () => "backdrop-weather";
+  material.customProgramCacheKey = () => "backdrop-weather-veiled";
 }
 
-/** Tint the world's backdrop for `weather` (0 Clear ... 8 Pitch Black). */
-export function setBackdropWeather(world, weather) {
+const _veil = new THREE.Color();
+
+/**
+ * Tint the world's backdrop for `weather` (0 Clear ... 8 Pitch Black). `veil`, where the scene
+ * keeps its fog with the backdrop drawn and the fog is not a volume (the dark weathers), is the
+ * fog's colour and how much of the backdrop it takes: `{ color: THREE.Color, amount }`.
+ */
+export function setBackdropWeather(world, weather, veil = null) {
   const uniforms = world?.getObjectByName("backdrops")?.userData.uniforms;
   if (!uniforms) return;
   const [tint, saturation] = BACKDROP_WEATHER[weather] ?? BACKDROP_WEATHER[0];
   uniforms.backdropTint.value.setHex(tint);
   uniforms.backdropSaturation.value = saturation;
+  // The veil is mixed in after the picture's colours are encoded for where they are going, so its colour is encoded the same way.
+  if (veil) screenColor(veil.color, _veil);
+  uniforms.backdropVeil.value.set(veil ? _veil.r : 0, veil ? _veil.g : 0, veil ? _veil.b : 0, veil?.amount ?? 0);
 }
 
 const _target = new THREE.Vector3();
@@ -768,9 +843,9 @@ const _target = new THREE.Vector3();
  * `viewRange`, when given, is how far the eye can see, in feet (the fog's end): terrain chunks
  * wholly beyond it are not drawn, nor any copy of the world that lies wholly beyond it. A
  * headset uses it (docs/VR.md, "What it costs"); the flat screen draws everything in view, as
- * it always has.
+ * it always has. `fineRange` is how near a chunk of the drawn ground must be to be drawn fine.
  */
-export function updateTrackWorld(world, camera, dt, { viewRange = Infinity } = {}) {
+export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fineRange = FINE_RANGE_FT } = {}) {
   world.userData.animationTime = (world.userData.animationTime ?? 0) + dt;
   const phase = world.userData.animationTime / 0.5;
   const parts = PARTS.get(world);
@@ -794,7 +869,13 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity } = {
     }
     showCopies(parts, camera, viewRange);
     for (const chunk of parts.chunks) {
-      chunk.mesh.visible = Math.hypot(chunk.x - camera.position.x, chunk.z - camera.position.z) < viewRange + chunk.radius;
+      const dx = Math.abs(chunk.x - camera.position.x), dz = Math.abs(chunk.z - camera.position.z);
+      const seen = Math.hypot(dx, dz) < viewRange + chunk.radius;
+      if (!chunk.fine) { chunk.mesh.visible = seen; continue; }
+      // Fine within range of the chunk's nearest edge; both levels have the same border, so neighbours of either kind meet.
+      chunk.near = Math.hypot(Math.max(0, dx - chunk.half), Math.max(0, dz - chunk.half)) < fineRange + (chunk.near ? FINE_PLAY_FT : 0);
+      chunk.fine.visible = seen && chunk.near;
+      chunk.mesh.visible = seen && !chunk.near;
     }
     return;
   }
@@ -917,14 +998,16 @@ export function createSky(sky, look, radius = 6000) {
   if (!sky) return null;
   if (sky.flat) return createFlatSky(sky, look, radius);
   const map = dataTexture(sky, look, true);
-  const material = new THREE.MeshBasicMaterial({ map, side: THREE.DoubleSide, fog: false, depthWrite: false });
+  // The scene's fog leaves the sky alone; the fog as a volume veils it by how far through the layer each direction looks.
+  // The sky art is shown as it is: no curve over it (render/light-rig.js).
+  const material = veilSky(new THREE.MeshBasicMaterial({ map, side: THREE.DoubleSide, fog: false, depthWrite: false, toneMapped: false }));
   const dome = new THREE.Mesh(skyGeometry(radius), material);
   dome.userData.radius = radius;
   dome.name = "sky";
   dome.renderOrder = -1;
   const half = radius * 0.5556;
   const cap = new THREE.Mesh(new THREE.PlaneGeometry(half * 2, half * 2).rotateX(Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: skyCapColor(sky), side: THREE.DoubleSide, fog: false, depthWrite: false }));
+    veilSky(new THREE.MeshBasicMaterial({ color: skyCapColor(sky), side: THREE.DoubleSide, fog: false, depthWrite: false, toneMapped: false })));
   cap.position.y = radius;
   cap.renderOrder = -2;
   dome.add(cap);
@@ -1047,8 +1130,12 @@ export function createRoad(road, look) {
 }
 
 /** Everything static in a track: terrain, ground boxes, objects, water and sky. */
-/** `options.backdrops` draws the SIT's backdrop models (off unless asked), `options.drawDistance` the world's reach in feet (the sky dome stays inside it). */
-export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, terrainDetail = true, reflections = true } = {}) {
+/**
+ * `options.backdrops` draws the SIT's backdrop models (off unless asked), `options.drawDistance` the world's reach in feet
+ * (the sky dome stays inside it), `options.naturalLight` lights camera-facing scenery as round things (docs/VISUALS.md, "Light").
+ * `options.terrainDetail` and `options.reflections` are Community Patch 3's extras (the enhanced look only).
+ */
+export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, naturalLight = false, terrainDetail = true, reflections = true } = {}) {
   const world = new THREE.Group();
   // The world wraps at 8192 ft, so its eight neighbouring copies are drawn too; a stadium stands alone, and so does a
   // level whose edges do not meet (`noWrap`).
@@ -1062,7 +1149,7 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
   const boxes = build.groundBoxes ? createGroundBoxes(build.groundBoxes, atlas, look) : null;
   if (boxes) tile.add(boxes);
   if (build.road) tile.add(createRoad(build.road, look));
-  const library = createModelLibrary(build.models, build.modelTextures, look);
+  const library = createModelLibrary(build.models, build.modelTextures, look, { cleanEdges: naturalLight });
   const animated = placeAnimatedObjects(library, build.objects);
   if (animated) tile.add(animated);
   const water = createWater(build.waterLevelFt, build.noWrap ? 5 : 1);
@@ -1077,7 +1164,7 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
     tiles.push(copy);
   }
   // Every other object, in all the copies at once.
-  const objects = placeObjects(library, build.objects, copies);
+  const objects = placeObjects(library, build.objects, copies, { rounded: naturalLight });
   world.add(objects);
   const backdrops = createBackdrops(build, look);
   if (backdrops && showBackdrops && !build.stadium) world.add(backdrops);
@@ -1102,13 +1189,22 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
     if (!parts.byName.has(mesh.name)) parts.byName.set(mesh.name, []);
     parts.byName.get(mesh.name).push(mesh);
   }
+  const chunkOf = new Map();
   world.traverse((object) => {
     if (object.name === "placedObject") parts.placed.push(object);
     if (object.userData.frameCount && object.morphTargetInfluences) parts.morphing.push(object);
     if (object.name === "terrain") {
       const { center, radius } = object.geometry.boundingSphere;
       const copy = object.parent.parent;
-      parts.chunks.push({ mesh: object, x: center.x + copy.position.x, z: center.z + copy.position.z, radius });
+      // The drawn ground has two meshes a chunk, one for each level of detail.
+      const key = object.userData.chunk === undefined ? object : `${copy.id}|${object.userData.chunk}`;
+      if (!chunkOf.has(key)) {
+        chunkOf.set(key, { mesh: null, fine: null, near: false, x: center.x + copy.position.x, z: center.z + copy.position.z, radius, half: (CHUNK_CELLS * CELL_FT) / 2 });
+        parts.chunks.push(chunkOf.get(key));
+      }
+      const chunk = chunkOf.get(key);
+      if (object.userData.detail === "fine") chunk.fine = object; else chunk.mesh = object;
+      chunk.radius = Math.max(chunk.radius, radius);
     }
   });
   PARTS.set(world, parts);

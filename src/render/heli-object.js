@@ -19,10 +19,10 @@ function rotor({ radius, chord, rate }, axis) {
   const group = new THREE.Group();
   const blades = new THREE.Mesh(
     new THREE.BoxGeometry(radius * 2, 0.06, chord),
-    new THREE.MeshBasicMaterial({ color: 0x1c1c1c, fog: false }));
+    new THREE.MeshBasicMaterial({ color: 0x1c1c1c }));
   const disc = new THREE.Mesh(
     new THREE.CircleGeometry(radius, 24).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x909090, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+    new THREE.MeshBasicMaterial({ color: 0x909090, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }));
   group.add(blades, disc);
   const wrap = new THREE.Group();
   wrap.add(group);

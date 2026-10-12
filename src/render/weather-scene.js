@@ -6,10 +6,21 @@
   Lights. The models are lit by the scene's sun and ambient light; the classic terrain is unlit,
   so in the dark weathers it is swapped for a lit material (keeping its baked shade) and the
   headlights, four spot lights on the trucks nearest the camera, light it.
+
+  With "Volumetric weather" (`env.volume`, render/weather-volume.js) the fog set here is drawn
+  as a layer the eye looks through, and the rain and snow as fields in the air, instead of the
+  sprites below; with it off everything here is as it was. `env.groundSurface`
+  (render/ground-surface.js) wets the ground in Rain and whitens it in Snow. With "Natural
+  light" (`env.lightRig`, render/light-rig.js) the sun and the sky's light are that rig's, in
+  the weather's colours, instead of the white sun and white ambient light set here.
 */
 import * as THREE from "three";
 import { setBackdropWeather } from "./track-scene.js";
 import { UNDERWATER_FOG_FT, WEATHER_LOOK } from "../game/weather.js";
+import { UNDERWATER } from "../game/water.js";
+import { BACKDROP_DARK } from "../game/atmosphere.js";
+import { headlightReach } from "../game/truck-lights.js";
+import { atmosphere } from "./atmosphere.js";
 import { joinSheets } from "../game/sheets.js";
 import { createBillboards } from "./billboards.js";
 
@@ -41,15 +52,22 @@ function sprite() {
  * @param {{ scene: THREE.Scene, camera: THREE.Camera, world: THREE.Group, sun: THREE.DirectionalLight,
  *   ambient: THREE.AmbientLight, skyAverage: THREE.Color, look: string, random?: () => number,
  *   art?: object|null (the effect art: its snowflake sheet and raindrops draw the precipitation),
- *   onSun?: (intensity: number) => void, onLightning?: () => void }} env
+ *   onSun?: (intensity: number, shadow: number) => void (the sun's strength, and how dark its shadows are, 0 to 1),
+ *   onLightning?: () => void,
+ *   volume?: object|null (render/weather-volume.js), groundSurface?: object|null (render/ground-surface.js),
+ *   lightRig?: object|null (render/light-rig.js), groundDetail?: object|null (render/ground-detail.js), gloss?: object|null (render/gloss.js),
+ *   dressGround?: (material) => material (render/scenery.js: what the ground's own material was given),
+ *   richLamps?: boolean ("Truck lamps": the headlights' pools follow each truck's lamp switch, game/truck-lights.js),
+ *   water?: object|null (render/water-surface.js: under it the scene's fog is the water's) }} env
  */
 export function createWeatherScene(env) {
   const { scene, camera, world, sun, ambient, skyAverage, look, random = Math.random } = env;
   let drawDistance = env.drawDistance ?? 20000;
+  const volume = env.volume ?? null, groundSurface = env.groundSurface ?? null, lightRig = env.lightRig ?? null;
   const root = new THREE.Group();
   root.name = "weather";
   scene.add(root);
-  let current = 0, flash = 0, nextBolt = 0, time = 0;
+  let current = 0, flash = 0, nextBolt = 0, time = 0, started = false, flashLevel = 0;
 
   // Terrain materials, unlit and lit, swapped for the dark weathers. The terrain's chunks and
   // the world's copies share one material, so each gets one lit twin.
@@ -57,7 +75,10 @@ export function createWeatherScene(env) {
   world.traverse((o) => {
     if ((o.name === "terrain" || o.name === "groundBoxes") && o.material?.isMeshBasicMaterial) {
       const m = o.material;
-      if (!lit.has(m)) lit.set(m, new THREE.MeshLambertMaterial({ map: m.map, vertexColors: m.vertexColors }));
+      if (!lit.has(m)) {
+        const twin = new THREE.MeshLambertMaterial({ map: m.map, vertexColors: m.vertexColors });
+        lit.set(m, env.dressGround?.(twin) ?? groundSurface?.dress(twin) ?? twin);
+      }
       surfaces.push({ mesh: o, unlit: m, lit: lit.get(m) });
     }
   });
@@ -110,10 +131,14 @@ export function createWeatherScene(env) {
   const lightLevel = () => WEATHER_LOOK[current].light;
   function applyLight(extra = 0) {
     const w = WEATHER_LOOK[current];
+    flashLevel = extra;
     const k = Math.min(3, w.light + extra);
-    sun.intensity = SUN_BASE * k * w.sun;
-    ambient.intensity = AMBIENT_BASE * k;
-    env.onSun?.(sun.intensity);
+    if (lightRig) env.onSun?.(sun.intensity, lightRig.apply(extra).shadow);
+    else {
+      sun.intensity = SUN_BASE * k * w.sun;
+      ambient.intensity = AMBIENT_BASE * k;
+      env.onSun?.(sun.intensity, 1);
+    }
     for (const unlit of lit.keys()) unlit.color.setScalar(Math.min(1, k));
   }
 
@@ -124,10 +149,14 @@ export function createWeatherScene(env) {
     const shade = (w.fogShade ?? 1) / 255;
     const color = new THREE.Color().setRGB(w.fogColor[0] * shade, w.fogColor[1] * shade, w.fogColor[2] * shade, THREE.SRGBColorSpace);
     if (underwater) {
-      scene.fog = new THREE.Fog(color, 0, UNDERWATER_FOG_FT);
-      scene.background = color;
-    } else if (env.backdrops && !w.noSky) {
+      // With the port's own water the eye is in water: it sees as far as water lets it, in the water's own colour as
+      // the day lights it (render/water-surface.js). Without, the game's fog.
+      const within = env.water?.underColor?.() ?? null;
+      scene.fog = new THREE.Fog(within ?? color, 0, within ? UNDERWATER.sightFt : UNDERWATER_FOG_FT);
+      scene.background = within ?? color;
+    } else if (env.backdrops && !volume && !w.noSky) {
       // With the backdrop drawn the horizon is scenery, not haze: no distance fog (Foggy and Dense Fog keep theirs).
+      // With the fog as a volume the backdrop is seen through it like everything else, and the fog stays.
       scene.fog = null;
       scene.background = w.fogEndFt ? color : skyAverage;
     } else if (w.fogEndFt) {
@@ -137,18 +166,36 @@ export function createWeatherScene(env) {
       scene.fog = new THREE.Fog(skyAverage, Math.min(2500, drawDistance * 0.35), Math.min(7000, drawDistance * 0.9));
       scene.background = skyAverage;
     }
+    // The fog as a volume, where the weather has fog of its own and the camera is above the water; a fog with a top is
+    // seen beyond as far as a clear day's haze lets the eye see.
+    volume?.fog({ underwater, clearRange: { startFt: Math.min(2500, drawDistance * 0.35), endFt: Math.min(7000, drawDistance * 0.9) } });
+    // The backdrop's veil is the fog's colour: it follows the fog, also back out of the water.
+    veilBackdrop();
+  }
+
+  /** Where the fog stays with the backdrop drawn and is no volume, the dark weathers' darkness takes the backdrop too. */
+  let veiledAsLight = false;
+  function veilBackdrop() {
+    veiledAsLight = atmosphere.linear;
+    setBackdropWeather(world, current, volume && scene.fog?.isFog && BACKDROP_DARK[current] ? { color: scene.fog.color, amount: BACKDROP_DARK[current] } : null);
   }
 
   function set(weather) {
     current = WEATHER_LOOK[weather] ? weather : 0;
     const w = WEATHER_LOOK[current];
+    // At a race's start the weather has been as it is all along; a change during one comes on.
+    volume?.set(current, { instant: !started });
+    groundSurface?.set(current, { instant: !started });
+    started = true;
+    // Before the fog is set: the fog glows toward the sun, and the rig says where this weather's sun is.
+    lightRig?.set(current);
     applyFog();
     const lit = w.headlights || look === "enhanced";
     for (const s of surfaces) s.mesh.material = lit ? s.lit : s.unlit;
-    rain.object.visible = w.precipitation === "rain";
-    snow.object.visible = w.precipitation === "snow";
-    for (const light of spots) { light.visible = w.headlights; light.intensity = w.headlights ? SPOT_INTENSITY : 0; }
-    setBackdropWeather(world, current);
+    rain.object.visible = !volume && w.precipitation === "rain";
+    snow.object.visible = !volume && w.precipitation === "snow";
+    // With "Truck lamps" the pools follow each truck's own lamp switch (`update`), in any weather.
+    for (const light of spots) { light.visible = w.headlights && !env.richLamps; light.intensity = w.headlights ? SPOT_INTENSITY : 0; }
     nextBolt = time + 6 + random() * 14;
     flash = 0;
     applyLight();
@@ -179,14 +226,18 @@ export function createWeatherScene(env) {
   }
 
   /**
-   * Per frame. `trucks` are `{ x, y, z, heading }` in game feet, heading in radians (the
-   * headlights shine along it).
+   * Per frame. `trucks` are `{ x, y, z, heading, lit }` in game feet, heading in radians (the
+   * headlights shine along it; `lit` says they are on). For the volume: `floorFt` the water's level now or null (rain
+   * and snow stop at it), `viewHeight` the picture's height in pixels. `lite` (a headset) asks
+   * the parts that can for their lighter drawing.
    */
-  function update(dt, trucks = []) {
+  function update(dt, trucks = [], { floorFt = null, viewHeight = 900, lite = false } = {}) {
     time += dt;
     const w = WEATHER_LOOK[current];
-    if (w.precipitation === "rain") fall(rain, RAIN_COUNT, dt, 70, 12, true);
-    if (w.precipitation === "snow") {
+    // The lens came on or went off (render/lens.js): the veil's colour is encoded for where the picture goes now.
+    if (atmosphere.linear !== veiledAsLight) veilBackdrop();
+    if (!volume && w.precipitation === "rain") fall(rain, RAIN_COUNT, dt, 70, 12, true);
+    if (!volume && w.precipitation === "snow") {
       snow.object.material.size = SNOW_SIZE * camera.projectionMatrix.elements[5] / FLAT_FOCAL;
       fall(snow, SNOW_COUNT, dt, 9, 2, false);
     }
@@ -199,26 +250,38 @@ export function createWeatherScene(env) {
         applyLight(level);
       } else applyLight();
     }
-    if (w.headlights) {
+    volume?.update(dt, { flash: w.lightning ? flashLevel : 0, light: w.light, floorFt, viewHeight, lite });
+    groundSurface?.update(dt, { light: Math.min(1.6, w.light + (w.lightning ? flashLevel : 0)), fog: scene.fog, background: skyAverage });
+    env.groundDetail?.update({ weather: current, lite });
+    env.gloss?.update({ weather: current });
+    // The pools of light on the ground: before the nearest trucks whose headlights are lit. As the game has it that
+    // is every truck in a weather that lights the lamps; with "Truck lamps" it is each truck by its own lamp switch
+    // (`lit`), in any weather, as strong as the day leaves it to be seen.
+    if (env.richLamps ? trucks.some((t) => t.lit) : w.headlights) {
       const nearest = trucks
+        .filter((t) => !env.richLamps || t.lit)
         .map((t) => ({ t, d: Math.hypot(t.x - camera.position.x, t.z + camera.position.z) }))
         .sort((a, b) => a.d - b.d).slice(0, SPOTS);
       spots.forEach((light, i) => {
         const near = nearest[i]?.t;
         light.visible = !!near;
         if (!near) return;
+        if (env.richLamps) light.intensity = SPOT_INTENSITY * headlightReach(w.light);
         const fx = Math.sin(near.heading), fz = Math.cos(near.heading);
         light.position.set(near.x + fx * 6, near.y + 3, -(near.z + fz * 6));
         light.target.position.set(near.x + fx * 90, near.y - 2, -(near.z + fz * 90));
       });
-    }
+    } else if (env.richLamps) for (const light of spots) light.visible = false;
   }
 
   return {
     get weather() { return current; },
     get underwater() { return underwater; },
-    /** Whether the sky is drawn: not under water, nor in the weathers that show fog alone. */
-    get skyShown() { return !underwater && !WEATHER_LOOK[current].noSky; },
+    /**
+     * Whether the sky is drawn: not under water, nor in the weathers that show fog alone (the game's way). With the fog as a
+     * volume the sky is drawn in every weather and the fog veils it (render/weather-volume.js).
+     */
+    get skyShown() { return !underwater && (!!volume || !WEATHER_LOOK[current].noSky); },
     /** The camera went under the water or came up: the fog changes (the sky is hidden by the caller). */
     setUnderwater(on) { if (on !== underwater) { underwater = on; applyFog(); } },
     set, update, lightLevel,
@@ -229,6 +292,8 @@ export function createWeatherScene(env) {
       flakeTexture?.dispose();
       for (const g of [rain, snow]) { if (g.layer) g.layer.dispose(); else g.object.geometry.dispose(); }
       for (const material of lit.values()) material.dispose();
+      volume?.dispose();
+      groundSurface?.dispose();
     },
   };
 }

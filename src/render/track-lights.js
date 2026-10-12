@@ -9,7 +9,8 @@
   - The cone (`glow` 2): a beam from the lamp head along the box's facing, `coneLen` long, `coneBase` to `coneRim` wide.
 */
 import * as THREE from "three";
-import { BEAM_AXIS, BEAM_INTENSITY, beamGeometry, beamMaterial } from "./light-beam.js";
+import { BEAM_AXIS, BEAM_INTENSITY, SHAFT_INTENSITY, aimShaft, beamGeometry, beamMaterial, shaftGeometry, shaftMaterial } from "./light-beam.js";
+import { fogDims } from "./atmosphere.js";
 
 const POOL_LIGHTS = 8;
 /** A headlight's pool strength in this scene (render/weather-scene.js SPOT_INTENSITY); `bright` scales it. */
@@ -28,8 +29,11 @@ function glowTexture() {
   return t;
 }
 
-/** `lights` is the track build's `trackLights`; `ground(x, z)` the terrain height in game feet. */
-export function createTrackLights(scene, lights, ground) {
+/**
+ * `lights` is the track build's `trackLights`; `ground(x, z)` the terrain height in game feet. `shafts` draws each
+ * cone as light in the air ("Truck lamps", render/light-beam.js) instead of as a skin.
+ */
+export function createTrackLights(scene, lights, ground, { shafts = false } = {}) {
   if (!lights?.length) return null;
   const root = new THREE.Group();
   root.name = "trackLights";
@@ -40,15 +44,18 @@ export function createTrackLights(scene, lights, ground) {
     const color = new THREE.Color(l.color[0], l.color[1], l.color[2]);
     let glow = null, cone = null;
     if (l.glow >= 1) {
-      glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowMap, color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false }));
+      // A glow is light added to the view: fog dims it (render/atmosphere.js `fogDims`).
+      glow = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({ map: glowMap, color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false })));
       glow.scale.setScalar(l.glowRad * 2);
       glow.position.set(l.head[0], l.head[1], -l.head[2]);
       glow.renderOrder = 2;
       root.add(glow);
     }
     if (l.glow >= 2 && l.coneLen > 0) {
-      cone = new THREE.Mesh(beamGeometry(l.coneLen, l.coneBase, l.coneRim), beamMaterial(null, l.coneLen, l.color));
-      cone.material.uniforms.intensity.value = BEAM_INTENSITY * 1.5;
+      cone = shafts
+        ? new THREE.Mesh(shaftGeometry(l.coneLen, l.coneBase, l.coneRim), shaftMaterial(l.coneLen, l.coneBase, l.coneRim, l.color))
+        : new THREE.Mesh(beamGeometry(l.coneLen, l.coneBase, l.coneRim), beamMaterial(null, l.coneLen, l.color));
+      cone.material.uniforms.intensity.value = shafts ? SHAFT_INTENSITY : BEAM_INTENSITY * 1.5;
       cone.position.set(l.head[0], l.head[1], -l.head[2]);
       cone.quaternion.setFromUnitVectors(BEAM_AXIS, new THREE.Vector3(l.facing[0], l.facing[1], -l.facing[2]).normalize());
       cone.frustumCulled = false;
@@ -69,6 +76,7 @@ export function createTrackLights(scene, lights, ground) {
     update(camera, night) {
       root.visible = night;
       if (!night) return;
+      if (shafts) for (const { cone } of items) if (cone) aimShaft(cone, camera.position);
       const cx = camera.position.x, cz = -camera.position.z;
       const nearest = items.map((item) => ({ item, d: Math.hypot(item.l.pool[0] - cx, item.l.pool[1] - cz) }))
         .sort((a, b) => a.d - b.d).slice(0, spots.length);

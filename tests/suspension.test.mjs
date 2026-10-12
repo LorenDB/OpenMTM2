@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BAR_HALF_WIDTH_FT, barChassisPoint, ribbonCorners, suspensionParts } from "../src/game/suspension.js";
+import { BAR_HALF_WIDTH_FT, barChassisPoint, ribbonCorners, ribbonNormal, suspensionParts } from "../src/game/suspension.js";
 
 const near = (a, b, e = 1e-6) => assert.ok(Math.abs(a - b) < e, `${a} vs ${b}`);
 // Bigfoot's TRK: axlebarOffset 1.28125, -3.15625, -0.113281; driveshaftPos 0, -2.45625, -0.113281; axles at z +6.1 and -5.5, y -3.8.
@@ -54,4 +54,19 @@ test("a ribbon faces the viewer and is as wide as the game's", () => {
   // Straight down the ribbon's length still gives a ribbon.
   const end = ribbonCorners([0, 0, 0], [0, 1, 0], 0.16, [0, 9, 0]);
   assert.ok(end.every((c) => c.every(Number.isFinite)));
+});
+
+test("a ribbon is lit as the rod it stands for: it faces the viewer, square to its own length", () => {
+  // A vertical ribbon seen from +x and a little above its middle faces +x, level.
+  const n = ribbonNormal([0, 0, 0], [0, 1, 0], [5, 2, 0]);
+  near(n[0], 1); near(n[1], 0); near(n[2], 0);
+  // Always a unit vector, square to the ribbon, whatever the ribbon and wherever the eye.
+  const a = [1, -0.3, 2], b = [2.2, -1, 0.4], eye = [-6, 4, -11];
+  const m = ribbonNormal(a, b, eye);
+  near(Math.hypot(...m), 1);
+  near(m[0] * (b[0] - a[0]) + m[1] * (b[1] - a[1]) + m[2] * (b[2] - a[2]), 0);
+  assert.ok(m[0] * (eye[0] - a[0]) + m[1] * (eye[1] - a[1]) + m[2] * (eye[2] - a[2]) > 0, "toward the eye");
+  // Looking straight down its length there is no side to see: up, and never a vector of no length (the light's sum
+  // over one is not a number, which draws black through any fog).
+  assert.deepEqual(ribbonNormal([0, 0, 0], [0, 1, 0], [0, 9, 0]), [0, 1, 0]);
 });
