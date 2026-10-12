@@ -67,7 +67,7 @@ export function createRaceGauges(font, { needle = null, units = "mph" } = {}) {
   canvas.width = 640;
   canvas.height = 480;
   const ctx = canvas.getContext("2d");
-  let last = "";
+  let last = "", version = 0;
   let unit = units, shown = true;
 
   /** Text centred on (x, y) with the game's shadow. */
@@ -107,6 +107,8 @@ export function createRaceGauges(font, { needle = null, units = "mph" } = {}) {
     setVisible(on) { shown = !!on; canvas.hidden = !shown; },
     get visible() { return shown; },
     setUnits(next) { unit = next === "kph" ? "kph" : "mph"; last = ""; },
+    /** Counts the redraws, for the headset's copy of the gauges (render/xr/vr-hud.js). */
+    get version() { return version; },
     set({ speed = 0, rpm = 0, gear = 1 }) {
       if (!shown) return;
       const kph = unit === "kph";
@@ -114,6 +116,7 @@ export function createRaceGauges(font, { needle = null, units = "mph" } = {}) {
       const key = `${reading.toFixed(1)}|${thousands.toFixed(1)}|${gear}|${unit}`;
       if (key === last) return;
       last = key;
+      version++;
       ctx.clearRect(0, 0, 640, 480);
       const { max, step } = SPEED_SCALE[unit];
       const perUnit = kph ? SPEEDO.perMph / 1.609344 : SPEEDO.perMph;

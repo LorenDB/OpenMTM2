@@ -1,14 +1,18 @@
 /*
   Results: each truck's place, time, best lap and laps (MONSTER_EXE_ANALYSIS.md 6), in the
-  race order the simulation settled.
+  race order the simulation settled. A headset shows the same table on a board, with the ways
+  on from here (docs/VR.md, "Between races").
 */
 import { el } from "../dom.js";
 import { formatRaceTime, ordinal } from "../../game/race-setup.js";
 import { currentDriver, getHall, getProfiles, saveHall, saveProfiles } from "../../app/profile-store.js";
 import { addEntry } from "../../game/hall-of-fame.js";
 import { recordRace } from "../../game/profile.js";
-import { frame, uiImageUrl } from "../frame.js";
+import { goRace } from "../../app/flow.js";
+import { raceFromBoard } from "../../app/vr-lobby.js";
+import { createMenu } from "../../game/vr/menu.js";
 import { racePoints } from "../../game/race-points.js";
+import { frame, uiImageUrl } from "../frame.js";
 
 const DIFFICULTIES = ["Rookie", "Intermediate", "Professional"];
 
@@ -20,6 +24,26 @@ export function winnerCells(row, { summit = false, laps = 1, difficulty = 1, poi
     summit ? formatRaceTime(laps * 60) : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
     row.best ? formatRaceTime(row.best) : "",
   ];
+}
+
+/**
+ * The headset's Winner's Circle: place, driver, truck, the score (a Rumble) or the time, and
+ * the best lap, the player's row marked. `rows` are in finishing order.
+ */
+export function winnerBoard(rows, { summit = false, laps = 1, difficulty = 1, note = null, onAgain, onNew, onLeave }) {
+  return createMenu({
+    title: "Winner's Circle",
+    lines: note ? [note] : [],
+    table: rows.map((row) => {
+      const cells = winnerCells(row, { summit, laps, difficulty });
+      return Object.assign([cells[0], cells[1], cells[2], summit ? cells[4] : cells[5], cells[6]], { highlight: !!row.player });
+    }),
+    items: [
+      { label: "Race again", action: onAgain },
+      { label: "New race", action: onNew },
+      { label: "Leave VR", action: onLeave },
+    ],
+  });
 }
 
 export default async function mount(container, context, { track, laps, difficulty = 1, rows, mode, truck }) {
@@ -57,6 +81,14 @@ export default async function mount(container, context, { track, laps, difficult
   const first = sorted[0], second = sorted[1];
   // The artwork has one frame lit green: the player's own, first or second place (RESWIN1, RESWIN2).
   const lit = me && me.place === 2 ? "RESWIN2" : "RESWIN1";
+  const toStart = () => context.router.go("start", {}, { replace: false });
+  context.xr?.setBoard(winnerBoard(sorted, {
+    summit, laps, difficulty, note: hallNote,
+    onAgain: () => raceFromBoard(context),
+    // Back among the menus the headset shows the race setup.
+    onNew: toStart,
+    onLeave: () => context.xr.exit(),
+  }));
   const ui = await frame(container, context, {
     title: "Winner's Circle", backdrop: "RESULTS", bar: "results",
     labels: [["First", [24, 196, 140, 18]], ["Second", [476, 291, 140, 18]]],
@@ -108,5 +140,14 @@ export default async function mount(container, context, { track, laps, difficult
         });
         return el("tr", { class: r.player ? "player" : null }, placeCell, ...cells.slice(1).map((cell) => el("td", {}, cell)));
       }))));
-  return { unmount() { slots.forEach((slot) => slot.dispose()); ui.unmount?.(); } };
+  if (!ui.art) ui.regions.table.append(el("div", { class: "screen-actions" },
+    el("button", { "data-menu-sound": "STARTOFF", onclick: toStart }, "Main menu"),
+    el("button", { class: "primary", "data-menu-sound": "GOOFF", onclick: () => goRace(context) }, "Race again")));
+  return {
+    unmount() {
+      slots.forEach((slot) => slot.dispose());
+      context.xr?.setBoard(null);
+      ui.unmount?.();
+    },
+  };
 }

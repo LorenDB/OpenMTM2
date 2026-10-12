@@ -1,9 +1,14 @@
 /*
   First run: pick the MTM2 folder, check it, copy its archives into the browser.
+
+  Where the page's own server also serves the player's game folder (tools/serve.mjs --game), the
+  screen offers to install from there: a headset's browser has no folder of the player's PC to
+  pick (docs/VR.md, "Running it on a headset").
 */
 import { el } from "../dom.js";
 import { pickInstallFolder } from "../../install/picker.js";
 import { inspectSource } from "../../install/inspect-source.js";
+import { hasServedGame, installEntry, mayServeGame, urlSource } from "../../install/url-source.js";
 import { loadStrings } from "../../app/strings-store.js";
 import { primeMenuAudio, startMenuAudio } from "../../app/menu-audio.js";
 
@@ -15,8 +20,18 @@ export default function mount(container, context) {
     + "install. Pick the folder it is installed in (the one holding POD.INI). "
     + "Its archives are copied once into this browser's private storage; nothing is uploaded.");
   const detail = el("div");
-  const pickButton = el("button", { class: "primary", onclick: pick }, "Choose game folder");
-  const actions = el("div", { class: "screen-actions" }, pickButton);
+  const pickButton = el("button", { class: "primary", onclick: () => install(pickInstallFolder) }, "Choose game folder");
+  // The game folder beside the app, when this server has one.
+  const served = new URL("game/", document.baseURI).href;
+  const servedButton = el("button", { class: "primary", hidden: true, onclick: () => install(() => urlSource(served)) }, "Install from this server");
+  const actions = el("div", { class: "screen-actions" }, servedButton, pickButton);
+  (mayServeGame(location.hostname) ? hasServedGame(served) : Promise.resolve(false)).then((yes) => {
+    if (!yes) return;
+    servedButton.hidden = false;
+    pickButton.classList.remove("primary");
+    if (!busy) show("This server offers a Monster Truck Madness 2 folder. Install from it, or pick a folder on this device. "
+      + "The archives are copied once into this browser's private storage.");
+  });
 
   container.append(
     el("section", { class: "screen" },
@@ -27,13 +42,14 @@ export default function mount(container, context) {
 
   let busy = false;
 
-  async function pick() {
+  /** Install from the source `open` gives: the picked folder, or the served one. */
+  async function install(open) {
     if (busy) return;
     primeMenuAudio(context);
     busy = true;
-    pickButton.disabled = true;
+    pickButton.disabled = servedButton.disabled = true;
     try {
-      const source = await pickInstallFolder();
+      const source = await open();
       if (!source) return;
       show(`Checking ${source.name || "the folder"}…`);
       const result = await inspectSource(source);
@@ -46,7 +62,7 @@ export default function mount(container, context) {
       show(`Could not read the folder: ${err.message}`, "error");
     } finally {
       busy = false;
-      pickButton.disabled = false;
+      pickButton.disabled = servedButton.disabled = false;
     }
   }
 
@@ -75,7 +91,8 @@ export default function mount(container, context) {
     });
     try {
       await context.assets.call("install", {
-        files: result.files,
+        // A served archive goes to the worker as its address: the worker downloads it.
+        files: result.files.map(({ name, file }) => ({ name, file: installEntry(file) })),
         podIni: result.podIni,
         exeVersion: result.exeVersion ?? null,
       });
@@ -86,6 +103,8 @@ export default function mount(container, context) {
     await loadStrings(context);
     startMenuAudio(context);
     await context.router.go("start", {}, { replace: true });
+    // With the game in, a copy of the app is all a start without the server needs.
+    context.offlineNote?.check();
   }
 
   function show(message, kind = "muted") {

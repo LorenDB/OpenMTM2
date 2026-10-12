@@ -9,11 +9,10 @@
 */
 import { drawNeedle, gaugeAngle } from "./race-gauges.js";
 import { drawText, textWidth } from "./bitmap-text.js";
+import { SHIFT_LIGHT_RPM } from "../game/vr/cab.js";
 
 /** The steering lock (radians) at which the wheel frames reach 35 degrees. */
 const STEER_LOCK = 0.45;
-/** The shift light comes on near the top of the rev range. */
-const SHIFT_LIGHT_RPM = 7500;
 
 const toCanvas = (image) => {
   if (!image) return null;

@@ -12,6 +12,7 @@
 import { el } from "./dom.js";
 import { goRace, goDemo } from "../app/flow.js";
 import { resolveSkin } from "../install/exe-version.js";
+import { vrButton } from "./vr-button.js";
 
 /** Baked button rectangles [x, y, w, h] on the 640 x 480 art. */
 const BUTTONS = {
@@ -54,6 +55,8 @@ export function uiImageUrl(assets, name) {
 export async function frame(container, context, { title, backdrop, bar = "main", regions = { main: [24, 120, 592, 280] }, options = true, labels = [], modernRegions = {}, current = null, plainTitle = false }) {
   const url = resolveSkin(context.settings.skin, context.exeVersion) === "classic" && backdrop ? await uiImageUrl(context.assets, backdrop) : null;
   const art = !!url;
+  // Every menu screen can put the game in a headset, where the browser has one (docs/VR.md).
+  const enterVr = context.xr ? vrButton(context, url ? "stage-vr" : "screen-vr") : null;
   const stage = el("div", { class: `stage${art ? "" : " stage-modern"}`, role: "group", "aria-label": title });
   if (art) stage.append(el("img", { class: "stage-backdrop", src: url, alt: "", draggable: "false" }));
   else {
@@ -63,6 +66,7 @@ export async function frame(container, context, { title, backdrop, bar = "main",
       place(label, rect);
       stage.append(label);
     }
+    if (enterVr) stage.append(enterVr.element);
   }
   const panels = Object.fromEntries(Object.entries(regions).map(([name, rect]) => {
     const panel = el("div", { class: `stage-panel stage-panel-${name}` });
@@ -85,13 +89,14 @@ export async function frame(container, context, { title, backdrop, bar = "main",
   if (!art && bar === "none") {
     stage.append(el("button", { class: "stage-back", "data-menu-sound": "STARTOFF", onclick: () => context.router.back() }, "Back"));
   }
+  if (enterVr) stage.append(enterVr.element);
   const view = el("section", { class: `stage-view${art ? "" : " stage-view-modern"}` }, stage);
   container.append(view);
   const fit = () => stage.style.setProperty("--stage-scale", String(Math.min(view.clientWidth / 640, view.clientHeight / 480)));
   const observer = new ResizeObserver(fit);
   observer.observe(view);
   fit();
-  return { classic: true, art, regions: panels, unmount: () => observer.disconnect() };
+  return { classic: true, art, regions: panels, unmount: () => { observer.disconnect(); enterVr?.dispose(); } };
 }
 
 function optionsButton(context, className) {

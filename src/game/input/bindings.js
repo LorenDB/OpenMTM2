@@ -22,6 +22,8 @@ export const ACTIONS = Object.freeze([
   { id: "headlights", label: "Headlights" },
   { id: "crashDamage", label: "Crash Damage" },
   { id: "pause", label: "Pause" },
+  // Not one of the game's: in a headset, makes where the head is the driving position (docs/VR.md).
+  { id: "recenter", label: "Recentre VR view" },
 ]);
 
 export const DEFAULT_BINDINGS = Object.freeze({
@@ -43,6 +45,7 @@ export const DEFAULT_BINDINGS = Object.freeze({
   headlights: Object.freeze(["KeyL"]),
   crashDamage: Object.freeze(["KeyX"]),
   pause: Object.freeze(["Escape", "KeyP"]),
+  recenter: Object.freeze(["KeyC"]),
 });
 
 /** The defaults with the player's changes on top; unknown actions and empty lists are ignored. */

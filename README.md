@@ -101,6 +101,31 @@ python3 -m http.server 8080
 Opening `index.html` as a file does not work: workers and the Origin Private File System need
 `http://localhost` or HTTPS.
 
+Once it has been opened, the browser keeps a copy of the app (a service worker, `sw.js`), so
+with the game installed the same address works offline. A server that answers is always used in
+preference, so this does not get in the way of changing the code; Options has a switch for it
+("Start without the server") if it does, for instance when another project uses the same port.
+
+## In a headset
+
+OpenMTM2 runs in VR wherever the browser has WebXR: the browser of a standalone headset, or a
+desktop browser with a PC headset. Every menu screen and the race show an **Enter VR** button
+there. You drive from the truck's cab or from a seat behind it, with the controllers as the
+game's joystick, and set up races on a board without taking the headset off.
+
+A standalone headset cannot pick a folder on your PC, so serve the game folder to it:
+
+```sh
+node tools/serve.mjs --game "/path/to/Monster Truck Madness 2"
+adb reverse tcp:8080 tcp:8080        # headset on a USB cable; then open http://localhost:8080/ in it
+```
+
+or `node tools/serve.mjs --lan --game ...` for Wi-Fi (HTTPS with a certificate of its own, which
+the headset's browser asks you to accept). The Install screen then offers "Install from this
+server". Over the cable that is needed once only: the browser keeps the app too, and the same
+address then opens the game with no PC. [docs/VR.md](docs/VR.md) has the controls and the
+details.
+
 ### Tests
 
 ```sh
@@ -123,6 +148,7 @@ original game gets a test.
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | milestones from an empty repository to a complete game |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the code is organised |
+| [docs/VR.md](docs/VR.md) | the headset mode: running it, the controls, how it works |
 | [docs/MONSTER_EXE_ANALYSIS.md](docs/MONSTER_EXE_ANALYSIS.md) | how the original game works: files, rules, HUD, cameras, weather, network, cheats |
 | [docs/MTM2_PHYSICS.md](docs/MTM2_PHYSICS.md) | the original simulation, specified for reimplementation |
 | [tools/re/README.md](tools/re/README.md) | the reverse-engineering helpers |

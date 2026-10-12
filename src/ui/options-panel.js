@@ -2,9 +2,11 @@
 import { buildKind, defaultSkin } from "../install/exe-version.js";
 import { el } from "./dom.js";
 import { clearSettings, saveSettings } from "../app/settings.js";
+import { offlineStatusText } from "../app/offline.js";
 import { loadStrings } from "../app/strings-store.js";
 import { locName } from "../game/strings.js";
 import { ACTIONS, DEFAULT_BINDINGS, codeLabel, conflictFor, mergeBindings } from "../game/input/bindings.js";
+import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS, vrSettings } from "../game/vr/settings.js";
 import { VOICE_COMMENTARY_ENABLED } from "../audio/commentary-audio.js";
 
 /*
@@ -101,6 +103,48 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     set: (v) => { settings.sound = { ...settings.sound, [key]: v }; save(); },
   });
 
+  // The headset's preferences (docs/VR.md, "Options"), shown where the browser has a headset.
+  const setVr = (key, value) => { settings.vr = { ...vrSettings(settings.vr), [key]: value }; save(); };
+  const vrToggle = (label, key) => el("label", {}, el("input", {
+    type: "checkbox", checked: vrSettings(settings.vr)[key], onchange: (event) => setVr(key, event.target.checked),
+  }), ` ${label}`);
+  const vrChoose = (label, key, names, values) => {
+    const current = vrSettings(settings.vr)[key];
+    // The stored value may lie between the steps offered: the nearest one shows.
+    const nearest = typeof values[0] === "number"
+      ? values.reduce((best, value) => (Math.abs(value - current) < Math.abs(best - current) ? value : best))
+      : current;
+    return el("label", {}, `${label} `, el("select", {
+      "aria-label": `Headset ${label}`,
+      onchange: (event) => setVr(key, typeof values[0] === "number" ? Number(event.target.value) : event.target.value),
+    }, ...names.map((name, index) => el("option", { value: values[index], selected: values[index] === nearest }, name))));
+  };
+  const headset = el("div", { hidden: true },
+    el("h2", {}, "Headset"),
+    el("div", { class: "form-row" },
+      vrChoose("View", "view", VR_VIEWS.map((view) => view.name), VR_VIEWS.map((view) => view.id)),
+      vrChoose("Steering", "steering", ["Thumbstick", "Hands as a wheel"], ["stick", "wheel"]),
+      vrToggle("Keep the horizon level", "horizonLock"), vrToggle("Cab around the driver", "cab"), vrToggle("Timing and gauges", "hud")),
+    el("div", { class: "form-row" },
+      vrChoose("Cab style", "cabStyle", CAB_STYLES.map((style) => style.name), CAB_STYLES.map((style) => style.id))),
+    el("div", { class: "form-row", title: "Sharpness and Edge detail take effect the next time the headset is entered." },
+      vrChoose("Sharpness", "renderScale", ["70%", "85%", "100%", "120%", "140%"], [0.7, 0.85, 1, 1.2, 1.4]),
+      vrChoose("Edge detail", "foveation", ["Full", "High", "Medium", "Low"], [0, 0.34, 0.67, 1]),
+      vrChoose("View distance", "viewDistance", VIEW_DISTANCES.map((v) => v.name), VIEW_DISTANCES.map((v) => v.id))));
+
+  // The copy of the app for starting without a server (docs/ARCHITECTURE.md, "Without a server").
+  const offlineLine = el("span", { class: "muted" });
+  const showOffline = () => { offlineLine.textContent = context.offline ? offlineStatusText(context.offline.status) : ""; };
+  const offOffline = context.offline?.onChange(showOffline);
+  showOffline();
+  const offlineRow = context.offline ? el("div", { class: "form-row" },
+    el("label", { title: "Keeps a copy of the game's own code in this browser, beside the installed game. With a server in reach the server's files are always the ones used." },
+      el("input", {
+        type: "checkbox", checked: settings.offline !== false,
+        onchange: (event) => { context.offline.setEnabled(event.target.checked); save(); },
+      }), " Start without the server"),
+    offlineLine) : "";
+
   const locFiles = await context.assets.call("locFiles").catch(() => []);
   const wording = row("Localization", el("select", { "aria-label": "Wording" },
     el("option", { value: "", selected: !settings.wording }, "Standard"),
@@ -157,8 +201,9 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       toggle("MTM1 terrain overlap", "mtm1TerrainOverlap", "Monster Truck Madness 1 tracks: overlap the ground tiles by two pixels, as MTM2 does"),
       toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
       toggle("CP3 Reflections", "reflections", "Community Patch 3 materials: the sky reflected in glass and paint (Enhanced look)"),
-      menus, wording,
+      menus, wording, offlineRow,
     ]],
+    ["Headset", [headset]],
     ["Effects", [
       toggle("Dust", "dustEffects"), toggle("Tire tracks", "tireTracks"), toggle("Sparks", "sparks"), toggle("Water splashes", "waterSplash"),
     ]],
@@ -243,6 +288,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         )) return;
         event.currentTarget.disabled = true;
         try {
+          // The copy of the app goes too; a page that is opened again with a server makes a new one.
+          await context.offline?.remove();
           await context.assets.call("clearGameData");
           clearSettings();
           window.location.reload();
@@ -262,6 +309,14 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     tabs.forEach((tab, k) => tab.classList.toggle("selected", k === i));
   };
   pick(Math.min(context.optionsTab ?? 0, sections.length - 1));
+  // The Headset tab shows where the browser has a headset; elsewhere it stays out of the way.
+  const headsetIndex = sections.findIndex(([name]) => name === "Headset");
+  if (!context.xr) tabs[headsetIndex].hidden = true;
+  context.xr?.supported.then((yes) => {
+    headset.hidden = !yes;
+    tabs[headsetIndex].hidden = !yes;
+    if (!yes && context.optionsTab === headsetIndex) pick(0);
+  });
   container.append(
     el("div", { class: "opt-tabs" }, ...tabs),
     el("div", { class: "opt-pages" }, ...pages),
@@ -282,6 +337,7 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
   const cleanup = () => {
     window.removeEventListener("keydown", onKey);
     container.removeEventListener("change", onChange);
+    offOffline?.();
   };
   /** For the dialog's own ways out (Escape, a click outside): the same question as the Close button. */
   cleanup.requestClose = () => { if (performance.now() - escapeAt > 200) close(); };

@@ -9,6 +9,11 @@
   ("Determining times for remaining trucks", section 5) and the results follow.
 
   Keys: arrows or WASD drive, Q / Z shift, H helicopter, Space horn, V camera, Esc or P pause.
+
+  In a headset (docs/VR.md) the same race is drawn around the player: the camera key cycles the
+  cab and chase views, C recentres, the HUD hangs from the seat as boards (render/xr/vr-hud.js),
+  the pause menu is a board too, and the controllers drive (game/vr/controls.js). The renderer
+  is the app's one shared renderer, so a headset session carries over from race to race.
 */
 import { WATERMARK } from "../../app/version.js";
 import { createConsole } from "../console.js";
@@ -56,6 +61,11 @@ import { formatRaceTime, raceEntrants } from "../../game/race-setup.js";
 import { createModelLibrary, createTrackWorld, disposeObject, moveObjects, setStartLights, skyColor, updateSky, updateTrackWorld } from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { toSceneMatrix } from "../../shared/scene-frame.js";
+import { createMenu, cycle } from "../../game/vr/menu.js";
+import { SEAT_STEP_FT } from "../../game/vr/seat.js";
+import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS } from "../../game/vr/settings.js";
+import { createRaceVr } from "../../render/xr/race-vr.js";
+import { vrButton } from "../vr-button.js";
 
 /** The race HUD text is a light grey with a one-pixel black shadow (the game's own look). */
 const HUD_GREY = "#cfcfcf";
@@ -116,7 +126,11 @@ async function mountRace(container, context, params) {
   const summit = track.raceType === "summit";
   const dragRace = track.raceType === "drag";
   const dragTree = createDragTree();
-  const canvas = el("canvas", { class: "race-canvas" });
+  // The app's one renderer and its canvas (render/xr/xr-host.js); a headset shows this note meanwhile.
+  context.xr.setBoard(createMenu({ title: "Loading", lines: [track.name] }));
+  const host = await context.xr.host();
+  const { renderer, canvas } = host;
+  canvas.className = "race-canvas";
   const loading = el("div", { class: "race-loading" });
   const loadingText = el("p", { class: "race-loading-text" }, `Loading ${track.name}…`);
   loading.append(loadingText);
@@ -135,15 +149,21 @@ async function mountRace(container, context, params) {
   const cockpit = createCockpit(cockpitArt, { needle, font: hudFont, units: context.settings.units });
   // The caption bar: the game's large font on a dark rectangle at the bottom, for every in-race message.
   const caption = createCaption(messageFont);
-  const showMessage = (text) => caption.show(text, Infinity);
+  // The headset's own copies of the rows and messages, at a size it shows sharply (render/xr/vr-hud.js).
+  const vrTiming = createTextPanel(lcdFont ?? hudFont, { width: 206, scale: 3, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY, backing: "rgba(0, 0, 0, 0.34)" });
+  const vrMessage = createTextPanel(messageFont, { width: 360, scale: 2, align: "center", backing: "rgba(0, 0, 0, 0.42)" });
+  const setHud = (rows) => { hud.set(rows); vrTiming.set(rows); };
+  const showMessage = (text) => { caption.show(text, Infinity); vrMessage.set([text]); };
+  host.menu.setFonts(messageFont, hudFont);
   const pauseMenu = el("div", { class: "race-pause", hidden: true });
   // The Names key (game/names.js): what the course map and the labels over the trucks say.
   let namesMode = 0;
-  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, dragTree.element, gauges.element, caption.element, pauseMenu, loading);
+  const enterVr = vrButton(context, "race-vr");
+  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, dragTree.element, gauges.element, caption.element, enterVr.element, pauseMenu, loading);
   container.append(view);
 
   let disposed = false;
-  const cleanups = [];
+  const cleanups = [() => { enterVr.dispose(); context.xr.setBoard(null); }];
   // Every cleanup runs, whatever another one throws (a skipped one leaves the track's music and the simulation running
   // under the menus); and what is set up after the screen was left is released at once.
   const release = (f) => { try { f(); } catch (error) { console.error(error); } };
@@ -195,8 +215,6 @@ async function mountRace(container, context, params) {
   }
 
   const look = context.settings.look === "enhanced" ? "enhanced" : "classic";
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   const scene = new THREE.Scene();
   const drawDistance = Math.max(16, Math.min(256, context.settings.drawCells ?? 128)) * TERRAIN_CELL_FT;
   const camera = new THREE.PerspectiveCamera(60, 1, 0.5, drawDistance);
@@ -283,7 +301,8 @@ async function mountRace(container, context, params) {
     worldAudio.setWeather(next);
     flare?.setMode(celestialFor(next));
   };
-  cleanups.push(() => { disposeObject(scene); renderer.dispose(); });
+  // The renderer is the app's: it is handed back, with the headset's rig taken out of the scene first.
+  cleanups.push(() => { host.release(); disposeObject(scene); });
 
   // One drawn truck per entrant, at the TRK's own anchors (the simulation clamps the wheelbase, §3.1).
   const drawn = entrants.map((e) => {
@@ -346,18 +365,37 @@ async function mountRace(container, context, params) {
     }),
     race: freeRoam ? null : { checkpoints: build.sim.checkpoints, laps: dragRace ? 1 : laps, mode: summit ? "summit" : dragRace ? "drag" : "circuit" },
   };
-  await sim.call("init", init);
+  // Where the player's truck starts, for the frames before the simulation's first reply.
+  const startPose = await sim.call("init", init);
+  const vrCockpit = await context.assets.call("cockpitPanel").catch(() => null);
   if (disposed) return { unmount };
   loading.hidden = true;
+
+  // The race in a headset: the seat, the boards, the cab and the controllers.
+  const vr = createRaceVr(host, {
+    settings: context.settings, save: () => saveSettings(context.settings), truckFile: playerTruck,
+    body: build.truckModels[playerTruck].parts.body, truckObject: drawn[0].object, scene,
+    panels: { timing: vrTiming, message: vrMessage, gauges }, cockpit: vrCockpit, stock: cockpitArt, needleArt: needle, look,
+  });
+  cleanups.push(() => vr.dispose());
 
   const keys = createKeyboardInput(window, context.settings.bindings);
   const pad = createGamepadInput();
   cleanups.push(() => keys.dispose());
   let gold = null, gameConsole = null;
+  /** The controllers' joystick, and their presses since the simulation last took the input. */
+  let hands = null;
+  const handPresses = { shiftUp: false, shiftDown: false, helicopter: false };
   const sampleInput = () => {
     const held = keys.sample();
     const driving = held.accelerate || held.brake || held.left || held.right;
-    return { ...held, joystick: driving ? null : pad.sample(), slew: gold?.slewing ? gold.slewInput() : null };
+    // A gamepad at rest leaves the driving to the controllers in the player's hands.
+    const stick = pad.sample();
+    const stickBusy = stick && (Math.abs(stick.x) > stick.deadZone || Math.abs(stick.y) > stick.deadZone || stick.shiftUp || stick.shiftDown);
+    const joystick = stickBusy || !hands ? stick : { ...hands, shiftUp: handPresses.shiftUp, shiftDown: handPresses.shiftDown };
+    const helicopter = held.helicopter || handPresses.helicopter;
+    handPresses.shiftUp = handPresses.shiftDown = handPresses.helicopter = false;
+    return { ...held, helicopter, joystick: driving ? null : joystick, slew: gold?.slewing ? gold.slewInput() : null };
   };
 
   // The Inertia view (the Z-mode cameras option) comes after the game's ten.
@@ -370,6 +408,7 @@ async function mountRace(container, context, params) {
     if (finishing || paused === on) return;
     paused = on;
     pauseMenu.hidden = !on;
+    showVrMenu();
     // Every sound stops but the music.
     audio.setEffectsPaused?.(on);
     if (!on) await sim.call("resume");
@@ -389,7 +428,7 @@ async function mountRace(container, context, params) {
     } }, "Options"),
     el("button", {
       "data-menu-sound": "STARTOFF",
-      onclick: () => context.router.go("race-select", { mode: track.raceType }, { replace: true }),
+      onclick: () => endRace(),
     }, "End race"),
   );
   /**
@@ -417,24 +456,91 @@ async function mountRace(container, context, params) {
   cleanups.push(() => replaying?.screen?.unmount?.());
   /** The cockpit view's G state (0 the cockpit, 1 no cockpit with the gauges, 2 neither). */
   const cockpitMode = () => context.settings.cockpitMode ?? 0;
+  const endRace = () => context.router.go("race-select", { mode: track.raceType }, { replace: true });
+
+  /*
+    The pause menu as the headset shows it (render/xr/vr-panel.js): the same choices as the flat
+    one, and the headset's own (docs/VR.md, "Options"). Values change at once, so the seat can be
+    set by eye.
+  */
+  const onOff = (on) => (on ? "On" : "Off");
+  const feet = (v) => `${v > 0 ? "+" : ""}${v.toFixed(2)} ft`;
+  const toggle = (label, key) => ({ label, value: () => onOff(vr.prefs[key]), change: () => vr.set(key, !vr.prefs[key]) });
+  const seatRow = (label, axis) => ({
+    label, value: () => feet(vr.seatOffset[axis]),
+    change: (d) => vr.moveSeat([0, 0, 0].map((_, i) => (i === axis ? d * SEAT_STEP_FT : 0))),
+  });
+  const viewIds = VR_VIEWS.map((v) => v.id), distanceIds = VIEW_DISTANCES.map((v) => v.id), cabIds = CAB_STYLES.map((v) => v.id);
+  const vrOptionsMenu = () => createMenu({
+    title: "VR options",
+    items: [
+      toggle("Horizon lock", "horizonLock"),
+      seatRow("Seat forward", 2), seatRow("Seat height", 1), seatRow("Seat sideways", 0),
+      { label: "Reset seat", action: () => vr.moveSeat(null) },
+      toggle("Cab", "cab"), toggle("HUD", "hud"),
+      {
+        label: "Cab style", value: () => CAB_STYLES.find((v) => v.id === vr.prefs.cabStyle).name,
+        change: (d) => vr.set("cabStyle", cycle(cabIds, vr.prefs.cabStyle, d)),
+      },
+      {
+        label: "Steering", value: () => (vr.prefs.steering === "wheel" ? "Hands as a wheel" : "Thumbstick"),
+        change: () => vr.set("steering", vr.prefs.steering === "wheel" ? "stick" : "wheel"),
+      },
+      {
+        label: "View distance", value: () => VIEW_DISTANCES.find((v) => v.id === vr.prefs.viewDistance).name,
+        change: (d) => vr.set("viewDistance", cycle(distanceIds, vr.prefs.viewDistance, d)),
+      },
+      { label: "Back", action: () => host.menu.open(vrPauseMenu()) },
+    ],
+    back: () => host.menu.open(vrPauseMenu()),
+  });
+  const vrPauseMenu = () => createMenu({
+    title: t("Pause"),
+    items: [
+      { label: "Resume", action: () => setPaused(false) },
+      { label: "Recentre view", action: () => host.recenter() },
+      { label: "View", value: () => vr.view.name, change: (d) => vr.set("view", cycle(viewIds, vr.prefs.view, d)) },
+      { label: "VR options", action: () => host.menu.open(vrOptionsMenu()) },
+      { label: "End race", action: () => endRace() },
+      { label: "Leave VR", action: () => host.exit() },
+    ],
+    back: () => setPaused(false),
+  });
+  /** The headset's pause menu is up exactly while the race is paused in a headset. */
+  function showVrMenu() {
+    if (paused && host.presenting) {
+      if (!host.menu.isOpen) host.menu.open(vrPauseMenu());
+    } else host.menu.close();
+  }
+  cleanups.push(host.on("start", showVrMenu));
+  // Taking the headset off, or the headset's own menu coming up over the game, pauses the race.
+  cleanups.push(host.on("visibility", (state) => { if (state !== "visible") setPaused(true); }));
+
   const keyMap = mergeBindings(context.settings.bindings);
-  const onKey = (e) => {
-    // The Options dialog and the instant replay take the keys while they are up.
-    if (replaying || context.optionsDialog?.isConnected) return;
-    if (demo) { leaveDemo(); return; }
-    if (keyMap.horn.includes(e.code) && !e.repeat) truckAudio.horn(0, latest?.poses[0].current.pos);
-    if (keyMap.yeehaw.includes(e.code) && !e.repeat) truckAudio.yeehaw(0, latest?.poses[0].current.pos);
-    const shortcut = modeForShortcut(e);
-    if (shortcut !== null) e.preventDefault();
-    if ((keyMap.camera.includes(e.code) || shortcut !== null) && !e.repeat) {
+  const playerPosition = () => latest?.poses[0].current.pos;
+  /** The camera key (or a controller's button): the headset's next view, or the window's next camera. */
+  const nextView = (shortcut = null, back = false) => {
+    if (host.presenting) flash(vr.nextView().name, performance.now(), 1.5);
+    else {
       // The short cycle (Options, Game): the cockpit, Chase Near and Chase Far, which are the first three views.
       const views = context.settings.shortViewCycle ? 3 : zCameras() ? INERTIA_MODE.id + 1 : CAMERA_MODES.length;
-      viewMode = shortcut ?? nextMode(viewMode, e.shiftKey, views);
+      viewMode = shortcut ?? nextMode(viewMode, back, views);
       context.settings.view = viewMode;
       saveSettings(context.settings);
       // "Chase Far of Bear Foot": the view's name and the truck being watched (0x52d180).
       flash(`${t(cameraMode(viewMode).name)} of ${truckName(playerTruck)}`, performance.now(), 2);
     }
+  };
+  const onKey = (e) => {
+    // The Options dialog and the instant replay take the keys while they are up.
+    if (replaying || context.optionsDialog?.isConnected) return;
+    if (demo) { leaveDemo(); return; }
+    if (keyMap.horn.includes(e.code) && !e.repeat) truckAudio.horn(0, playerPosition());
+    if (keyMap.yeehaw.includes(e.code) && !e.repeat) truckAudio.yeehaw(0, playerPosition());
+    const shortcut = modeForShortcut(e);
+    if (shortcut !== null) e.preventDefault();
+    if ((keyMap.camera.includes(e.code) || shortcut !== null) && !e.repeat) nextView(shortcut, e.shiftKey);
+    if (keyMap.recenter.includes(e.code) && !e.repeat) host.recenter();
     if (keyMap.pause.includes(e.code)) setPaused(!paused);
     if (keyMap.dashboard.includes(e.code) && !e.repeat) {
       // In the cockpit the key goes round three states: the cockpit; no cockpit with the gauges of the other views; no cockpit and no gauges.
@@ -471,8 +577,25 @@ async function mountRace(container, context, params) {
   };
   window.addEventListener("keydown", onKey);
   cleanups.push(() => window.removeEventListener("keydown", onKey));
+  /** What the controllers' buttons do, once per press (game/vr/controls.js). */
+  const actOnHands = ({ joystick, actions }) => {
+    hands = host.presenting ? joystick : null;
+    if (!host.presenting) return;
+    if (actions.pause) setPaused(!paused);
+    // The rest belongs to the race; a paused one leaves the buttons to the menu.
+    if (paused) return;
+    handPresses.shiftUp ||= !!joystick?.shiftUp;
+    handPresses.shiftDown ||= !!joystick?.shiftDown;
+    handPresses.helicopter ||= actions.helicopter;
+    if (actions.horn) truckAudio.horn(0, playerPosition());
+    if (actions.yeehaw) truckAudio.yeehaw(0, playerPosition());
+    if (actions.camera) nextView();
+    if (actions.recenter) host.recenter();
+  };
 
   const resize = () => {
+    // A headset sizes its own pictures; the canvas is left alone while it is drawn to.
+    if (host.presenting) return;
     const { clientWidth: w, clientHeight: h } = canvas;
     renderer.setSize(w, h, false);
     camera.aspect = w / Math.max(1, h);
@@ -482,6 +605,13 @@ async function mountRace(container, context, params) {
   observer.observe(canvas);
   cleanups.push(() => observer.disconnect());
   resize();
+  // In a headset the flat camera stands in for the head; afterwards it is the chase camera again.
+  cleanups.push(host.on("end", () => {
+    camera.fov = 60;
+    lastView = -1;
+    showVrMenu();
+    resize();
+  }));
 
   // The ten views (game/cameras.js): chase cameras as the exe places them, and the port's own BlimpCam and RaceCam.
   const ground = groundHeightFn(terrain);
@@ -580,7 +710,7 @@ async function mountRace(container, context, params) {
   };
 
   // The demo keeps its own caption up.
-  const flash = (text, now, seconds = 3) => { if (!demo) caption.show(text, seconds); };
+  const flash = (text, now, seconds = 3) => { if (!demo) { caption.show(text, seconds); vrMessage.set([text]); } };
   // A function declaration: the key handler above may call it before this line runs.
   function leaveDemo() { if (!leaveDemo.done) { leaveDemo.done = true; context.router.go("start", {}, { replace: true }); } }
   if (demo) {
@@ -607,7 +737,7 @@ async function mountRace(container, context, params) {
       const byLane = [0, 0];
       race.drag.lamps.forEach((bits, i) => { byLane[race.drag.lane[i]] = bits; });
       dragTree.set(byLane, race.drag.lane[0]);
-      hud.set([
+      setHud([
         [t("Clock:"), formatRaceTime(me.finished && !me.dq ? me.raceTime : race.clock)],
         ["Reaction:", me.reaction === null ? "--.--" : me.reaction.toFixed(2)],
         ["", ""], [t("Place:"), `${me.place}/${race.trucks.length}`],
@@ -619,10 +749,10 @@ async function mountRace(container, context, params) {
     }
     if (summit) {
       // A Rumble: the score and the round's time left, then the place by score (6.3).
-      hud.set([[t("Time Remaining:"), formatRaceTime(race.summit?.left ?? 0)], ["Score:", String(Math.round(me.score))], ["", ""], [t("Place:"), `${me.place}/${race.trucks.length}`]]);
+      setHud([[t("Time Remaining:"), formatRaceTime(race.summit?.left ?? 0)], ["Score:", String(Math.round(me.score))], ["", ""], [t("Place:"), `${me.place}/${race.trucks.length}`]]);
       return;
     }
-    hud.set([
+    setHud([
       [t("Lap:"), formatRaceTime(me.lapTime)], [t("Best:"), formatRaceTime(me.best)], [t("Clock:"), formatRaceTime(race.clock)],
       ["", ""], [race.gap?.kind === "lead" ? t("Lead:") : t("Back:"), formatRaceTime(race.gap?.seconds ?? 0)],
       [t("Place:"), `${t("Lap:")} ${me.lap}/${race.laps}`, `${me.place}/${race.trucks.length}`],
@@ -647,25 +777,19 @@ async function mountRace(container, context, params) {
     context.router.go("results", { track, laps: race.laps ?? laps, difficulty, rows, mode: track.raceType, truck: playerTruck }, { replace: true });
   };
 
-  let frame = 0, last = performance.now(), busy = false, latest = null;
+  let busy = false, latest = null, drawnAt = performance.now();
   let drawnCells = drawDistance / TERRAIN_CELL_FT;
   const movedBoxes = new Set();
   const movedPositions = new Map();
-  window.__openmtm2Race = { audio, scene, camera, renderer, sim, entrants, musicName, get latest() { return latest; } };
-  let frameTimer = 0;
-  cleanups.push(() => { cancelAnimationFrame(frame); clearTimeout(frameTimer); delete window.__openmtm2Race; });
-  // V-sync (Options, Display): with the display's refresh, or as fast as the browser's timer runs (about 250 a second).
-  // A browser shows no more frames than the display has, so without it the extra frames are only simulated and drawn.
-  const nextFrame = () => {
-    if (context.settings.vsync === false) frameTimer = setTimeout(() => loop(performance.now()), 0);
-    else frame = requestAnimationFrame(loop);
-  };
-  const loop = (now) => {
-    nextFrame();
-    // The frame rate limit: a frame that comes too soon is left out (a millisecond of slack for the timer's jitter).
-    if (context.settings.fpsLimit && now - last < 1000 / Math.max(10, context.settings.fpsLimitValue ?? 60) - 1) return;
-    const dt = Math.min(0.1, (now - last) / 1000);
-    last = now;
+  window.__openmtm2Race = { audio, scene, camera, renderer, sim, entrants, musicName, host, vr, get latest() { return latest; } };
+  cleanups.push(() => { delete window.__openmtm2Race; });
+  /** One frame, from the window or from the headset (the host's loop): `now` as performance.now(). */
+  const loop = (_dt, now) => {
+    // The frame rate limit (the window's frames only: a headset keeps to its own rate): a frame that comes too soon is
+    // left out (a millisecond of slack for the timer's jitter).
+    if (!host.presenting && context.settings.fpsLimit && now - drawnAt < 1000 / Math.max(10, context.settings.fpsLimitValue ?? 60) - 1) return;
+    const dt = Math.min(0.1, Math.max(0, (now - drawnAt) / 1000));
+    drawnAt = now;
     if (replaying) return;
     // The draw distance follows the Options at once (Apply in the pause menu's dialog).
     const cells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
@@ -679,6 +803,7 @@ async function mountRace(container, context, params) {
       const dome = world.getObjectByName("sky");
       if (dome?.userData.radius) dome.scale.setScalar(Math.min(6000, feet * 0.95) / dome.userData.radius);
     }
+    actOnHands(vr.drive());
     if (!busy && !paused && !finishing) {
       busy = true;
       sim.call("tick", { tMs: now, input: sampleInput() })
@@ -746,14 +871,16 @@ async function mountRace(container, context, params) {
       audio.setListener(camera.position, forwardVector, camera.up);
       nameTags.update(camera, view.clientWidth, view.clientHeight, entrants.map((e, i) => nameLabel(namesMode, e, truckName)), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0));
       weatherScene.update(dt, shown.map((p) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2] })));
-      placeCamera(shown[cameraTarget] ?? shown[0], dt);
+      // In a headset the seat follows the truck and the flat camera takes the head's place.
+      if (host.presenting) vr.place(shown[cameraTarget] ?? shown[0], dt, camera);
+      else placeCamera(shown[cameraTarget] ?? shown[0], dt);
       // Your own truck is not drawn from inside it.
-      drawn[0].setBodyHidden(viewMode === 0);
+      drawn[0].object.visible = viewMode !== 0 || host.presenting;
       const mine = latest.poses[0].current;
       gauges.setVisible(viewMode === 0 ? cockpitMode() === 1 : context.settings.dashboard !== false);
       gauges.set(mine);
       if (cockpit) {
-        cockpit.setDashboard({ visible: viewMode === 0 && cockpitMode() === 0, speed: mine.speed, rpm: mine.rpm, gear: mine.gear, steer: mine.steer });
+        cockpit.setDashboard({ visible: viewMode === 0 && cockpitMode() === 0 && !host.presenting, speed: mine.speed, rpm: mine.rpm, gear: mine.gear, steer: mine.steer });
         const next = build.sim.checkpoints[latest.race?.trucks[0].checkpoint ?? 0];
         cockpit.setFinder({
           visible: context.settings.finder !== false && !!next && !summit && !freeRoam,
@@ -767,7 +894,9 @@ async function mountRace(container, context, params) {
       if (latest.race && !finishing) showRace(latest.race, now);
       // Free roam has only the clock.
       else if (freeRoam && !latest.race) hud.set([[t("Clock:"), formatRaceTime(latest.time ?? 0)]]);
-    }
+    } else if (host.presenting) vr.place(startPose, dt, camera);
+    vr.update({ state: latest?.poses[0].current ?? startPose, timing: !!latest?.race, message: caption.active, light: weatherScene.lightLevel() });
+    host.menu.update(now);
     if (!paused) caption.update(dt);
     // The water bobs a quarter foot every eight seconds (frozen in Snow), and under it the world is fogged to 320 ft with no sky.
     if (blimp && !paused) {
@@ -793,19 +922,26 @@ async function mountRace(container, context, params) {
     }
     const sky = world.getObjectByName("sky");
     if (sky) { sky.position.set(camera.position.x, 0, camera.position.z); sky.visible = weatherScene.skyShown; }
-    updateTrackWorld(world, camera, dt);
+    // A headset draws everything twice: terrain past the fog's end, which nothing can be seen of, is left out.
+    const sight = vr.sight(scene.fog);
+    updateTrackWorld(world, camera, dt, { viewRange: host.presenting ? sight : undefined });
     if (shadows) {
       shadows.setupMaterials();
       shadows.invalidateDynamic();
       shadows.update();
     }
-    if (flare) flare.update(camera, sunTravel, true, weatherScene.weather <= 1, flareBlocked);
-    renderer.render(scene, camera);
-    renderMirror();
+    if (flare) {
+      // A headset has no frame to draw the flare over: it stands in the scene instead.
+      flare.setStereo(host.presenting);
+      flare.update(camera, sunTravel, true, weatherScene.weather <= 1, flareBlocked);
+    }
+    renderer.render(scene, host.presenting ? host.camera : camera);
+    if (!host.presenting) renderMirror();
     flare?.render(renderer, camera);
     gold?.afterRender(dt, build.title ?? track.name);
   };
-  nextFrame();
+  host.start(scene, loop);
+  showVrMenu();
   gold = createGoldMode({
     window, sim, scene, camera, renderer, canvas, view, build, font: hudFont, scale, t, track, setWeather,
     getWeather: () => weatherScene.weather,
@@ -1051,6 +1187,8 @@ function enableShadows({ renderer, scene, camera, world, sun, drawn }) {
     if (o.isMesh && o.name !== "terrain" && o.name !== "water" && o.name !== "road" && casts(o)) o.castShadow = true;
   });
   for (const truck of drawn) truck.object.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
+  // The placed models are instanced over every copy; only the original's instances cast (track-scene.js).
+  world.getObjectByName("objects")?.traverse((o) => { if (o.isInstancedMesh) o.castShadow = true; });
   // A facing object (type 8 and 9 billboards) turns to the camera, which would swing its shadow around with the
   // view. Its shadow comes from an invisible copy held square to the sun instead (updateTrackWorld keeps it there).
   world.userData.shadowFacing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(sun.position.x, sun.position.z));

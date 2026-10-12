@@ -7,6 +7,9 @@
 
   Copies use a synchronous access handle, which every browser supports in a dedicated worker
   (Safari offers no other way to write OPFS files).
+
+  An archive comes as a File from the picked folder, or as `{ url, size }` when the folder is
+  served over HTTP (install/url-source.js): then it is downloaded here and written as it arrives.
 */
 import { getFileHandle, readFile, readTextFile, removePath, writeBytesToFile } from "../shared/opfs.js";
 import { indexPodFile, readPodEntryBytes } from "./pod-index.js";
@@ -33,7 +36,7 @@ export async function removeInstall() {
 
 /**
  * Copy the archives into OPFS, replacing any previous install.
- * @param {{ files: { name: string, file: File }[], podIni: string }} request
+ * @param {{ files: { name: string, file: File | { url: string, size: number } }[], podIni: string }} request
  * @param {(progress: { copied: number, total: number, name: string }) => void} onProgress
  */
 export async function copyInstall({ files, podIni, exeVersion = null }, onProgress) {
@@ -100,15 +103,49 @@ export async function copyFile(file, path, onChunk) {
   const access = await handle.createSyncAccessHandle();
   try {
     access.truncate(0);
-    for (let at = 0; at < file.size; at += CHUNK) {
-      const chunk = new Uint8Array(await file.slice(at, Math.min(at + CHUNK, file.size)).arrayBuffer());
+    const write = (chunk, at) => {
       access.write(chunk, { at });
       onChunk(chunk.length);
+    };
+    if (typeof file.url === "string") {
+      await downloadInto(file, write);
+    } else {
+      for (let at = 0; at < file.size; at += CHUNK) {
+        write(new Uint8Array(await file.slice(at, Math.min(at + CHUNK, file.size)).arrayBuffer()), at);
+      }
     }
     access.flush();
   } finally {
     access.close();
   }
+}
+
+/**
+ * Download a served archive, handing each piece to `write(bytes, at)` as it arrives. A download
+ * that ends short of the size the server announced is an error, not an install.
+ * @param {{ url: string, size: number }} file
+ * @param {(chunk: Uint8Array, at: number) => void} write
+ * @param {typeof fetch} [fetchFn]
+ */
+export async function downloadInto({ url, size }, write, fetchFn = globalThis.fetch) {
+  const response = await fetchFn(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${url} answered ${response.status}.`);
+  let at = 0;
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      write(value, at);
+      at += value.length;
+    }
+  } else {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    write(bytes, 0);
+    at = bytes.length;
+  }
+  if (size > 0 && at !== size) throw new Error(`${url} sent ${at} of ${size} bytes.`);
+  return at;
 }
 
 /**
