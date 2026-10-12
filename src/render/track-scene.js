@@ -764,6 +764,52 @@ export function moveObjects(world, moves) {
   for (const mesh of touched) boundInstances(mesh);
 }
 
+/**
+ * Tint drawn SIT boxes: `tints` maps a box's `sitIndex` to a CSS colour. The model's texture is made grey
+ * (its darkest at half brightness) so the colour shows whatever the texture's own, its pattern kept as shades;
+ * the model's other placements stay white, so they show that grey. Every copy of the world is tinted.
+ */
+export function tintObjects(world, tints) {
+  const parts = PARTS.get(world);
+  if (!parts?.objects || !tints.size) return;
+  const { slots, offsets } = parts.objects.userData;
+  const colour = new THREE.Color();
+  for (const [sitIndex, css] of tints) {
+    const slot = slots[sitIndex];
+    if (!slot) continue;
+    colour.set(css);
+    for (const mesh of parts.byName.get(slot[0]) ?? []) {
+      if (!mesh.instanceColor) {
+        const white = new THREE.Color(1, 1, 1);
+        for (let k = 0; k < mesh.instanceMatrix.count; k++) mesh.setColorAt(k, white);
+        greyMap(mesh.material);
+      }
+      // Every block holds the copies' placements in the same order (`fillBlock`).
+      for (let block = 0; block < offsets.length; block++) mesh.setColorAt(block * mesh.userData.perCopy + slot[1], colour);
+      mesh.instanceColor.needsUpdate = true;
+    }
+  }
+}
+
+/** A material's texture swapped for a grey copy of itself, from half to full brightness. */
+function greyMap(material) {
+  const map = material?.map;
+  const image = map?.image;
+  if (!image?.data || map.userData.grey) return;
+  const data = new Uint8ClampedArray(image.data.length);
+  for (let i = 0; i < data.length; i += 4) {
+    const luma = 0.299 * image.data[i] + 0.587 * image.data[i + 1] + 0.114 * image.data[i + 2];
+    data[i] = data[i + 1] = data[i + 2] = 128 + luma / 2;
+    data[i + 3] = image.data[i + 3];
+  }
+  const grey = map.clone();
+  grey.image = { data, width: image.width, height: image.height };
+  grey.userData = { grey: true };
+  grey.needsUpdate = true;
+  material.map = grey;
+  material.needsUpdate = true;
+}
+
 /** Draw the SIT backdrop models as camera-centred scenery behind the world. */
 export function createBackdrops(build, look) {
   if (!build.backdrops?.length) return null;

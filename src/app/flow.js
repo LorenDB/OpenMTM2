@@ -39,10 +39,12 @@ export async function goRace(context) {
   const driver = currentDriver(await getProfiles(context));
   const truck = trucks.find((t) => t.file === driver.lastTruck) ?? trucks[0];
   if (!track || !truck) return context.router.go("race-select", { mode: config.mode }, { replace: true });
+  // A party game (docs/PLAN.md, "Party modes"): Hockey or Tag, `laps` its goals or minutes; never free roam.
+  const gameMode = config.gameMode === "hockey" || config.gameMode === "tag" ? config.gameMode : null;
   return context.router.go("race", {
-    track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather,
+    track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather, gameMode,
     // Free roam (the Races screen's box, or a track that has no checkpoints): the player alone, no race.
-    freeRoam: !!config.freeRoam || !!track.freeRoamOnly,
+    freeRoam: !gameMode && (!!config.freeRoam || !!track.freeRoamOnly),
     truck: truck.file, trucks, setup: { ...driver.garage },
   });
 }
