@@ -92,6 +92,9 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 .load-report ul { margin: 10px 0 16px; padding-left: 18px; font: 13px/1.5 ui-monospace, monospace; }
 .race-replay-overlay { position: absolute; inset: 0; z-index: 20; background: #000; }
 .race-pause-title { margin: 0; color: #fff; font: 800 36px/1 system-ui, sans-serif; text-transform: uppercase; }
+/* Entering a headset (src/ui/vr-button.js); shown only where the browser can. */
+.vr-button[hidden] { display: none; }
+.race-vr { position: absolute; z-index: 4; left: 50%; top: 10px; transform: translateX(-50%); padding: 0.5em 1.4em; background: rgba(0, 0, 0, 0.62); border-color: var(--accent); color: #fff; font-weight: bold; }
 
 /* The classic skin (src/ui/frame.js): the game's 640 x 480 menu art, scaled to fit. */
 .stage-view { position: fixed; inset: 0; background: #000; overflow: hidden; display: grid; place-items: center; }
@@ -125,6 +128,12 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 .stage-panel-menu > p { margin: 0 0 4px; }
 .screen-utility { position: fixed; z-index: 20; top: 14px; right: 14px; }
 .stage-utility { position: absolute; z-index: 20; top: 10px; right: 10px; padding: 5px 12px; background: rgba(0, 0, 0, 0.72); }
+/* The note that the game is saved for starting without its server (src/ui/offline-note.js). */
+.offline-note { position: fixed; z-index: 30; left: 16px; bottom: 16px; max-width: min(30em, calc(100vw - 32px)); padding: 0.7em 1em; border: 1px solid var(--accent); border-radius: var(--radius); background: rgba(8, 10, 13, 0.92); color: var(--text); line-height: 1.4; cursor: pointer; }
+.offline-note strong { color: var(--accent); }
+/* "Enter VR" on the menus, beside Options. */
+.screen-vr { position: fixed; z-index: 20; top: 14px; right: 124px; border-color: var(--accent); }
+.stage-vr { position: absolute; z-index: 20; top: 10px; right: 92px; padding: 5px 12px; background: rgba(0, 0, 0, 0.72); border-color: var(--accent); white-space: nowrap; }
 
 /* The controls below sit inside labelled openings already present in the classic BMPs. */
 .stage-panel-name, .stage-panel-skill, .stage-panel-truck, .stage-panel-message,

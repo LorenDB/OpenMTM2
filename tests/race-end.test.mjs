@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { END_COOLDOWN_SECONDS, WAIT_LIMIT_SECONDS, createRaceEnd } from "../src/game/race-end.js";
 
 const view = (clock, ...finished) => ({ clock, trucks: finished.map((f, i) => ({ finished: !!f, place: i + 1 })) });
@@ -45,4 +46,11 @@ test("a Summit Rumble ends with its round, with no cooldown", () => {
   const end = createRaceEnd({ summit: true });
   assert.equal(end.update(view(100, 0, 0)).done, false);
   assert.equal(end.update(view(200, 1, 0)).done, true);
+});
+
+test("in a headset the seat stays with the player's truck: the RaceCam's truck is the flat camera's only", () => {
+  const race = readFileSync(new URL("../src/ui/screens/race.js", import.meta.url), "utf8");
+  assert.match(race, /if \(host\.presenting\) vr\.place\(shown\[0\], dt, camera\);/);
+  assert.match(race, /else placeCamera\(shown\[cameraTarget\] \?\? shown\[0\], dt\);/);
+  assert.doesNotMatch(race, /vr\.place\([^)]*cameraTarget/);
 });

@@ -52,6 +52,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   terrainDetail: true,        // Community Patch 3: the terrain's detail normals where a track paints a mask, and HD tiles' normal maps
   reflections: true,          // Community Patch 3: the sky reflected in materials that ask for it (glass, paint)
   showHiddenTracks: true,     // the two hidden tracks are listed unless this is turned off
+  vr: Object.freeze({}),      // the headset's preferences, see game/vr/settings.js (docs/VR.md)
+  offline: true,              // keep a copy of the app in the browser, to start without a server (app/offline.js)
 });
 
 export function loadSettings() {

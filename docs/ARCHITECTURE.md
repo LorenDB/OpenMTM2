@@ -12,6 +12,7 @@ in `MONSTER_EXE_ANALYSIS.md` and its simulation in `MTM2_PHYSICS.md`.
 | Install, virtual file system, content catalogue, render preparation | `src/worker/` | the asset worker |
 | Race session | `src/game/` | the main thread, driving the sim worker |
 | Rendering | `src/render/` (the only code importing three.js) | the main thread |
+| Headset mode | rules in `src/game/vr/`, drawing in `src/render/xr/`, the app's side in `src/app/xr.js` | the main thread; the rules also Node in tests |
 | Screens | `src/ui/` (HTML), `src/app/` (boot, router, settings) | the main thread |
 
 ## Threads
@@ -30,7 +31,8 @@ so nothing relies on it.
 
 ## Data on disk
 
-Everything lives in the Origin Private File System:
+The game's data lives in the Origin Private File System (the app's own files are kept apart,
+in Cache storage: "Without a server" below):
 
 - the install: `POD.INI` and the PODs it lists, copied once from the folder the player picks;
 - added archives (`addons`, `src/worker/addon-store.js`): another game's folder, read through its
@@ -49,6 +51,75 @@ copied install and preserves profiles, Hall of Fame entries and preferences. Cle
 data removes both OpenMTM2 OPFS directories, `install` and `userdata`, plus its
 `openmtm2.settings` local-storage entry, after an explicit confirmation.
 
+## Without a server
+
+The game's data is in the browser from the day it is installed. What still came from a server at
+every start was the app itself. The app keeps a copy of itself in the browser too (Cache
+storage), and a service worker answers from that copy when the server cannot be reached. So the
+same address opens the game with no server and no network: a headset that was on a cable to a
+PC once (`VR.md`, "Running it on a headset"), or any browser gone offline.
+
+**The worker** (`sw.js`, at the site's root, so that its reach is the app's folder) does one
+thing. Every request goes to the network first, so a server that answers always gives its own
+files, exactly as if the worker were not there. Only when the network fails does the answer
+come from the copy; for the page itself, a server answering 500 or above counts as failing. The
+app is one page, so any address in its folder that is opened gets that page. It leaves alone:
+
+- anything that is not a GET;
+- the game folder a development server offers at `game/`, which is copied once into OPFS and
+  not kept twice;
+- the requests that make the copy (they carry the header `x-openmtm2-offline`), which must come
+  from the server or fail;
+- other sites' data that scripts fetch for themselves (other sites' scripts, such as three.js
+  from its CDN, are answered like the app's own).
+
+It never writes to the copy and keeps nothing in memory, and a new version of it takes over at
+once. It is a classic script, since not every browser runs a service worker as a module.
+
+**The copy** is made by the page (`src/app/offline.js`), at each start, once the page is idle.
+The app has no build step and so no list of its files; it finds them as a browser does
+(`src/shared/app-files.js`): from the page through every stylesheet, script, static and
+dynamic import and worker the files name, with the page's import map for bare names. That
+reaches every file under `src/` and `styles/` and the files of three.js the app uses. Only
+names written as plain strings can be followed, and the tests keep the app to those.
+
+Each file is fetched afresh from the server, past the worker and past the browser's HTTP cache,
+and stored in a new cache. Only when all are in is the pointer to the complete copy moved to
+that cache and the copy before it dropped. So the copy is always one complete set of files as
+one server gave them; a start that cannot finish (the server stopped, the page was closed, the
+browser is offline) leaves the last copy in place. Files from another site carry their version
+in their address; when that site cannot be reached but the app's server can, the ones already
+kept are carried over.
+
+Every tab makes a copy at its start. Where the browser has Web Locks, making a copy and
+removing one take turns on the lock `openmtm2-offline|<root>|lock`: one at a time, the last
+copy made is the one kept, and a cache left half made by a closed page is dropped. Where the
+browser has none, a queue in the page does the same for that page only, so two tabs can write
+at once. Each drops a cache only when its building mark is gone and the pointer does not name
+it, so neither drops a cache the other is still filling, and the pointer is left naming a
+copy that is there.
+
+| Cache | Holds |
+|---|---|
+| `openmtm2-app\|<root>\|<id>` | one copy: every file under its address, the page under `<root>` |
+| `openmtm2-offline\|<root>` | the pointer, at `<root>__offline__`: `{ cache, files, savedAt }` |
+| `openmtm2-building\|<root>\|<id>` | the mark that this copy is still being filled; gone once the pointer names it |
+
+`<root>` is the address of the folder holding `index.html`, so two copies of the app on one
+site keep apart.
+
+It needs a secure context: `localhost`, or HTTPS with a certificate the browser trusts (a
+browser refuses a service worker behind a certificate it was only told to accept). Where it
+cannot work the game runs as before. The setting `offline` (Options, "Start without the
+server") switches it off: the copy is deleted and the worker unregistered. Like every option it
+takes effect when Apply, Save or Close puts it to use, and is undone with the change when Close
+discards it. "Clear browser game
+data" removes it with the rest.
+
+For someone working on the app: with a server running, the server's files are always the ones
+used. With it stopped, the address still opens the last copy, which is the point, but can
+surprise; the Options switch is there for that.
+
 ## Coordinates
 
 Game code works in the game's own units and axes: feet, seconds, radians; world y up; body
@@ -56,6 +127,39 @@ x right, y up, z forward; orientation as `theta` (pitch), `phi` (roll), `psi` (y
 editor space (2 units per foot horizontally, 2 ft height steps) is converted once, when the sim
 world is built. `src/render/world-frame.js` is the only place that converts game feet into scene
 units.
+
+## The headset
+
+`VR.md` specifies the headset mode; this is how it sits in the code.
+
+- **One renderer for every race.** `src/render/xr/xr-host.js` owns the WebGL renderer, its canvas
+  and the frame loop. An immersive session is bound to a WebGL context, so a renderer per race
+  would end the session with each race. The race screen borrows the canvas, hands the host its
+  scene and frame function, and gives them back when it unmounts. The host is made on first use
+  (`src/app/xr.js`), since it brings three.js with it.
+- **The rules are pure.** Where the tracking space goes (`pose.js`), where the driver sits
+  (`seat.js`), what the controllers mean (`controls.js`), the camera the cockpit pictures were
+  drawn through and how the cab's dials read (`cab.js`), the roll cage as read off those
+  pictures (`cab-cage.js`), what a menu holds and does (`menu.js`, `lobby.js`) and the
+  preferences (`settings.js`) are plain functions on plain data in `src/game/vr/`, tested
+  under Node.
+  `src/render/xr/` draws what they say: the cab, the HUD boards, the menu board, the stage
+  between races.
+- **The scene stays in feet.** The tracking space is scaled where it is placed, and the eye
+  cameras are kept in feet too, so nothing else in the renderer knows about metres
+  (`VR.md`, "The rig"). `FEET_PER_METRE` lives beside the feet-to-scene conversion in
+  `src/shared/scene-frame.js`.
+- **The flat camera stands in for the head.** In a headset the race's own camera is put where
+  the head is, so the sky, the weather, the shadows and the sound follow the head with the code
+  they already had.
+- **Menus in the headset are data.** A screen puts a menu on the host's board
+  (`context.xr.setBoard`); with none set, the lobby shows. The same board is worked by
+  controllers, sticks and keys.
+
+`tools/serve.mjs` is a development server with what a headset needs: the player's game folder
+served beside the app (the Install screen then installs from it, `src/install/url-source.js`),
+and HTTPS on the network. After one visit the headset needs it no more ("Without a server"
+above).
 
 ## Reused code
 
