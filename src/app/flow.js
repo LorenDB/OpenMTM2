@@ -48,6 +48,11 @@ export async function goRace(context) {
   if (!config) return context.router.go("race-select", { mode: "circuit" }, { replace: true });
   const catalog = await context.assets.call("catalog");
   const track = catalog.tracks.find((t) => t.file === config.track);
+  // Fly-by (the Races screen's Mode list): the track with no truck on it, not a race.
+  if (config.gameMode === "flyby") {
+    if (!track) return context.router.go("race-select", { mode: config.mode }, { replace: true });
+    return context.router.go("fly-by", { track, weather: config.weather }, { replace: true });
+  }
   const trucks = catalog.trucks.filter((t) => !t.hidden);
   const driver = currentDriver(await getProfiles(context));
   const truck = trucks.find((t) => t.file === driver.lastTruck) ?? trucks[0];
@@ -61,10 +66,12 @@ export async function goRace(context) {
       freeRoam: false, truck: watched[0], trucks, setup: undefined, spectator: true,
     });
   }
+  // A party game (docs/PLAN.md, "Party modes"): Tag, `laps` its minutes; never free roam.
+  const gameMode = config.gameMode === "tag" ? config.gameMode : null;
   return context.router.go("race", {
-    track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather,
-    // Free roam (the Races screen's box, or a track that has no checkpoints): the player alone, no race.
-    freeRoam: !!config.freeRoam || !!track.freeRoamOnly,
+    track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather, gameMode,
+    // Free Roam (the Races screen's mode, or a track that has no checkpoints): the player alone, no race.
+    freeRoam: !gameMode && (!!config.freeRoam || !!track.freeRoamOnly),
     truck: truck.file, trucks, setup: { ...driver.garage },
   });
 }
