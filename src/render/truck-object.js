@@ -6,7 +6,7 @@
   which turns a rotation about x or y the other way and leaves one about z as it is.
 */
 import * as THREE from "three";
-import { toSceneMatrix } from "../shared/scene-frame.js";
+import { toSceneMatrix, nearestCopy } from "../shared/scene-frame.js";
 import { mtm2Sim } from "../vendor/openphotex/index.js";
 import { smoothNormals } from "../shared/smooth-normals.js";
 import { BAR_HALF_WIDTH_FT, SHOCK_HALF_WIDTH_FT, ribbonCorners, suspensionParts } from "../game/suspension.js";
@@ -48,6 +48,7 @@ export function createTruckObject(truck, hubs, look) {
     for (const { mesh } of bodyMeshes) mesh.geometry.getAttribute("normal").needsUpdate = true;
   };
 
+  let standIn = null;
   const corners = ["tireFR", "tireFL", "tireRR", "tireRL"];
   const tires = hubs.map((hub, index) => {
     const pivot = new THREE.Group();   // at the hub: travel, articulation, steering
@@ -143,6 +144,15 @@ export function createTruckObject(truck, hubs, look) {
     /** Hide the truck's body but not its lamps: the player's headlights still shine from inside the cockpit. */
     setBodyHidden(hidden) {
       for (const child of root.children) child.visible = child === lamps.group || !hidden;
+      // A body drawn in the truck's place (the TREX code) stands in for the truck's own.
+      if (standIn) { bodyGroup.visible = false; standIn.visible = !hidden; }
+    },
+    /** Draw `object` (in the truck's frame) in place of the body, or with null the body again. */
+    setStandIn(object) {
+      if (standIn) root.remove(standIn);
+      standIn = object ?? null;
+      if (standIn) root.add(standIn);
+      bodyGroup.visible = !standIn;
     },
     /**
      * Place the truck from a simulation snapshot (see worker/sim-worker.js). `env` says how the lamps
@@ -215,9 +225,12 @@ export function interpolatePose(a, b, alpha) {
   const r = [e[0], e[4], e[8], e[1], e[5], e[9], e[2], e[6], e[10]];
   const matrix = [r[0], r[1], -r[2], r[3], r[4], -r[5], -r[6], -r[7], r[8]];
   const lerp = (x, y) => x + (y - x) * t;
+  // A truck that was wrapped across the world between the two (a replay's frames either side of the seam) is blended
+  // from the copy of where it was that is beside where it is.
+  const from = nearestCopy(a.pos, b.pos);
   return {
     ...b,
-    pos: [lerp(a.pos[0], b.pos[0]), lerp(a.pos[1], b.pos[1]), lerp(a.pos[2], b.pos[2])],
+    pos: [lerp(from[0], b.pos[0]), lerp(from[1], b.pos[1]), lerp(from[2], b.pos[2])],
     matrix,
     axles: b.axles.map((ax, i) => ({
       articulation: lerp(a.axles[i].articulation, ax.articulation), travel: lerp(a.axles[i].travel, ax.travel),

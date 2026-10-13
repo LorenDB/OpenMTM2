@@ -48,7 +48,32 @@ export function createGoldMode(env) {
     panel.element.hidden = true;
     view.append(panel.element);
   }
-  const state = { gold: false, fps: false, slew: false, zMode: false, zoom: 1, turn: 0, screenshot: false };
+  const state = { gold: false, fps: false, slew: false, zMode: false, zoom: 1, turn: 0, screenshot: false, dance: false };
+  // DANCE: the mixer's output as a line across the view, over three guide lines (the middle and 64 lines either side of 480).
+  const scope = win.document.createElement("canvas");
+  scope.className = "gold-scope";
+  scope.hidden = true;
+  view.append(scope);
+  const scopeData = new Uint8Array(1024);
+  const drawScope = () => {
+    const w = view.clientWidth, h = view.clientHeight;
+    if (scope.width !== w || scope.height !== h) { scope.width = w; scope.height = h; }
+    const g = scope.getContext("2d"), mid = h / 2, k = h / 480;
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = "rgba(160, 160, 160, 0.8)";
+    g.beginPath();
+    for (const y of [mid - 64 * k, mid, mid + 64 * k]) { g.moveTo(0, y); g.lineTo(w, y); }
+    g.stroke();
+    env.audio?.waveform?.(scopeData);
+    g.strokeStyle = "#fff";
+    g.beginPath();
+    // A quarter of the sample's swing, as the game draws it: full scale reaches the guide lines.
+    for (let x = 0; x < w; x++) {
+      const y = mid + ((scopeData[Math.floor((x / w) * scopeData.length)] - 128) / 2) * k;
+      if (x) g.lineTo(x, y); else g.moveTo(x, y);
+    }
+    g.stroke();
+  };
   /** Whether the Z-mode keys act: in Z mode, or always with the option. */
   const zKeys = () => state.zMode || !!env.zCameras?.();
   let typed = "", shots = 0, fps = 60;
@@ -69,6 +94,9 @@ export function createGoldMode(env) {
       const code = cheatTyped(typed);
       if (code === "GOLD") { state.gold = !state.gold; typed = ""; flash(`GOLD ${state.gold ? "on" : "off"}`); }
       if (code === "FRAME") { state.fps = !state.fps; typed = ""; fpsPanel.element.hidden = !state.fps; }
+      // Monster Truck Madness 1's two (MTM1_MONSTER_EXE_ANALYSIS.md 3).
+      if (code === "DANCE") { state.dance = !state.dance; typed = ""; scope.hidden = !state.dance; }
+      if (code === "TREX") { typed = ""; const said = env.trex?.(); if (said) flash(said); }
     }
     const chord = e.ctrlKey || e.altKey;
     if (zKeys()) {
@@ -128,8 +156,11 @@ export function createGoldMode(env) {
     // Insert and Delete swing the camera round the truck while held (the chase views).
     if (zKeys() && dt > 0) state.turn += ((down.has("Insert") ? 1 : 0) - (down.has("Delete") ? 1 : 0)) * ORBIT_RAD_PER_S * Math.min(dt, 0.1);
     if (state.fps) fpsPanel.set([`fps : ${fps.toFixed(1)}`]);
+    if (state.dance) drawScope();
     if (state.zMode) {
-      zPanel.set([`Zoom ${state.zoom}x`, `Level ${levelName}`, `Polygons ${renderer.info.render.triangles}/${totalTriangles}`, `Models ${build.objects?.length ?? 0}`]);
+      // MTM1's Z mode adds a physics line under the overlay (0x44a1b0); `env.physicsLine` gives what the page knows of it.
+      const physics = env.physicsLine?.();
+      zPanel.set([`Zoom ${state.zoom}x`, `Level ${levelName}`, `Polygons ${renderer.info.render.triangles}/${totalTriangles}`, `Models ${build.objects?.length ?? 0}`, ...(physics ? [physics] : [])]);
     }
     if (state.screenshot) {
       state.screenshot = false;
@@ -152,6 +183,7 @@ export function createGoldMode(env) {
     /** The sim polling needs the slew keys only while slewing. */
     get slewing() { return state.slew; },
     dispose() {
+      scope.remove();
       win.removeEventListener("keydown", onKeyDown);
       win.removeEventListener("keyup", onKeyUp);
       scene.remove(overlay.object);

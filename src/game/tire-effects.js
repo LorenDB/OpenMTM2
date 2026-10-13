@@ -64,18 +64,31 @@ export const TRACK_BREAK_FT = 10;
 /** The opacity of a mark that is `age` seconds old: full, then fading to nothing at its end. */
 export const trackOpacity = (age) => (age >= TRACK_LIFE_S ? 0 : age <= TRACK_LIFE_S - TRACK_FADE_S ? 1 : (TRACK_LIFE_S - age) / TRACK_FADE_S);
 
-/** Sparks: two thrown every eighth of a second while a hull contact scrapes at speed (0x531e40), and a burst on a hard hit. */
-export const SPARK_INTERVAL_S = 0.125, SPARK_MIN_SPEED = 5, SPARK_POOL = 320, SPARK_HIT_FORCE = 600;
-export const sparksForHit = (force) => (force < SPARK_HIT_FORCE ? 0 : Math.min(28, Math.round(6 + force / 250)));
-export const puffsForHit = (force) => (force < SPARK_HIT_FORCE ? 0 : Math.min(5, 1 + Math.floor(force / 1500)));
+/**
+ * Sparks, uneven and not many (the rates are the port's own): while a hull contact scrapes faster than SPARK_MIN_SPEED,
+ * each SPARK_INTERVAL_S of contact has a SPARK_CHANCE of throwing one (about four a second); a hit harder than
+ * SPARK_HIT_FORCE throws a burst of ten at most, each of its sparks with SPARK_HIT_CHANCE. A tire against a tire throws
+ * them too, at TIRE_SPARK_SHARE of those chances.
+ */
+export const SPARK_INTERVAL_S = 0.125, SPARK_CHANCE = 0.5, SPARK_MIN_SPEED = 6, SPARK_POOL = 320, SPARK_HIT_FORCE = 800, SPARK_HIT_CHANCE = 0.7;
+export const TIRE_SPARK_SHARE = 0.2;
+export const sparksForHit = (force, random = Math.random, share = 1) => {
+  if (force < SPARK_HIT_FORCE) return 0;
+  let thrown = 0;
+  for (let n = Math.min(10, 2 + Math.floor(force / 1500)); n > 0; n--) if (random() < SPARK_HIT_CHANCE * share) thrown++;
+  return thrown;
+};
+/** A truck's hits throw a burst no more often than this, seconds: a contact that lasts is one hit, not one a frame. */
+export const SPARK_BURST_GAP_S = 0.35;
+export const puffsForHit = (force) => (force < 600 ? 0 : Math.min(5, 1 + Math.floor(force / 1500)));
 
 /**
  * Advance a contact's scrape timer by `seconds` of contact; returns `{ timer, sparks }`: how many sparks to
- * throw now (2 per interval) when the truck moves faster than 5 ft/s.
+ * throw now. Below the scrape speed the timer starts over. `share` scales the chance (a tire's contact).
  */
-export function scrapeSparks(timer, seconds, speedFtS) {
+export function scrapeSparks(timer, seconds, speedFtS, random = Math.random, share = 1) {
   if (speedFtS < SPARK_MIN_SPEED) return { timer: 0, sparks: 0 };
   let t = timer + seconds, sparks = 0;
-  while (t >= SPARK_INTERVAL_S) { t -= SPARK_INTERVAL_S; sparks += 2; }
+  while (t >= SPARK_INTERVAL_S) { t -= SPARK_INTERVAL_S; if (random() < SPARK_CHANCE * share) sparks += 1; }
   return { timer: t, sparks };
 }

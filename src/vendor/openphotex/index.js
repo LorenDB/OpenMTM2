@@ -66,10 +66,11 @@ export { parseNocturneZth, NOCTURNE_ZTH_WIDTH, NOCTURNE_ZTH_HEIGHT, NOCTURNE_ZTH
 export { parseKlp, parseMtmAmbientSounds, weatherMaskIncludes } from "./mtm/sound.js";
 export { parseMtmSun } from "./mtm/sun.js";
 export { parseLoc } from "./mtm/loc.js";
+export { parseTrn, writeTrn, TRN_MAX_EVENTS, TRN_MAX_LAPS } from "./mtm/trn.js";
 export { parseMtmReplay, writeMtmReplay, REPLAY_RING_RECORDS, REPLAY_FRAME_TICKS, REPLAY_TICKS_PER_SECOND } from "./mtm/replay.js";
 export { modChannels, parseMod, renderMod } from "./audio/mod.js";
 export { parseCockpitLayout, parseCockpitSections } from "./mtm/cockpit.js";
 export * as mtm2Sim from "./sim/mtm2/index.js";
 export { PodFormatError } from "./errors.js";
 /** The library version, as published in package.json. */
-export const VERSION = "1.0.2";
+export const VERSION = "1.1.0";

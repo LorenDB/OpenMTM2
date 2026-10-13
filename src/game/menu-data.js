@@ -8,25 +8,8 @@ export const RACE_TYPE_NAMES = Object.freeze({
   rally: "Rally Race",
   summit: "Summit Rumble",
   drag: "Drag Race",
+  freeroam: "Free Roam",
   unsupported: "Unsupported",
-});
-
-const STOCK_TRACK_PREVIEWS = Object.freeze({
-  "ALASKA.SIT": "HIGHTS",
-  "AZTEC.SIT": "EXCAVAT",
-  "BAJA.SIT": "TUMBLE",
-  "CRAZY98.SIT": "CRAZY98",
-  "GRAVEY.SIT": "GRAVE",
-  "JUNK.SIT": "SCRAP",
-  "MAIN.SIT": "VOODOO",
-  "AUSSIE.SIT": "TINHORN",
-  "ROCKQRY.SIT": "BREAK",
-  "SNAKE.SIT": "SIDEWIND",
-  "WAR.SIT": "TORTURE",
-  "SUMMIT1.SIT": "SUMMIT1",
-  "SUMMIT2.SIT": "SUMMIT2",
-  "SUMMIT3.SIT": "SUMMIT3",
-  "TPARK.SIT": "FARM",
 });
 
 export function raceTypeName(type) {
@@ -38,18 +21,12 @@ export function raceLengthLabel(type) {
 }
 
 /**
- * The `UI\\*.BMP` names to try for a track's preview, in order: a stock track's own name, else the add-on
- * convention `<stem>S` (the small picture; `<stem>L` is the thumbnail) and then the bare stem.
+ * A track's preview picture: the `UI\\<name>.BMP` its SIT names after "Track Logo .BMP file" (the catalog's `logoBmp`),
+ * or null when it names none. Nothing is guessed from the track's file name: the SIT is what says it. (The SIT's
+ * "Track Map .BMP file" is the small icon in MTM2, and in MTM1 the zoom map.)
  */
-export function trackPreviewNames(file) {
-  const key = String(file).toUpperCase();
-  if (STOCK_TRACK_PREVIEWS[key]) return [STOCK_TRACK_PREVIEWS[key]];
-  const stem = key.replace(/\.SI[T2]$/, "");
-  return [`${stem}S`, stem];
-}
-
-export function trackPreviewName(file) {
-  return STOCK_TRACK_PREVIEWS[String(file).toUpperCase()] ?? String(file).replace(/\.SI[T2]$/i, "").toUpperCase();
+export function trackPreviewBmp(track) {
+  return track?.logoBmp || null;
 }
 
 export function garageSummary(setup) {

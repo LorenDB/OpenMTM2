@@ -6,6 +6,7 @@
   Ground boxes are rebuilt around each truck every frame from the level's .RA0 / .RA1 layers.
 */
 import { eulerToMatrix } from "../math.js";
+import { wrapCoord } from "../world/wrap.js";
 /** The corner order of the game's box setup (§14.15). */
 const CORNERS = [
     [-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1], [-1, 1, -1], [1, 1, -1], [-1, -1, -1], [1, -1, -1],
@@ -66,31 +67,37 @@ export const MAX_GROUND_BOXES = 600;
 /**
  * The ground boxes around a point (§14.14): every cell of the 3 x 3 around it whose lower
  * (`ra0`) and upper (`ra1`) heights differ. Heights are 2 ft steps; neighbours wrap at the map
- * edge, and so do the boxes' positions (as in the game).
+ * edge. Each box is placed beside the point, whichever side of the edge its cell is on (the port's:
+ * the game places it by its own cell, a world away from a truck at the other edge).
  *
  * `smoothFt` is not the game's: with it, a box's side toward a neighbouring box whose top is no
  * more than that many feet lower (level, or higher) is marked open, as is its bottom, so a truck
  * drives across the seams of a floor of boxes and up small steps instead of catching on the
- * sides the cells share.
+ * sides the cells share. `stepFt` is the feet to a height step, for a level whose steps are not
+ * MTM2's 2 ft (Hellbender's are 1.5).
  */
-export function groundBoxesAround(ra0, ra1, x, z, out = [], smoothFt) {
+export function groundBoxesAround(ra0, ra1, x, z, out = [], smoothFt, stepFt = 2) {
     const col = (Math.trunc(x * 256) >> 13) & 255;
     const row = (Math.trunc(z * 256) >> 13) & 255;
+    // Where the point's own copy of the world begins. A neighbouring cell across the map's edge is read wrapped, as in
+    // the game, but its box is placed beside the point (the game places it a world away, where the truck never meets it).
+    const baseX = x - wrapCoord(x), baseZ = z - wrapCoord(z);
     for (let dc = -1; dc <= 1; dc++) {
         for (let dr = -1; dr <= 1; dr++) {
             const c = (col + dc) & 255, r = (row + dr) & 255;
             const i = r * 256 + c;
-            const lo = ra0[i] * 2, hi = ra1[i] * 2;
+            const lo = ra0[i] * stepFt, hi = ra1[i] * stepFt;
             if (lo === hi)
                 continue;
             const h = hi - lo;
-            const box = createBox([c * GROUND_BOX_CELL_FT + 16, lo + Math.trunc(h / 2), r * GROUND_BOX_CELL_FT + 16], [GROUND_BOX_CELL_FT, h, GROUND_BOX_CELL_FT]);
+            // The game's centre is in whole feet (its steps are 2 ft); a level of another step keeps the true middle.
+            const box = createBox([baseX + (col + dc) * GROUND_BOX_CELL_FT + 16, lo + (stepFt === 2 ? Math.trunc(h / 2) : h / 2), baseZ + (row + dr) * GROUND_BOX_CELL_FT + 16], [GROUND_BOX_CELL_FT, h, GROUND_BOX_CELL_FT]);
             if (smoothFt !== undefined) {
                 // Faces: 0 left (-x), 1 right (+x), 2 bottom, 4 front (+z), 5 back (-z).
                 let open = 1 << 2;
                 const beside = (nc, nr, face) => {
                     const k = (nr & 255) * 256 + (nc & 255);
-                    if (ra0[k] !== ra1[k] && hi - ra1[k] * 2 <= smoothFt)
+                    if (ra0[k] !== ra1[k] && hi - ra1[k] * stepFt <= smoothFt)
                         open |= 1 << face;
                 };
                 beside(c - 1, r, 0);

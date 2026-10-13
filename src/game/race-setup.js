@@ -16,20 +16,25 @@ export const DEFAULT_OPPONENTS = 3;
  * The race's entrants, the player first: `[{ name, file, player, slot }]`, `slot` the start-grid
  * slot. `trucks` are catalogue trucks (`{ file, hidden }`), `slots` the grid's size.
  */
-export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random }) {
+export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random, spectator = false }) {
   const catalogue = trucks.filter((t) => !t.hidden);
-  const drivers = [{ name: playerName, file: playerTruck, player: true }];
+  // Spectator mode (the port's): nobody drives. `playerTruck` is then the first of the computer's trucks, under the
+  // last of the computer's names, which no other entrant can have.
+  const drivers = [spectator ? { name: CPU_NAMES[CPU_NAMES.length - 1], file: playerTruck, player: false } : { name: playerName, file: playerTruck, player: true }];
   if (Array.isArray(opponents)) {
     const byFile = new Map(catalogue.map((t) => [t.file.toUpperCase(), t]));
     const selected = [...new Set(opponents.map((file) => String(file).toUpperCase()))];
     for (const file of selected) {
       const truck = byFile.get(file);
-      if (truck && truck.file !== playerTruck && drivers.length < Math.min(8, slots)) {
+      if (truck && (spectator || truck.file !== playerTruck) && drivers.length < Math.min(8, slots)) {
         drivers.push({ name: CPU_NAMES[drivers.length - 1], file: truck.file, player: false });
       }
     }
   } else {
-    // The game's default path: up to 5 * opponents draws, each flagging a catalogue truck.
+    // The game's default path: up to 5 * opponents draws, each flagging a catalogue truck. Only MTM's own trucks are
+    // drawn: another game's vehicle (a CPR car, an Evolution truck) races when the player picks it.
+    const own = catalogue.filter((t) => !t.game || t.game === "MTM");
+    if (own.length) catalogue.splice(0, catalogue.length, ...own);
     const flagged = new Set();
     for (let tries = opponents * 5; tries > 0 && flagged.size < opponents; tries--) {
       flagged.add(Math.min(catalogue.length - 1, Math.floor(random() * catalogue.length)));
@@ -59,4 +64,10 @@ export function formatRaceTime(seconds) {
 /** "1st", "2nd", ... as the standings list prints places. */
 export function ordinal(place) {
   return ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"][place - 1] ?? `${place}th`;
+}
+
+/** A Summit Rumble's drivers for the overlay, best score first (ties in grid order): `[[name, score], ...]`. */
+export function summitBoard(trucks, names) {
+  return trucks.map((row, i) => ({ name: names[i] ?? `Driver ${i + 1}`, score: Math.round(row.score ?? 0), i }))
+    .sort((a, b) => b.score - a.score || a.i - b.i).map((row) => [row.name, String(row.score)]);
 }

@@ -18,6 +18,8 @@
 
 export const END_COOLDOWN_SECONDS = 5;
 export const WAIT_LIMIT_SECONDS = 10;
+/** A watched race (spectator mode) is seen to its end: this long after the winner, the trucks still racing are run on fast. */
+export const SPECTATOR_WAIT_SECONDS = 120;
 
 /**
  * `update(race)` takes the race view (`clock`, `trucks[]` with `finished` and `place`) and returns
@@ -25,8 +27,8 @@ export const WAIT_LIMIT_SECONDS = 10;
  * the one tick the player finishes (the camera goes to the RaceCam), `target` the truck the camera
  * follows (0 until the player has finished).
  */
-export function createRaceEnd({ summit = false } = {}) {
-  let playerAt = null, allAt = null, target = 0;
+export function createRaceEnd({ summit = false, spectator = false } = {}) {
+  let playerAt = null, allAt = null, target = 0, firstAt = null;
   const finished = new Set();
   return {
     get target() { return target; },
@@ -34,6 +36,13 @@ export function createRaceEnd({ summit = false } = {}) {
       const trucks = race?.trucks ?? [];
       const me = trucks[0];
       if (!me) return { done: false, playerFinished: false, justFinished: false, target };
+      // Nobody drives: no truck's finish moves the camera, and the results wait for every truck (or for long enough).
+      if (spectator && !summit) {
+        if (firstAt === null && trucks.some((t) => t.finished)) firstAt = race.clock;
+        if (allAt === null && trucks.every((t) => t.finished)) allAt = race.clock;
+        const done = (allAt !== null && race.clock - allAt >= END_COOLDOWN_SECONDS) || (firstAt !== null && race.clock - firstAt >= SPECTATOR_WAIT_SECONDS);
+        return { done, playerFinished: false, justFinished: false, target };
+      }
       if (summit) return { done: !!me.finished, playerFinished: !!me.finished, justFinished: false, target };
       let justFinished = false, other = false;
       trucks.forEach((t, i) => {

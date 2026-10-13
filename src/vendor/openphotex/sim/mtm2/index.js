@@ -11,6 +11,7 @@ export * from "./world/water.js";
 export * from "./world/course.js";
 export * from "./world/ground.js";
 export * from "./world/road.js";
+export * from "./world/wrap.js";
 export { CHECKPOINT_TYPE, DETECTOR_WIDTH_SCALE, DETECTOR_HEIGHT_SCALE, SPHERE_PRETEST_FACTOR, buildCheckpoints, withinCheckpointReach, speedThroughCheckpoint, checkpointCrossingTime, pointInCheckpointBox, } from "./world/checkpoints.js";
 export * from "./truck/params.js";
 export * from "./truck/state.js";
@@ -30,7 +31,7 @@ export { stepMovingObject, groundBoxHeightAt } from "./collide/moving-object.js"
 export { collideTruckRamp, createRamp, insideRamp, rampEdges, rampHeightAt, rampSlopeNormal } from "./collide/ramp.js";
 export { createEdgeState, edgeAgainstTruck, lineDistance } from "./collide/edges.js";
 export { collideTruckTopCrush, createTopCrush, crushCorners } from "./collide/top-crush.js";
-export { collideTrucks } from "./collide/truck-truck.js";
+export { collideTrucks, impactVelocity } from "./collide/truck-truck.js";
 export { collideBoxes } from "./collide/box-box.js";
 export * from "./race/race.js";
 export * from "./race/summit.js";

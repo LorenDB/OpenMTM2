@@ -7,7 +7,7 @@
   The game's two-contact split is the reverse of the lever rule, and its sliding friction uses
   |vt + v| rather than |vt|; both are kept (§14.12).
 */
-import { weatherGrip } from "../constants.js";
+import { groundWeatherGrip } from "../world/ground.js";
 import { surfaceMu, surfaceType } from "../world/surface.js";
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -159,7 +159,7 @@ export function solveHullContacts(s, inertia, ground, external, mass, weight, dt
         apply(used[i], scale(used[i].normal, N[i]));
     // Friction (§14.12).
     const total = sumN();
-    const weather = weatherGrip(ground.weather);
+    const weather = groundWeatherGrip(ground);
     for (let i = 0; i < k; i++) {
         const c = used[i];
         const share = total !== 0 ? Math.abs(N[i]) / total : 1;

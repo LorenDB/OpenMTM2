@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import {
   CONTACT_GAP_S, DUST_RANGE_FT, DUST_TICK_S, TRACK_RANGE_FT, SMOKE_AFTER_S, SMOKE_EVERY_S, PUFF_FRAMES, PUFF_POOL, SPARK_POOL, TRACK_BREAK_FT, TRACK_LIFE_S, TRACK_POOL, TRACK_STEP_FT, TRACK_WIDTH_FT,
-  dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit, trackOpacity,
+  SPARK_BURST_GAP_S, TIRE_SPARK_SHARE, dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit, trackOpacity,
 } from "../game/tire-effects.js";
 
 const GRAVITY = 32.2, DROP_POOL = 1600;
@@ -111,6 +111,13 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   sparkPoints.frustumCulled = false;
   sparkPoints.renderOrder = 3;
   root.add(sparkPoints);
+  /** A hit's burst of sparks, once for a contact that lasts (game/tire-effects.js SPARK_BURST_GAP_S). */
+  function burst(state, force, share = 1) {
+    if (clock - (state.lastBurst ?? -9) < SPARK_BURST_GAP_S) return 0;
+    const thrown = sparksForHit(force, Math.random, share);
+    if (thrown) state.lastBurst = clock;
+    return thrown;
+  }
   function spark(x, y, z, speed, up = 6) {
     // No sparks under water.
     if (waterLevel !== null && y < waterLevel) return;
@@ -279,7 +286,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       if (flags.sparks) {
         const result = scrapeSparks(state.scrape.get(zone) ?? 0, steps / 60, speedFtS);
         state.scrape.set(zone, result.timer);
-        for (let n = 0; n < result.sparks + sparksForHit(force); n++) spark(where[0], where[1], where[2], 14, 8);
+        for (let n = 0; n < result.sparks + burst(state, force); n++) spark(where[0], where[1], where[2], 14, 8);
       }
       this._contactSmoke(state, where, steps, flags, force);
     },
@@ -296,14 +303,16 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     },
     /** The water's level now in game feet (the bob included), or null on a track without water. */
     setWater(level) { waterLevel = level ?? null; },
-    /** Truck `i` met another truck at `where` (game feet) this frame: sparks while they scrape at speed, a burst and dust on a hard hit. */
-    touch(i, where, steps, force, speedFtS, flags) {
+    /** Truck `i` met another truck at `where` (game feet) this frame: sparks while they scrape at speed, a burst and dust on a hard hit. `hull`: bodywork met, not tires alone. */
+    touch(i, where, steps, force, speedFtS, flags, hull = true) {
       if (!per[i]) return;
       const state = per[i];
       if (flags.sparks) {
-        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, speedFtS);
+        // Tires alone throw far fewer than bodywork.
+        const share = hull ? 1 : TIRE_SPARK_SHARE;
+        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, speedFtS, Math.random, share);
         state.scrape.set(0, result.timer);
-        for (let n = 0; n < result.sparks + sparksForHit(force); n++) spark(where[0], where[1], where[2], 14, 8);
+        for (let n = 0; n < result.sparks + burst(state, force, share); n++) spark(where[0], where[1], where[2], 14, 8);
       }
       this._contactSmoke(state, where, steps, flags, force);
     },

@@ -22,9 +22,20 @@ export function normalizeHall(raw) {
   return { version: 1, entries };
 }
 
-/** Whether `a` beats `b`: lower time in a race, more points in a Rumble. */
+/** A tournament's board: its mode, and the key it is kept under in place of a track's file (MTM1's fourth category). */
+export const TOURNAMENT_MODE = "tournament";
+export const tournamentKey = (name) => `TOURNAMENT:${String(name).trim().toUpperCase()}`;
+
+/** Whether `a` beats `b`: lower time in a race, more points in a Rumble or a tournament. */
 export function beats(a, b) {
-  return a.mode === "summit" ? a.points > b.points : a.time < b.time;
+  return a.mode === "summit" || a.mode === TOURNAMENT_MODE ? a.points > b.points : a.time < b.time;
+}
+
+/** The tournaments that have a board, `[{ key, name }]`, by name. */
+export function tournamentBoards(hall) {
+  const seen = new Map();
+  for (const e of hall.entries) if (e.mode === TOURNAMENT_MODE && !seen.has(e.track)) seen.set(e.track, e.trackName ?? e.track);
+  return [...seen].map(([key, name]) => ({ key, name })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** The entries of one track and mode, best first. */

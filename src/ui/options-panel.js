@@ -1,7 +1,8 @@
 /* Shared contents of the Options screen and the Options modal opened from every menu screen. */
+import { FLY_SCHEMES, FLY_SCHEME_NAMES } from "../game/fly-camera.js";
 import { buildKind, defaultSkin } from "../install/exe-version.js";
 import { el } from "./dom.js";
-import { clearSettings, saveSettings } from "../app/settings.js";
+import { PHYSICS_MODELS, clearSettings, physicsModel, saveSettings } from "../app/settings.js";
 import { offlineStatusText } from "../app/offline.js";
 import { loadStrings } from "../app/strings-store.js";
 import { locName } from "../game/strings.js";
@@ -160,8 +161,12 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
 
   const sections = [
     ["Game", [
+      row("Physics", el("select", { "aria-label": "Physics", onchange: (event) => { settings.physics = event.target.value; save(); } },
+        ...PHYSICS_MODELS.map((m) => el("option", { value: m.id, selected: m.id === physicsModel(settings.physics).id, title: m.note }, m.label))),
+      "The rules the trucks are driven by, from the next race on. Monster Truck Madness is the 1996 game: tires that touch throw trucks twice as hard, water stops a truck, weather does not change the grip, no crash damage, and its drag rules"),
       toggle("Automatic gears", "autoShift"), toggle("Crash damage (dents)", "crashDamage"),
       toggle("Full Autopilot", "fullAutopilot", "The truck drives itself"),
+      toggle("Auto stage", "autoStage", "Drag races: the truck drives itself to the staging beams. Off, you stage it yourself; the Auto Stage key (T) then does it for one pass"),
       toggle("Short camera cycle", "shortViewCycle", "The Camera key (V) steps through the cockpit, Chase Near and Chase Far only"),
       toggle("Z-mode cameras", "zModeCameras", "Zoom with - and +, orbit with Insert and Delete, and the Inertia view, in any race without GOLD mode"), toggle("Show hidden tracks", "showHiddenTracks"),
       toggle("Kooky horn", "kookyHorn", "Three horns instead of one"), choose("Speed", "units", ["MPH", "KPH"], ["mph", "kph"]),
@@ -217,7 +222,7 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       } })),
       toggle("Menu music", "menuMusic"),
     ]],
-    ["Keys", [note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
+    ["Keys", [choose("Fly-by controls", "flyControls", FLY_SCHEMES.map((id) => FLY_SCHEME_NAMES[id]), [...FLY_SCHEMES]), note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
       Object.assign(bindings, mergeBindings({})); settings.bindings = {}; save(); note.textContent = "Keys reset."; showKeys();
     }))]],
     ["Data", [

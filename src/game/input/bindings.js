@@ -11,6 +11,7 @@ export const ACTIONS = Object.freeze([
   { id: "shiftUp", label: "Shift Up" },
   { id: "shiftDown", label: "Shift Down" },
   { id: "helicopter", label: "Helicopter" },
+  { id: "autoStage", label: "Auto Stage" },
   { id: "horn", label: "Horn" },
   { id: "yeehaw", label: "YeeHaw" },
   { id: "camera", label: "Camera" },
@@ -34,6 +35,8 @@ export const DEFAULT_BINDINGS = Object.freeze({
   shiftUp: Object.freeze(["KeyQ", "PageUp"]),
   shiftDown: Object.freeze(["KeyZ", "PageDown"]),
   helicopter: Object.freeze(["KeyH"]),
+  // The game's own key is S, which is Brake here (WASD).
+  autoStage: Object.freeze(["KeyT"]),
   horn: Object.freeze(["Space"]),
   yeehaw: Object.freeze(["KeyY"]),
   camera: Object.freeze(["KeyV"]),

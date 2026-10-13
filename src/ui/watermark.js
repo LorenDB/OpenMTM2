@@ -1,5 +1,5 @@
 /*
-  The "OpenMTM2 v0.3.1" mark in the corner of every screen, drawn with the game's own font.
+  The OpenMTM2 version mark in the corner of every screen, drawn with the game's own font.
   Until the font is in, or when the install has none, plain text stands in.
 */
 import { drawText, loadFont, textWidth } from "../render/bitmap-text.js";

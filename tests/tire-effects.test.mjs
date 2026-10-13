@@ -42,12 +42,26 @@ test("tracks fade over their last 25 s", () => {
   assert.equal(trackOpacity(70), 0);
 });
 
-test("sparks: two every eighth of a second of scraping at speed, none when slow, more for a harder hit", () => {
-  assert.deepEqual(scrapeSparks(0, 0.1, 30), { timer: 0.1, sparks: 0 });
-  let r = scrapeSparks(0.1, 0.05, 30);
-  assert.equal(r.sparks, 2);
+test("sparks: uneven while scraping at speed, none when slow, a burst for a hard hit, far fewer from tires", () => {
+  const always = () => 0, never = () => 0.99;
+  assert.deepEqual(scrapeSparks(0, 0.1, 30, always), { timer: 0.1, sparks: 0 });
+  const r = scrapeSparks(0.1, 0.05, 30, always);
+  assert.equal(r.sparks, 1, "one at most for an interval of contact");
   assert.ok(r.timer < 0.03);
-  assert.deepEqual(scrapeSparks(0.1, 0.5, 2), { timer: 0, sparks: 0 });
-  assert.equal(sparksForHit(300), 0);
-  assert.ok(sparksForHit(3000) > sparksForHit(700));
+  assert.equal(scrapeSparks(0.1, 0.05, 30, never).sparks, 0, "and often none");
+  assert.deepEqual(scrapeSparks(0.1, 0.5, 4, always), { timer: 0, sparks: 0 });
+  assert.equal(sparksForHit(500, always), 0);
+  assert.equal(sparksForHit(1000, always), 2);
+  assert.equal(sparksForHit(1e6, always), 10, "never a shower");
+  assert.equal(sparksForHit(1e6, never), 0);
+  // Over ten seconds of scraping: a few a second from bodywork, about a fifth of that from tires.
+  const count = (share) => {
+    let n = 0, seed = 1, t = 0;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 600; i++) { const step = scrapeSparks(t, 1 / 60, 30, random, share); t = step.timer; n += step.sparks; }
+    return n;
+  };
+  const hull = count(1), tires = count(0.2);
+  assert.ok(hull >= 25 && hull <= 55, `${hull} sparks in 10 s of bodywork`);
+  assert.ok(tires >= 2 && tires <= 16 && tires < hull / 2, `${tires} sparks in 10 s of tires`);
 });

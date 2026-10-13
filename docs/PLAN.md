@@ -249,7 +249,7 @@ Things the port adds on purpose. They are marked here so the original game's spe
 - **Water drops** (done): drops thrown up and out where a wheel runs through water, more and higher with speed, and a burst on entering it; Options switches Water splashes. Wheel dust is drawn 2.2 times the game's size and a collision's dark grey smoke 3.2 times.
 - **Modern menus on the classic layout** (done): the modern skin lays every screen out as the classic one does on a plain 640 x 480 stage: the title, the labels the art would carry, the same panels, and the bottom bar drawn as real buttons (the current screen marked), plus a Back button on every screen but Start.
 - **Version-aware menus** (done): the picked folder's `MONSTER.EXE` version is read (its FileVersion resource) and kept in the install manifest; only 2.00.41 and 2.00.42 get the classic menu art, any other build (CP3 among them) the modern menus. An install made before this was recorded is taken as retail.
-- **Watermark** (done): "OpenMTM2 v0.4.0" in the game's font in the corner of every screen (`src/app/version.js`).
+- **Watermark** (done): "OpenMTM2 v0.5.0" in the game's font in the corner of every screen (`src/app/version.js`).
 - **Camera shortcuts** (done): Ctrl or Alt with 1 to 9 and 0 pick the ten views (1 cockpit, 2 Chase Near, ...).
 - **Helicopter rotors** (done): the model has none; a spinning main and tail rotor are added.
 - **Instant helicopter** (done): the Helicopter key works at any time and at once; see the helicopter section of the exe analysis for how the original behaved.
@@ -286,6 +286,12 @@ A player may own a whole install or only a few PODs, so both ways in are offered
 - **Mount groups without the player seeing them:** every archive is tagged with its game from what it holds (POD2 and the SIT version for Evo, `detectSitOrigin` for CPR and MTM). A track's files are looked up in its own archive first, then in the archives of the same game, then in the rest. This keeps Evo's `STARTUP.POD` and `TRUCK.POD` and CPR's art names from shadowing MTM2's, whatever the order.
 - The install manifest records the added folders and archives; Reload POD.INI and Clear browser game data cover them too.
 - **Tests:** VFS lookups with same-named files in two games' archives; add, remove and reorder; a POD2 archive mounts and lists its SIT.
+
+#### After the play tests (built, to be tested)
+
+- **The caption bar** breaks a long message into lines, keeps the game's proportions on any window (it was stretched to the window's width) and holds a message long enough to read: 1.5 s, and a second more for every 16 letters past 24.
+- **`distance <16-256>`** in the console, in a race and in a fly-by: the draw distance in terrain cells, as Options has it.
+- **The clear-weather haze** starts at 15% of the draw distance (1200 ft at most) and ends at 97% of it, where it started at 35% and ended at 90%: the far ground fades in over a longer stretch. The weathers' own fogs are the game's and are unchanged.
 
 #### Shared groundwork for F3 and F4
 
@@ -364,7 +370,412 @@ A drop-down console as in Quake III or Unreal Tournament, opened with the backqu
 
 The simulation cannot take a truck in or out of a running race, so what changes who races starts the race again.
 
+### Drag weekends
+
+**Built, to be tested.** A drag event around the pass: qualifying, a bracket for 2 to 16 drivers with byes, a winner, by Community Patch 3's rules (MONSTER_EXE_ANALYSIS.md 6.4, "The drag weekend"). The rules come from the CP3 author's written description (`drag_racing_cp3.md` on mtm2.com); he provided no source code. On a drag strip the Races screen has a Drag weekend button (Resume while one is in progress).
+
+| Piece | Where |
+|---|---|
+| The pass | `src/game/drag-race.js` |
+| The event's rules: qualifying, the bracket and byes, the lanes, settling, simulating, the launch layer and personalities, the final order. Pure; it runs no races and is given its field and strip | `src/game/events/drag-event.js` (`src/game/events/` is also where a tournament's rules would go) |
+| The host: picks the field, sets up each pass, hands its results to the event | `src/app/drag-weekend.js` (`context.dragWeekend`) |
+| A pass for the event | `src/ui/screens/race.js`, the `drag` race parameter: who is in which lane, each computer driver's launch and stage depth, two computer trucks to watch; the results go back to the weekend |
+| The screen: qualifying, the bracket with Race or Watch, Simulate, Run all others and Cancel, the win odds, the order | `src/ui/screens/drag-event.js`, on the plain stage in both skins |
+
+**Not done**
+
+- **Persistence:** the weekend lives for the session. The event's state is plain data, so storing it in OPFS beside the profiles is what is left.
+- **Records:** a weekend adds nothing to the Hall of Fame or the driver's race counts.
+- **Confidence** across rounds and seasons, the **split screen** for a watched pairing, and the one cut scene at the end of the weekend.
+- **Tournaments:** planned as Stage 2 below (2.2). The event keeps its interface (a field in, an order out), so a tournament becomes its host in place of `drag-weekend.js`. MTM1's own drag event rules (points, no byes) are in `MTM1_MONSTER_EXE_ANALYSIS.md` 5.7.
+
+### Stages 1 to 4: Races screen and fly-by, MTM1, more games, the wrapping world
+
+**In progress** (Stage 1 built, to be tested). Three stages, each shippable on its own; Stage 4 (a world that truly wraps) follows them below. Stage 2 rests on the MTM1 decompile
+(`docs/MTM1_MONSTER_EXE_ANALYSIS.md`). A fact missing from the docs is read from `re/` and written into the docs
+first; nothing is built on a guess, and where a trace finds nothing the docs say so.
+
+Order: 1.1, 1.3, 1.2 (a trace comes before 1.2); 2.1, 2.5, 2.4, 2.2, 2.3 (a trace comes before 2.3); 3.1, 3.2.
+
+### Stage 1: UI, bug, fly-by
+
+#### 1.1 Races screen (`src/ui/screens/race-select.js`, `styles/screens.css`)
+
+**Built, to be tested.**
+
+- **Sticky headings.** The `Track Name` / `Track Type` header row stays visible while the list
+  scrolls: `position: sticky; top: 0` on the `thead th` of `.race-track-table`, with an opaque
+  background. The `thead` is only added today when the classic art is absent (line 191); where
+  the art carries the headings nothing changes. The filter box stays outside the scroll area.
+- **Selection label** above the filter: `Selected track: <name> - <type label>`, using the
+  existing `typeLabel(item)` (so "Laguna Seca - Road (CPR)"). Updated in `chooseTrack`.
+- **Type 0 is free roam.** In `src/worker/catalog.js` an MTM SIT with `trackTypeCode === 0`
+  gets `raceType: "freeroam"`, `freeRoamOnly: true` and the type label "Free roam" (today it is
+  "unsupported" and Race is disabled). `SUPPORTED` in `race-select.js` gains it. The existing
+  `showFreeRoam()` already ticks and locks the box for `freeRoamOnly`; add a disabled *look* for
+  the Laps box and its label (a `.disabled` class, greyed), since `laps.disabled` alone is not
+  visible on the classic art. `menu-data.js` `RACE_TYPE_NAMES` gains the name.
+  OpenPhotex: `sitTrackTypeName` returns "Free roam" for 0 on MTM SITs (check; add if missing).
+- Tests: `tests/vfs-catalog.test.mjs` (a type 0 SIT is listed as free roam only), `menu-data`.
+
+#### 1.2 Animated BINs: do what the game does
+
+**Built, to be tested.** Traced and written up (`MONSTER_EXE_ANALYSIS.md`, "Animated models"): the frames loop on the frame clock, each for the time the control file gives, joined by a Catmull-Rom spline through four frames. OpenPhotex reads the frame time (`frameSeconds`). The texture cycle's rate is not traced and stays at 15 a second.
+
+Today (`src/worker/keyframes.js`, `updateTrackWorld` in `src/render/track-scene.js`): the frames
+are morph targets blended linearly in a loop at a guessed **0.5 s per frame**.
+
+1. **Trace** `engine/Animate.c` / `Keyframe.c` / `Boss.c` in MTM2 (`0x42d360`-`0x432100`,
+   `tools/re/fn.py`, `cg.py`): what advances the frame (frame time, race clock or real time),
+   the rate, whether frames are interpolated or stepped, loop or ping-pong, per-object phase,
+   what the header's other words mean (OpenPhotex `readAnimated` reads only the count and
+   names), and how `MRGL_KEYFRAME` / `KEYFRAME64` records differ from the control-file BIN.
+   Cross-check with the pterodactyl (`TERYL.BIN`, analysis section 8.2b) and top-crush cars.
+2. **Write it** into `docs/MONSTER_EXE_ANALYSIS.md` (a new "Animated models" subsection) and, for
+   the file fields, OpenPhotex `docs/BIN.md` + `src/model/bin.ts`.
+3. **Implement** in `keyframes.js` (data: rate, mode) and `updateTrackWorld` (playback).
+   `TEXTURECYCLE` (currently 15 fps) is checked in the same pass.
+4. Tests: `tests/keyframes.test.mjs` extended with the traced timing.
+
+#### 1.3 Fly-by mode (new)
+
+**Built, to be tested**, as its own screen (`src/ui/screens/fly-by.js`, route `fly-by`) and not as a parameter of the race screen: it shares the track build, the scene, the weather, the world's sound and the console with the race, and nothing of the trucks. The camera is `src/game/fly-camera.js`, the keys `src/game/input/fly-controls.js`. C goes round the control schemes while flying.
+
+**Key tables** (Hellbender's as the user gave it):
+
+| | Traxx (JSTrackViewer) | Terminal Velocity | Hellbender |
+|---|---|---|---|
+| Arrow Up, Down | forward, back (level) | nose down, nose up | nose down, nose up |
+| Arrow Left, Right | turn | turn (banking) | turn (banking) |
+| A, Z | climb, sink | throttle up, down | Z: slower |
+| X | | | faster |
+| F | | | turbo thrust (2.5 times the speed while held; the factor is the port's) |
+| Page Up, Page Down | tilt up, down | Page Up: roll right | |
+| Home | | roll left | |
+| Mouse drag, wheel | look, zoom | | |
+
+After the first play test: the Traxx scheme keeps JSTrackViewer's keys but not its rates, which cross a track in five seconds (300 ft/s along the ground, 150 up and down, 55 and 40 degrees a second); the craft banks 25 degrees into a turn and leans and levels at 25 degrees a second.
+
+After the second: the sky dome rises with the camera once it is 200 ft up, so it is never flown into; the water is animated and rises and falls as in a race, and the level's moving objects run (`src/game/level-movers.js` steps them with the simulation's own routine, there being no simulation worker here); the console has `distance`.
+
+The Terminal Velocity column is the flight engine's own default layout, read from the bindings MTM1's executable still carries (`leftKey`, `rightKey`, `upKey`, `downKey`, `throttleUpKey`, `throttleDownKey`, `rollLeftKey`, `rollRightKey`: the scan codes of the arrows, A, Z, Home and Page Up). The craft's speed (600 ft/s at full throttle) and rates are the port's.
+
+A camera-only visit of the selected track: no truck, no simulation step, no HUD but a small
+caption.
+
+- **Races screen:** a `Fly-by` button on the row of Laps / Weather / Free roam, at the right
+  edge, in the same type size (`.race-length-label` metrics). It works on every track.
+- **Race screen** (`src/ui/screens/race.js`): a `flyBy` race parameter. It reuses the track
+  load and scene, skips the sim worker session, trucks, opponents, audio of trucks, results.
+  Escape opens the pause menu (Resume, Options, End).
+- **Camera:** new `src/game/fly-camera.js` (pure: position, yaw, pitch, roll, speed; `update(dt,
+  input)`), driven by one of three control schemes in `src/game/input/fly-controls.js`:
+  - **Traxx**: JSTrackViewer's `src/nav.js` (`TrackCamera`): arrows move and turn, A/Z up and
+    down, mouse drag to look, wheel to zoom, PageUp/PageDown pitch. Port its numbers.
+  - **Terminal Velocity** and **Hellbender**: flight controls (pitch, yaw/roll, throttle up and
+    down, afterburner). The key tables are taken from the games' own default bindings (their
+    manuals/README; the MTM1 INI still lists TV's action names: `leftKey`, `upKey`,
+    `throttleUpKey`, `rollLeftKey`...). The two tables are written into `docs/PLAN.md` for the
+    user to confirm before they are coded.
+  - The camera stays above the ground (`terrain height + margin`) using the track's height data.
+- **Choosing the scheme:** Options, Controls gets "Fly-by controls" (setting `flyControls`:
+  `traxx` | `tv` | `hb`, in `src/app/settings.js`); in fly-by a key cycles it and the caption
+  names it; console command `flycontrols <traxx|tv|hb>`.
+- **Console in fly-by:** only `map`, `weather`, `flycontrols`, `backdrop`, `overlap`, `music`,
+  `sound`, `quit`, `help`, `clear` are registered; the rest are absent (not listed by `help`).
+  Done where `race.js` builds the command table (line ~915).
+- Tests: `fly-camera` (each scheme's motion, the ground clamp), `settings`, command list in fly-by.
+
+### Stage 2: MTM1
+
+#### 2.1 OpenPhotex groundwork
+
+**Built** (the simulation's rules switch waits for 2.3): `logoBmp`, `mapBmp`, `descriptionTxt`, `announcerWav` and `dragParTime` on `parseMtmSit`, track type 0 named, `parseTrn` and `writeTrn` (`src/mtm/trn.ts`, `openphotex read` knows `.TRN`), documented in OpenPhotex `docs/MTM2_FILES.md`.
+
+- `parseMtmSit` (`src/mtm/sit.ts`): expose `logoBmp` ("Track Logo .BMP file"), `mapBmp`
+  ("Track Map .BMP file"), `descriptionTxt`, `announcerWav`, and `dragParTime` (the fly-by line
+  as a number when it parses as one; `flyBy` and `sonicTrack` exist already).
+- **TRN** (`src/mtm/trn.ts`, new): `parseTrn` / `writeTrn` for the labelled-line format
+  (analysis 6.1: name, description file, has-drag flag, track count, `file,laps` entries),
+  round-trip tested against the three stock files in `STARTUP.POD`. CLI `read` picks it up;
+  `docs/MTM2_FILES.md` (or a new `MTM1_FILES.md`) documents it.
+- **Sim rules switch** (`src/sim/mtm2/`): a `rules` option on the session, `"mtm2"` (default,
+  byte-identical to today) or `"mtm1"`. See 2.3.
+
+#### 2.2 Tournaments
+
+**Built, to be tested:** the rules (`src/game/events/tournament.js`), the host (`src/app/tournament.js`, the run stored with the player's data so a reload keeps it), the screen with its editor, Open .TRN and Save as .TRN (`src/ui/screens/tournament.js`), the Tournament button beside Options on the Races screen (the Drag weekend button moved left of it), the Winner's Circle's Continue going back to the tournament, and the console's `tourney`, `tourney next`, `tourney prev` and `tourney goto <n>`. A drag event is a drag weekend of the tournament's drivers, scored by MTM1's drag points (`dragEventPoints`).
+
+**Also built since:** laps led (the simulation counts the laps each truck closes in first place, the game's `bonusLaps`, and `race-points.js` gives `floor(100 / laps)` for each, or 100 for leading them all), and the Hall of Fame's tournament category (a finished tournament enters the player's total once; the Hall lists each tournament's board after the tracks).
+
+**Not done:**
+- **The drag event's own rules** are still CP3's weekend (byes, launch layer) whatever the physics; MTM1's event (2, 4 or 8 entrants, no byes, par-time computer runs from the SIT, its pairing) is not built. Its points are (`dragEventPoints`).
+- **The player's own descriptions** are kept with the tournament, not as a separate text file; a saved `.TRN` names no description file.
+
+- **Rules, pure:** `src/game/events/tournament.js` beside `drag-event.js`: a list of events
+  (track, laps), the same field for all, per-event points, totals and final order
+  (analysis 6.3, 6.4). Circuit/rally points reuse `src/game/race-points.js` (fix it to count
+  **laps led**, analysis 8, with its test). A drag event inside a tournament runs
+  `drag-event.js` with MTM1's event rules (2.3) and its points.
+- **Host:** `src/app/tournament.js` (as `drag-weekend.js`): walks the events, starts each race
+  through the normal flow, takes results back. State is plain data; persisted in OPFS
+  (`userdata/tournament.json`) so it survives a reload, which also gives the drag weekend the
+  persistence it lacks.
+- **Screens:** a **Tournament** button on the Races screen next to Options (the same slot
+  pattern as the Drag weekend button; "Resume tournament" while one runs).
+  `src/ui/screens/tournament.js`: pick a tournament, see its events and description, Race;
+  between events the standings; at the end "POINTS TOTALS". An **editor** (name, description,
+  add/remove/reorder events, laps per circuit, New/Delete/Save) with **Open** and **Save as
+  .TRN** (file pickers) plus the player's own kept in OPFS `userdata/tourney/`. Stock ones come
+  from the mounted `TOURNEY\*.TRN` and cannot be deleted. Limits as the game: 16 tournaments,
+  16 events, laps 1 to 20.
+- **Eligibility:** a track is offered to the editor only if it has a race (`!freeRoamOnly`);
+  a `.TRN` naming a missing or free-roam track loads with that event flagged and Race disabled.
+  A tournament with a drag event needs 2, 4 or 8 trucks.
+- **Console:** `tourney` (status), `tourney next` / `tourney prev` / `tourney goto <n>` move
+  between events (the skipped event scores nothing), completing over event names.
+- Hall of Fame gains the tournament category (`src/game/hall-of-fame.js`).
+- Tests: tournament rules (totals, order, drag flag, limits), TRN round trip, host flow.
+
+#### 2.3 MTM1 physics option
+
+**Built, to be tested.** The trace is done and written into `MTM1_MONSTER_EXE_ANALYSIS.md` 4.3. It found **one** cause for the harder hits, in the wheel-against-wheel response (MTM1 `0x467fd0`, MTM2 `0x491e20`): MTM1 makes the force from the whole relative velocity where MTM2 takes half (so a mover that touches a slow truck's tire is hit twice as hard), and its spinning-tire climb is 0.1 for both tires always where MTM2's is 0.05 for tires on the ground. Hull against hull, truck against box, top crush, the hull on the ground and the scrape points are the same code in both games. Nothing was invented: the option holds those two and the four known before (water drag 1.0, no deep water, no weather grip, no crash damage).
+
+- OpenPhotex: `Mtm2Rules`, `MTM2_RULES`, `MTM1_RULES`, `simRules(id)` (`src/sim/mtm2/constants.ts`); a ground carries its rules, `collideTrucks` takes them; MTM2's are the default everywhere (`test/sim-mtm2-rules.test.ts`).
+- OpenMTM2: `PHYSICS_MODELS` in `src/app/settings.js` (a list: a later model is one more entry), the **Physics** list on the Game tab of Options, the console's `physics <id>` (restarts the race), the setting `physics`.
+- Drag pass under MTM1 physics (`createDrag(..., "mtm1")`): no backing-up rule, the Disqualify lamp for a red light only, the computer launching on the green.
+
+**Not done, and why:**
+- The 1996 pass breaks the beams with the hull points and judges the lane by the truck overlapping its boundary boxes; the port keeps the front tire and the outward crossing in both rule sets.
+- The staging gain from the truck's own deceleration (`+0x8bc`): the port's constant stays.
+- **MTM1's drag event** (2, 4 or 8 entrants, par-time computer runs from the SIT, its pairing and points): the drag weekend runs CP3's event whatever the physics.
+- **Not traced:** multiplayer (how a remote truck's state is applied, where "lag shots" would come from; it matters only with M15), and the two extra constants of MTM2's rubber-banding.
+
+The plan as it was written:
+
+**Not started.** A first pass over the truck-against-truck pairs with `tools/re/fdiff.py` shows the code is **not** only inlined differently there, so the collision trace has real material:
+
+- `0x465f50` (MTM1) against `0x48eb70` (MTM2): two tests are the other way round (`!= 0` against `== 0`) and MTM2 has a call and three conditions MTM1 lacks.
+- `0x467fd0` against `0x491e20`: MTM1 has a run of sign tests and comparisons, six groups of three, that MTM2 replaces with a single comparison and two flag tests.
+- `0x469250` against `0x493410`: MTM2 starts from a 999999 sentinel MTM1 does not use.
+- `0x461150` against `0x4894a0`: the same tests, reordered.
+
+None of this is read yet: what the tests guard (which face or axis a hit is resolved on, a clamp on the impulse or the push-out) is the first thing to establish, in MTM1's code and then in `MTM2_PHYSICS.md` 14.20's terms. The switches in OpenPhotex are module constants today (`WATER_DRAG_DENSITY`, `WATER_TYPES`, `weatherGrip` in `sim/mtm2/constants.ts`), so `rules` has to be carried by the session to the ground, the surface and the water drag.
+
+What is known (analysis section 4): the vehicle model is the same code and constants; the
+confirmed differences are water drag density (1.0 vs 0.15), no deep water (type 13), no weather
+grip factor, no crash damage. The user's recollection of **more violent collisions and "lag
+shots"** is not explained by those, so a second trace comes first.
+
+**Nothing is invented.** The MTM1 option holds only differences read from the 1.00 code. If the
+trace finds no cause for the more violent collisions, the option ships with the confirmed
+differences alone and the docs say so plainly.
+
+1. **Deep comparison of the collision code** with `tools/re/fdiff.py` on the pairs whose diffs
+   were only skimmed: truck against truck (`0x461150`/`0x4894a0`, `0x465510`/`0x48f6f0`,
+   `0x465f50`/`0x48eb70`, `0x466930`/`0x490140`, `0x467fd0`/`0x491e20`, `0x469250`/`0x493410`),
+   truck against box (`0x46197d`, `0x472a50`/`0x49f920`, `0x473cd0`/`0x4a12b0`), top crush
+   (`0x4751b0`/`0x4a2d80`), box against box, the hull contact routine (`0x451550`/`0x475960`,
+   the 44.01 ft/s branch), and rubber-banding (`0x45ab3c`/`0x48106c`). Look for restitution,
+   impulse clamps, penetration correction and mass terms that MTM2 added or softened.
+   Also the network side: how a remote truck's state is applied in MTM1 (`0x41eed0`-`0x41f2f0`),
+   since "lag shots" are a multiplayer effect (document it; it only matters for M15).
+2. **Scrape points:** compare how each game turns a `.TRK`'s scrape points and tire positions
+   into the 12 hull points and 4 wheel points (MTM1 `0x421830` against MTM2 `0x4bddc0`, which
+   `match.py` did not pair), and whether the stock MTM1 trucks' values differ in kind.
+3. Write the findings into `docs/MTM1_MONSTER_EXE_ANALYSIS.md` section 4, then implement
+   `rules: "mtm1"` in OpenPhotex as a set of named switches (`world/surface.ts`
+   `WATER_DRAG_DENSITY`, `world/water.ts` deep water, `weatherGrip`, `truck/damage.ts`, plus
+   whatever step 1 finds in `collide/*`), each covered by a test that the MTM2 default is
+   unchanged.
+
+In OpenMTM2:
+- **Options, Game tab** (`src/ui/options-panel.js`): a **Physics** list (a `<select>`, not a
+  toggle, and not on the Races screen), filled from a registry `PHYSICS_MODELS` in
+  `src/app/settings.js` (`[{ id: "mtm2", label: "Monster Truck Madness 2" }, { id: "mtm1",
+  label: "Monster Truck Madness" }]`) so later models are one more entry. Setting `physics`,
+  default `mtm2`, passed in the race config to `sim-worker.js` and on to the session's `rules`.
+  Console: `physics [id]` lists or sets it, completing over the registry (restarts the race).
+- **Drag rules follow it.** With MTM1 physics the pass uses the 1996 rules (analysis 5 and
+  7.2): beams by the hull-point checkpoint test, no backing-up rule, the Disqualify lamp for 99
+  only, the computer launching on the green with no reaction delay, staging gain from the
+  truck's deceleration; and the event uses MTM1's (2, 4 or 8 entrants, no byes, par-time
+  computer runs from the SIT's `dragParTime`, MTM1 pairing and points). Implemented as a
+  `rules` parameter on `drag-race.js` and `drag-event.js`; CP3 stays the default.
+
+#### 2.4 MTM1 cheats (`src/game/cheats.js`, `src/ui/gold-mode.js`, analysis 3)
+
+**Built, to be tested:** DANCE (the mixer's output as an oscilloscope over the race, from a tap on the audio engine's master) and TREX (the player's body drawn as `REX.BIN`, its four frames looping by the animated-model rule of 1.2, 24 ft over the wheels' hubs; a line says so when no mounted archive has the model). **TREX is drawn only:** the game also moves the tires and sets the hull's radius to 30 ft, which the simulation here does not do. The Z overlay has MTM1's physics line as far as the page knows it: the player's forward speed, gear, throttle and brake, and the physics model (the game's control flag, course and substep count are not shown).
+
+- `CHEAT_CODES` gains **DANCE** (an oscilloscope of the audio output across the screen, from an
+  `AnalyserNode` on the mixer in `src/audio/audio-engine.js`) and **TREX** (the player's body
+  becomes `REX.BIN` with its four frames, tires at the analysis's positions, radius 30; only
+  when the model is mounted, otherwise a console line says so).
+- MTM1's Z mode needs no GOLD; keep OpenMTM2's current gating but add the physics line to the Z
+  overlay (velocity, controlflag, gear, course, substeps, throttle, brake).
+- Tests: `tests/cheats.test.mjs`.
+
+#### 2.5 Track logo and zoom map
+
+**Built, to be tested.** The trace (`MTM1_MONSTER_EXE_ANALYSIS.md` 2.10) found that MTM1's zoom screen plays nothing: what it shows with the map is the track's **description text**, in a fixed rectangle. That is what the Zoom dialog does; no sound was added, there being none to copy.
+
+- **Preview:** for a track whose SIT names a logo, the Races screen preview tries
+  `UI\<logoBmp>` first, then the existing `trackPreviewNames` (`src/game/menu-data.js`).
+  The catalog carries `logoBmp` and `mapBmp`. Lookup goes through the track's own archive
+  first (the VFS scoping already does this), so stock tracks need MTM1's `UI.POD` mounted and
+  add-on tracks work from their own POD.
+- **Zoom:** a `Zoom` button at the bottom right of the Races screen, shown only when the
+  selected track's `mapBmp` resolves; it opens a modal `<dialog>` with the bitmap (decoded by
+  the existing `uiImageUrl` in `src/ui/frame.js`), Escape or a click to close.
+- **Track commentary, as MTM1 does it.** Trace first: `CMCZoomMapForm` (message map `0x5271f0`,
+  class around `0x4c2ed0`-`0x4c3130`) and the "Fly By" handlers (`0x4b2c50`, `0x4b3d30`,
+  `0x4b73e0`): which clip plays when the zoom map opens (the SIT's "Track Announcer .WAV file"
+  line, a file by the track's stem, or a commentary phrase), from which folder, whether it
+  stops on Close, and whether the description text is shown there too. Write it into
+  `docs/MTM1_MONSTER_EXE_ANALYSIS.md` (a "Zoom map" subsection), then play it from the dialog
+  through the existing menu audio (`src/audio/menu-sounds.js`), stopped when the dialog closes.
+  Like the bitmaps: stock tracks need MTM1's archives mounted, add-on tracks use their own POD;
+  no clip, no sound. The catalog carries `announcerWav`.
+- Tests: preview name order; button hidden without the file; the clip's name resolution.
+
+### Stage 3: game support
+
+#### 3.1 CPR `.CAR` and 4x4 Evolution trucks
+
+**Built, to be tested** (`src/worker/foreign-truck-build.js`, `tests/foreign-trucks.test.mjs`, run against the real archives: 29 CPR cars, 121 and 150 Evolution trucks).
+
+- A vehicle of another game is named `<GAME>:<file>` ("CPR:DAVIS.CAR", "EVO2:CBLS24.TRK"), because the two Evolution games share file names; it is titled with its game, "Davis/Salles (CPR)", and listed after MTM's trucks in the Garage, Drivers and opponent lists.
+- A CPR car: its `.CMD` body with the road-course wings, its four wheel models. An Evolution truck: its `.SMF` body and tires. The art is each game's own.
+- **The port's rule for the physics:** MTM2's model throughout. The manifest gives the wheel positions and the twelve hull points; the tire model's bounds give the tire's radius and width (OpenPhotex `createTruckParams` takes `tireRadiusFt` and `tireWidthFt`; an MTM truck keeps the game's 3 ft by 4 ft); the weight, springs, engine and gearbox are the monster truck's. So a CART car drives like a small monster truck.
+- The computer's default trucks stay MTM's own; another game's vehicle races when it is picked.
+- **Not done:** the CPR driver's helmet, lamps, cockpits and crash dents (those are MTM2's own files, which these vehicles do not have), Evolution's paint colours and stock parts, each game's own engine and weight figures.
+
+The plan as it was written:
+
+OpenPhotex already parses them (`src/truck/cpr-car.ts`, `src/evo/trk.ts`, `parseTruckManifest`
+returns their kinds) and JSTruckViewer renders them (`src/worker/cpr`, `src/worker/evo`).
+
+- `catalog.js`: list `.CAR` (CPR mounts) and Evo `.TRK` as trucks with `game` and a label
+  suffix "(CPR)" / "(EVO1)" / "(EVO2)"; today both are skipped by the `family !== "MTM"` test.
+- `src/worker/truck-build.js`: per-kind builders adapted from JSTruckViewer (CMD/BIN bodies and
+  wheels for CPR, SMF with RAW/ACT/OPA or TIFF for Evo), returning today's render shape.
+- **Physics stays MTM2's** (as the tracks did): a mapping from each manifest to the sim's truck
+  parameters (wheel positions and radius, hull points from the body's bounds, the default MTM2
+  mass, springs and engine). Written up in `docs/PLAN.md` as the port's rule. Cockpits and
+  damage dents fall back to none where the game has no equivalent.
+- Garage, Drivers and opponent lists show them; tests on the catalog and the parameter mapping.
+
+#### 3.2 Terminal Velocity, Fury3 and Hellbender levels
+
+**Built, to be tested** (`src/worker/tv-track-build.js`, `tests/tv-levels.test.mjs`, run against Terminal Velocity's `CDROM.POD` and Hellbender's `GAME.POD`; no Fury3 archive was at hand).
+
+- An archive with no track script but with these games' levels is detected as "TV" (Terminal Velocity and Fury3, whose files do not tell them apart) or "HB". Each surface level is listed as "Level (TV/F3)" or "Level (HB)", free roam and fly-by only, and no tournament takes it.
+- The ground with its tiles, the objects of the `.DEF` (drawn, not collided with), the level's own sky, the start point of the `.NAV` for the truck and the fly-by camera. MTM2's trucks and physics; Dirt everywhere, no water.
+- **Scale, the port's reading of JSTrackViewer's:** a cell is 32 ft; a height step 2 ft (Terminal Velocity, Fury3) or 1.5 ft (Hellbender); a model unit 1/128 or 1/64 of MTM's. A Hellbender level is 128 cells a side: as it wraps, it is laid out twice each way to fill the 256, its objects with it.
+- **The sky is reachable on these levels only:** a ceiling fixed in the world, 640 ft over the level's lowest ground (the port's figure; the games' own ceiling is not known), where every MTM sky stays out of reach.
+- **Not built:** tunnel levels, Hellbender's cavern and the objects in it and its floating levels' cut-out ground, powerups, texture animation, star-field skies, collision with objects, and any objective. Objectives as checkpoints need those games' executables.
+
+The plan as it was written:
+
+OpenPhotex reads them (`src/tv/*`: LVL, DEF, NAV, PUP, TDF, ANI, briefing) and JSTrackViewer
+builds them (`track-loader.js`, `terrain-builder.js`, `def-loader.js`, `hb-underground.js`).
+
+- `addon-store.js` / `vfs.js`: detect the three games' archives (family `TV`, `F3`, `HB`).
+- `catalog.js`: one entry per level, type label "Level (TV)" etc., `freeRoamOnly: true`,
+  `noTournament: true` (the editor's eligibility test already excludes free-roam-only).
+- `src/worker/tv-track-build.js` (new, from JSTrackViewer): terrain, DEF objects, sky and
+  palette, Hellbender's cavern layer; returns the common build result. Ground for the sim from
+  `createTerrainFt`; objects are passed through at first (no collision), boxes later.
+- Start position from the NAV start point (JSTrackViewer's `NAV_START_POINT`), the truck set on
+  the ground there; fly-by starts at JSTrackViewer's eye height above it.
+- **The sky is reachable on these levels only** (their ceiling and cavern layers are part of the world). On every other track the sky dome goes with the camera and is never reached, as the fly-by already has it.
+- Playable as **free roam and fly-by only**. Objectives as checkpoints need those games'
+  executables decompiled: listed under "Later" in `PLAN.md`, not planned here.
+- Tests: catalog entries, a level builds headless, a free-roam session steps on it.
+
+#### 3.3 Known gap: 4x4 Evolution vegetation (pending, not planned here)
+
+Evo 1 and 2 tracks are missing vegetation support: the small vegetation and its placement
+rules, how the `.VEG` trees and the `.SDW` shadow overlay are really drawn, and whether any of
+it collides. Getting it right means reading the `~/dev/4x4e` and `~/dev/4x4e2` repositories or
+decompiling the Evo executables. That work is expensive, so it is recorded in `docs/PLAN.md`
+under "Pending" beside the TV/F3/HB executables (3.2), with what is missing and where the
+answer lies, and nothing is built on guesses meanwhile.
+
+### Before Stage 4: the third play test
+
+Fixes and additions asked for after Stages 2 and 3, all built and to be tested in the browser.
+
+- **Sparks** (`src/game/tire-effects.js`): few and uneven. While a hull scrapes faster than 12 ft/s each fifth of a second has a 30% chance of one spark; a hit over 1500 lb throws up to six, each with a 60% chance, and a contact that lasts is one hit (a burst no more than every 0.6 s). A tire against a tire throws none: OpenPhotex's `collideTrucks` now says whether hulls or only tires met.
+- **Top crush** (`MTM2_PHYSICS.md` 14.27): a crush car's cab is a two-frame model, intact and flat, that the game stands at the frame its crush says; the port played it in time like any animated model, and never ran the crush. Now the SIT's `*** Top Crush ***` cars reach the simulation (`collideTruckTopCrush`), their two parts are no longer ordinary boxes, and the cab is blended by `crushShare` (0 intact, 1 its roof 0.25 ft over the body). **Not done:** the crush is not in replays, and the fly-by shows the cars intact.
+- **Fly-by:** O shows the list of keys for the scheme in use; T follows the course (the straights joined into a loop, 28 ft over the ground, Up and Down change the speed; `follow <0|1>` in the console). T and not F, which is Hellbender's turbo. The camera, its keys and the list are now one controller (`src/ui/fly-controller.js`) that the race screen shares.
+- **Spectator mode:** a box in the Computer Opponents dialog, ticked by itself when the grid is filled (eight trucks; a drag strip's two). The computer's trucks race alone, the player's own among them if picked. Go asks before starting. The RaceCam is the default; Left and Right change the truck watched, V the view, B switches to the fly camera and back (`fly <0|1>` and `watch <n>` in the console). The race is seen to its end: results come when every truck has finished, or two minutes after the winner. Not in free roam or fly-by. A drag weekend and a tournament are not watched.
+- **Summit Rumble overlay:** every driver with their score, the leader first, under the time and the player's score. From play; the game's drawing code for it was not traced.
+- **Evo 2 bridges** (a player's report, Deja Voodoo): the wheels measured the terrain under a deck while the hull met the deck, so a truck lay on its belly on a bridge or a rock with its wheels hanging. The simulation's post-step now gets each truck's own ground. The freeze reported after a helicopter drop under a bridge was not reproduced; its likely cause is the same mismatch throwing the truck with a force no step follows, so a truck whose state stops being finite or sane is now put back as it last stood (`stateIsSane`), and the wall lookup no longer walks cells for a position off the world.
+- **Add-on archives** (a player's report): an archive with no track script had no game, and its trucks were never listed. `detectArchiveGame` now tells an archive by its vehicles too (MTM trucks, Evolution's `TRUCK.POD`, CPR's `RACECAR.POD`) and by Terminal Velocity and Hellbender levels; archives stored before are looked at again when mounted.
+- **Under a bridge of ground boxes** (a player's report): the port's smoothed ground boxes took a box's top for any tire under its footprint, however far below, so a truck under a low deck was thrown up. A box whose bottom is over the truck's centre now carries none of its wheels, and its bottom is a ceiling to that truck. **Tibet Cliffslide itself has no ground boxes** (its `.RA0` and `.RA1` are equal everywhere): its bridges are a flat model and model-less boxes, and no jump was reproduced under them headless. Where on the track it happens is needed.
+
+### Before Stage 4: the fourth play test
+
+Built, to be tested in the browser.
+
+- **Hellbender ground boxes:** a level's `.RA0`, `.RA1` and `.CL0` (the buildings and walls) are drawn and solid, laid out twice each way with the rest of the level, at Hellbender's 1.5 ft step (OpenPhotex `groundBoxesAround` takes the step; `buildGroundBoxMesh` too). Terminal Velocity levels get theirs the same way where they have any.
+- **Sparks, again:** the last setting left almost none. Now about four a second while a hull scrapes faster than 6 ft/s, a burst of ten at most for a hit over 800 lb, a burst no more often than every 0.35 s; tires alone throw them at a fifth of those chances.
+- **Performance, scenery in blocks** (`src/shared/object-chunks.js`): a model placed in more than 48 places is drawn as one instanced mesh per 512 ft block instead of one for the whole world, so blocks out of view or past the draw distance are skipped, in the picture and in the shadow map. Measured on 4x4 Evolution 2's Pikes Peak: 11,772 objects, of them 11,342 pines of 264 and 324 triangles, 3.4 million triangles that were drawn in full for every copy of the world the view touched. The simulation is not the cost there (0.14 ms a step with eight trucks). **Not measured:** the frame rate itself, which needs the browser. If it is still low, the next steps are fewer triangles for far trees (the models' own reduced groups, which are read and left out today) and no shadows from scenery past a distance.
+- **Names (N):** written in the game's font, white with a black edge. The cycle has a fourth state after the drivers: the driver, and under it the truck in red. The course map shows the driver alone in that state.
+
+### Stage 4: a world that truly wraps
+
+**Built, to be tested in the browser.** The trace came first and is in `MONSTER_EXE_ANALYSIS.md`, "The wrapping world". It changed the design below: the game does not take distances the short way round and does not move the world with the camera. It **wraps every truck's position into the one world each frame** (`0x5559c0`), wraps moving objects the same way, and **draws each truck at the copy nearest the view** (`0x41bbd0`). That is what the port now does.
+
+- **Simulation** (OpenPhotex `src/sim/mtm2/world/wrap.ts`, `test/sim-mtm2-wrap.test.ts`): `wrapTruck` after every step, x and z alone, as the game. So a truck is always inside the world, and every box, ramp, checkpoint and course segment is where it finds them however far it drives.
+- **Across the seam, beyond the game:** the game subtracts positions as they are, so two things either side of the world's edge do not meet until one is wrapped across. The port's pair tests take the copy nearest (`withNearest`): truck against truck, against a box, a ramp, a top-crush car and a wall; ground boxes are placed beside the truck across the edge; the road and deck surfaces of CPR and Evolution levels are read wrapped. Marked in the code as the port's.
+- **Drawing, as the game draws it.** The first build of this stage kept nine copies of the world around the middle one. That is not what the game does: its renderer (`0x5010f0`, `0x4f9ff0`) walks the cells around the view's cell and draws each once, beside the view, reading the map modulo 256. The port now does the same in blocks (`src/shared/object-chunks.js`, `placeBlocks` in `src/render/track-scene.js`): the ground, the ground boxes, a road, the scenery, each object that stands by itself, the water and the track lights are cut into 512 ft blocks, and every frame each block is moved by whole worlds to the copy nearest the camera. There is one world, drawn once; nothing is drawn twice and there are no copies.
+- **The picture's space has no seam.** The watched truck is drawn at the copy nearest where it was drawn last (the simulation still wraps it, as the game does), the other trucks, the helicopter and the blimp beside it, and the fly camera's place runs on unwrapped. So the camera, the tire tracks, the dust and the sparks never jump a world, and shadows are cast by whatever is in sight. What is placed in the simulation's world and read by the page (the course for the BlimpCam, the RaceCam and the map, the finder, the level's sounds) is asked with the position wrapped. A replay's frames either side of the seam are blended across it, and following the course in fly-by goes across the edge.
+- **Checked headless:** a truck driven off the edge comes in at the other side at speed with no jump in the picture; a wall across the seam stops it where the same wall inside does; two trucks either side push each other; a lap by four computer trucks finishes on twelve stock tracks (none of whose courses reaches the edge).
+
+**Not done:**
+- After very many worlds in one direction the picture's coordinates grow large enough to lose precision (some hundreds of worlds): the picture is not brought back toward the origin.
+- How the game picks the placed objects (the models) around the view was not traced; the port places each block of them nearest the camera, the rule the game applies to its trucks.
+- A checkpoint or a course segment that itself lies across the seam: the game wraps each end by itself, which the port keeps; no stock track has one.
+- Box against box across the seam, and a Summit zone or a drag gate on it.
+- A level whose edges do not meet (CPR's, Evolution's Aspen) shows a cliff at the seam, as its heightfield has it.
+
+The plan as it was written:
+
+A flaw in the port: the world is not endless. The terrain's height is asked for modulo 8192 ft, and the scene draws the track once with eight fixed copies around it (`createTrackWorld` in `src/render/track-scene.js`), but nothing else wraps. A truck's position is unbounded, so driving off the middle tile reaches copies that are only drawn: their boxes, ramps, checkpoints and course are not there for the simulation, and after a second tile the drawn world ends. MTM2's world is a torus: drive far enough one way and you are back where you began, with every object, wall and checkpoint in its place. This stage makes the port the same. three.js is no obstacle: it is a matter of where things are placed each frame.
+
+#### 4.1 Trace the game first (docs, then code)
+
+Read from `re/` into `MONSTER_EXE_ANALYSIS.md` and `MTM2_PHYSICS.md` (a new "The wrapping world" section); nothing below is to be built on a guess:
+
+- **Positions:** whether a truck's `ipos` (`+0xfe0`) is itself wrapped (and when: on the conversion to 1/256 ft integers in `0x46da30`, or only in lookups), or left to grow.
+- **Lookups:** the mask used on every position that reaches the terrain (`0x501820`), the ground boxes (`0x553fa0`), the surface (`0x503060`) and the sector tables the renderer and the collision broadphase (`0x488d90`) walk.
+- **Distances:** how object against truck, truck against truck, the checkpoint test (`0x485af0`), the course follower (`0x480410`), the helicopter and the cameras take the difference of two positions across the seam (the shortest way round, or not at all).
+- **Drawing:** how the renderer picks what to draw around the camera (cells and objects by sector, modulo 256), and where the far plane and the fog sit against half a world (4096 ft), so that a thing is never seen twice.
+- **The exceptions:** a stadium (drawn in place of the world), and what the game does with a moving object or a course that crosses the seam.
+
+#### 4.2 Simulation (OpenPhotex `src/sim/mtm2/`)
+
+- One helper for the torus (`world/wrap.ts`): a position brought into the world, and the shortest difference between two positions. Every distance in the simulation goes through it.
+- Trucks, boxes and moving objects keep their positions as the game does (4.1), and each consumer is made seam-aware: ground boxes, the collision broadphase and every pair test, ramps, top-crush cars, checkpoints and their detectors, the course follower and the autopilot's look-ahead, traffic avoidance, the helicopter and recovery, Summit zones, the drag gates.
+- **Every level wraps, whatever its game.** `noWrap` goes: a CART Precision Racing or 4x4 Evolution level is a torus like an MTM one, at its own size. Where a level's edges do not meet (CPR's, and Evo's Aspen with its 40 ft step) the seam is a cliff as the heightfield has it; whether to ease the last cells into each other is decided when it is seen, as an addition marked as such. The road layer, the walls and a mesh ground (`createRoadGround`) wrap with the terrain.
+- **Tests:** a truck driven across the seam meets the same box, ramp and checkpoint as one that reaches them from inside; a headless lap on a stock track started one world away gives the same times as the lap in place; two trucks either side of the seam collide.
+
+#### 4.3 Drawing (`src/render/`, `src/ui/screens/race.js`, `fly-by.js`)
+
+- **The world follows the camera.** The nine copies stay (they share every geometry and texture) and every level gets them, CPR's and Evo's too; the block is moved each frame so that its middle tile is the one the camera is in. With the far plane at most a world away, what is seen is always complete, however far the camera goes.
+- **Everything that moves is placed nearest the camera:** trucks, moved boxes and moving objects, the helicopter, the blimp, effects (dust, sparks, tracks, splashes), name labels and lamps are each drawn at their position shifted by whole worlds to the copy closest to the camera, the test the game makes in its own way (4.1).
+- **Around it:** the sun's shadow cascades and their casters, the sun flare's sight line, the water plane, the weather's particles, the sky (already centred on the camera), sound positions against the listener, the course map and the replay (positions recorded as the simulation holds them, drawn the same way).
+- The fly-by camera wraps as a truck does.
+- **Tests:** the block's placement from a camera position; the nearest copy of a point from a camera across a seam and across a corner; a replay recorded across the seam plays back unbroken.
+
+#### 4.4 Order
+
+4.1, then 4.3's camera-following block and nearest-copy placement (which alone ends the visible edge), then 4.2 by consumer, most used first: ground boxes and collisions, checkpoints, the course follower.
+
 ### Pending, low priority
+- **Executables not decompiled** (costly; nothing is guessed meanwhile): 4x4 Evolution 1 and 2, for the vegetation (Stage 3.3; the `~/dev/4x4e` and `~/dev/4x4e2` repositories may answer it first); Terminal Velocity, Fury3 and Hellbender, for objectives as checkpoints (Stage 3.2).
 - **Game file formats for player data:** decode `player.pro` (the driver profile, versioned, ProjNet.cpp 0x4dae90) and `highscor.mtr` (the Hall of Fame, written by 0x4c7540) so profiles and the Hall of Fame can be imported from, and exported to, a real install. Until then both are JSON in OPFS.
 - **GOODY.BIN blimp** that follows the course on every track but Rumbles (M10, optional).
 
@@ -380,8 +791,8 @@ The simulation cannot take a truck in or out of a running race, so what changes 
 | M13 | **Done apart from the items below.** Crash damage as `core/TruckDmg.c` does it (exe analysis 10): the 12 hull points are the zones, each step a hull point is in contact the sim reports it with the impact force, the zone's level (0 to 3) rises and the body's vertices within 2 ft (1.5 ft for zones 5 to 12) are pushed in along the zone's direction by a little more at every level (OpenPhotex `truck/damage.ts`, `render/truck-object.js` `dent`), for every truck. Damaged trucks play `suspen1`/`suspen3` on impact. The X key toggles it with the game's messages in the caption bar and repairs every truck when it goes off; Options has the switch. The game's own default is off, the port's is on. Left: the knocked lights, the scrape sparks, `GOODY.BIN` parts, and the lower levels of detail (the port draws one body model) |
 | M14 | **Done apart from the items below.** The recorder keeps a frame every quarter second (a record per truck, one per object that moved) in a ring of 2240 records through every race (`game/replay.js`); the results screen's Instant Replay button plays it back in the race's own scene with the VCR controls (play, pause, rewind, fast forward, slow, frame step, scrub, camera on any truck in any of the ten views, zoom and rotate, damage replayed from the damage codes), and Save writes the game's own `.rpl` text format (OpenPhotex `parseMtmReplay` / `writeMtmReplay`), which Options > Open replay reads again, so replays from the game and the Community Patch play too. The race now ends as the game's does: the simulation goes on after the player finishes, with the RaceCam, and the results come 5 s after the last truck. Left: sound in the replay, shadows and the lens flare in the replay, the game's own results-screen replay window and the demo (`.dmo`) files |
 | M15 | Multiplayer (WebRTC; each client owns its truck) |
-| M16 | Community Patch 3 support (the CP3 author's docs: ENGINE_LIMITS, AUTHORING_HD_ART, CPOD_LONG_NAMES, MONVERT_HANDOVER, GLTF_EXTRAS_SPEC, TERRAIN_DETAIL_MASK; JSTrackViewer and JSTruckViewer as references). **Done:** the build is read from `MONSTER.EXE` (above 2.00.42 a community patch, below 2.00.41 a beta) and the menus start modern on a patch, classic otherwise (Options: Automatic, Classic, Modern); POD.INI mounts as on retail. HD art by stem (`ART\<stem>.PNG` → `.TGA` → `.RAW`, square powers of two 32 to 1024, JSTrackViewer's decoder) for models, trucks, the blimp, helicopter and previews, and the sky; `<stem>_N` normal maps (DirectX green-down) on lit materials; `MRGL_MATERIAL` flags mapped as JSTrackViewer does (unlit, alpha test over blend, two-sided, tint, additive, no depth write, Phong specular and emissive, MATERIAL2 normal strength); `.SI2` tracks in the catalog (preferred over a `.SIT` of the same stem); box type 12 lights from the SIT's `L` block (OpenPhotex `parseSitLight`: pool radius on the ground, lamp height, colour, glow sprite and cone, brightness, aim offset), lit at night with the 8 nearest as real lights; box type 13 movers (travel like a train, no horn or crossing bell); four-tire sets (`16FR/16FL/16RR/16RL`). Also done: HD terrain art (scaled to 256 px tiles in the atlas), `_AO` maps (ambient light only), the glass `TEXSOLID` second pass, the MTM1 tracks CP3's GAME.POD carries (a SIT whose level is missing, such as MTM1's HILLCLIM, is left out of the list), Professional's course 2 for every truck (MONSTER_EXE_ANALYSIS.md 9), drag races (an addition rebuilt from the exe's remnants, 6.4: auto-staging, a sportsman tree, red lights, lane disqualification, the other lane on the mirrored course) and a Rumble driver for the computer trucks (an addition, `game/rumble-ai.js`: a flow field to the zone over the ground and the ground boxes, tables as a second layer, jumps off rising ground with a run-up, holding and pushing in the zone). The terrain detail mask and detail normals (`<level>_MASK`, `<level>_DTL` or a generated pattern, world space every 64 ft, strength 1x to 5x by the mask with occlusion at 0.6 of it), HD ground tiles' `_N` maps as a second atlas, and the sky reflected by materials with `reflectivity` and by glass; Options switches Terrain detail and Reflections (written from the docs alone: no track with a mask or a reflective material was at hand to check them against). `MRGL_TEXTURECYCLE` animated textures (MTM1's helicopter rotor), 15 frames a second. **Not done:** a view-angle Fresnel term, `.TXV` track version records. |
-| VR | **Done in an emulator, not yet on a headset** (`docs/VR.md`): WebXR `immersive-vr` with six degrees of freedom at life size; a cab view from a seat read off the truck's body, inside a roll cage with the game's own dials, and two chase views; horizon lock; the controllers as the game's joystick, or the hands held as on a wheel; pause, options, race setup and results on boards in the headset; `tools/serve.mjs` serving the game folder to a headset's browser, which then keeps the app and the game and needs the PC no more (a service worker and a copy of the app, `docs/ARCHITECTURE.md` "Without a server"). The renderer was made cheaper for it (instanced scenery across the wrapped world copies, terrain in chunks). Pending: a run on real hardware and what it shows; hand tracking; the remaining menus in the headset |
+| M16 | Community Patch 3 support (the CP3 author's docs: ENGINE_LIMITS, AUTHORING_HD_ART, CPOD_LONG_NAMES, MONVERT_HANDOVER, GLTF_EXTRAS_SPEC, TERRAIN_DETAIL_MASK, written descriptions only: he provided no source code; JSTrackViewer and JSTruckViewer as references). **Done:** the build is read from `MONSTER.EXE` (above 2.00.42 a community patch, below 2.00.41 a beta) and the menus start modern on a patch, classic otherwise (Options: Automatic, Classic, Modern); POD.INI mounts as on retail. HD art by stem (`ART\<stem>.PNG` → `.TGA` → `.RAW`, square powers of two 32 to 1024, JSTrackViewer's decoder) for models, trucks, the blimp, helicopter and previews, and the sky; `<stem>_N` normal maps (DirectX green-down) on lit materials; `MRGL_MATERIAL` flags mapped as JSTrackViewer does (unlit, alpha test over blend, two-sided, tint, additive, no depth write, Phong specular and emissive, MATERIAL2 normal strength); `.SI2` tracks in the catalog (preferred over a `.SIT` of the same stem); box type 12 lights from the SIT's `L` block (OpenPhotex `parseSitLight`: pool radius on the ground, lamp height, colour, glow sprite and cone, brightness, aim offset), lit at night with the 8 nearest as real lights; box type 13 movers (travel like a train, no horn or crossing bell); four-tire sets (`16FR/16FL/16RR/16RL`). Also done: HD terrain art (scaled to 256 px tiles in the atlas), `_AO` maps (ambient light only), the glass `TEXSOLID` second pass, the MTM1 tracks CP3's GAME.POD carries (a SIT whose level is missing, such as MTM1's HILLCLIM, is left out of the list), Professional's course 2 for every truck (MONSTER_EXE_ANALYSIS.md 9), drag races (an addition, 6.4: one pass by the rules the CP3 author described in writing, with no source code provided, with prestaging and staging by hand or by Auto Stage, the half-second tree, the beams broken by the front tyre, red lights, the lane, reversing and timeout disqualifications, the re-run flag, the timing slip, lane 1 on the SIT's course 2 or the mirrored course, and one opponent or none) and a Rumble driver for the computer trucks (an addition, `game/rumble-ai.js`: a flow field to the zone over the ground and the ground boxes, tables as a second layer, jumps off rising ground with a run-up, holding and pushing in the zone). The terrain detail mask and detail normals (`<level>_MASK`, `<level>_DTL` or a generated pattern, world space every 64 ft, strength 1x to 5x by the mask with occlusion at 0.6 of it), HD ground tiles' `_N` maps as a second atlas, and the sky reflected by materials with `reflectivity` and by glass; Options switches Terrain detail and Reflections (written from the docs alone: no track with a mask or a reflective material was at hand to check them against). `MRGL_TEXTURECYCLE` animated textures (MTM1's helicopter rotor), 15 frames a second. **Not done:** a view-angle Fresnel term, `.TXV` track version records. |
+| VR | **Done in an emulator, not yet on a headset** (`docs/VR.md`): WebXR `immersive-vr` with six degrees of freedom at life size; a cab view from a seat read off the truck's body, inside a roll cage with the game's own dials, and two chase views; horizon lock; the controllers as the game's joystick, or the hands held as on a wheel; pause, options, race setup and results on boards in the headset; `tools/serve.mjs` serving the game folder to a headset's browser, which then keeps the app and the game and needs the PC no more (a service worker and a copy of the app, `docs/ARCHITECTURE.md` "Without a server"). The renderer was made cheaper for it with instanced scenery and one block-based wrapped world, with terrain in chunks. Pending: a run on real hardware and what it shows; hand tracking; the remaining menus in the headset |
 
 ### M9 menu layout refinement
 

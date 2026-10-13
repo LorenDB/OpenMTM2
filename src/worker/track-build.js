@@ -15,6 +15,7 @@ import { buildTerrainAtlas, buildTerrainMesh, decodeTerrainTextures } from "./te
 import { decodeModel } from "./models.js";
 import { resolveKeyframeModel } from "./keyframes.js";
 import { buildGroundBoxMesh } from "./ground-box-mesh.js";
+import { buildTvSky, buildTvTrackRender } from "./tv-track-build.js";
 import { buildTruckRender } from "./truck-build.js";
 import { loadVehicleModels } from "./vehicle-models.js";
 import { artStem, loadAoMap, loadArtTexture, loadNormalMap, loadPlainImage, shrinkImage } from "./art-texture.js";
@@ -138,11 +139,26 @@ export async function loadRaceVehicles(mtm, truckPalettes) {
 }
 
 /**
+ * The dinosaur of MTM1's TREX code (game/cheats.js): REX.BIN, an animated BIN of four frames in MTM1's GAME.POD, as a
+ * keyframed model with its textures, or null when no mounted archive has it.
+ */
+export async function loadRex(mtm, truckPalettes) {
+  const bytes = await mtm.read("MODELS\\REX.BIN");
+  const list = bytes ? decodeModel(bytes, "REX.BIN") : null;
+  if (!list?.frameNames?.length) return null;
+  const frames = await loadVehicleModels(mtm, truckPalettes, list.frameNames.map((n) => n.toUpperCase()));
+  const model = await resolveKeyframeModel(list, async (name) => frames.models.find((m) => m.name === name.toUpperCase()) ?? null);
+  return model?.meshes?.length ? { model, textures: frames.textures } : null;
+}
+
+/**
  * @param {ReturnType<import("./vfs.js").createVfs>} vfs
  * @param {string} sitPath
  * @param {{ detailLevel?: number, raceType?: string, truckFiles?: string[] }} [options] `truckFiles`: more trucks to build models for
  */
 export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap } = {}) {
+  // A Terminal Velocity, Fury3 or Hellbender level has no SIT: it is named by its LVL (worker/tv-track-build.js).
+  if (/\.LVL$/i.test(sitPath)) return buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap });
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
   const sitBytes = await vfs.read(sitPath);
   if (sitBytes && isEvoSit(sitBytes)) return buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, tileOverlap });
@@ -250,6 +266,8 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
       model: name, type: box.type, sitIndex, matrix: toSceneMatrix(m, box.positionFt),
       // CPR's trees (type 3) are flat cards that face the camera, as JSTrackViewer draws them.
       billboard: box.type === 8 || box.type === 9 || (cpr && box.type === CPR_TREE_TYPE),
+      // A top-crush car's cab: its frames are intact and flattened, shown by how far it is crushed, not played in time.
+      ...(box.crushRole === "cab" ? { crushCar: box.crushGroup } : {}),
     });
   }
 
@@ -262,7 +280,8 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   const boundsOf = {};
   const collisionBoxes = [];
   for (const [sitIndex, box] of sit.boxes.entries()) {
-    if (box.type === RAMP_TYPE || !box.positionFt || !mtm2Sim.levelBoxCollides(box, detailLevel)) continue;
+    // A top-crush car's two parts are not boxes: the car has its own test (`topCrush` below).
+    if (box.type === RAMP_TYPE || box.crushRole || !box.positionFt || !mtm2Sim.levelBoxCollides(box, detailLevel)) continue;
     const name = box.modelName ? podPathTitle(box.modelName) : "";
     if (name && !(name in boundsOf)) {
       const model = name in models ? models[name] : await loadModel(name);
@@ -277,6 +296,16 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
       bvel: (box.type === 10 || box.type === BOX_MOVING) && box.bvel ? [...box.bvel] : null,
       hitSound: box.hitSound ?? null, modelName: name,
     });
+  }
+
+  const topCrush = [];
+  for (const car of sit.topCrush ?? []) {
+    const boundsFor = async (modelName) => {
+      const name = modelName ? podPathTitle(modelName) : "";
+      if (!name) return null;
+      return (name in models ? models[name] : await loadModel(name))?.bounds ?? null;
+    };
+    topCrush.push({ ...car, bodyBounds: await boundsFor(car.modelName), cabBounds: await boundsFor(car.cabModelName) });
   }
 
   // Objects that make a sound of their own (SIT "@sound effect entries", second name): a train's
@@ -423,7 +452,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     soundObjects, trackLights,
     modelTextures,
     objects,
-    blimp, heli,
+    blimp, heli, rex: await loadRex(mtm, truckPalettes),
     /** Where each SIT box started (x, y, z feet, theta, phi, psi): the replay file's `Original object locations`. */
     originals: sit.boxes.map((b) => (b.positionFt ? [b.positionFt[0], b.positionFt[1], b.positionFt[2], b.theta ?? 0, b.phi ?? 0, b.psi ?? 0] : [0, 0, 0, 0, 0, 0])),
     backdrops,
@@ -442,6 +471,8 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
       ra0: level.groundBoxes.ra0 ? level.groundBoxes.ra0.slice() : null,
       ra1: level.groundBoxes.ra1 ? level.groundBoxes.ra1.slice() : null,
       boxes: collisionBoxes,
+      /** The top-crush cars (MTM2_PHYSICS.md 14.27), each with its two models' bounds. */
+      topCrush,
       ramps,
       /** The primary course's straights (MTM2_PHYSICS.md 12); the session builds the arcs. */
       course: courseOf(sit.primaryCourse),
@@ -480,6 +511,7 @@ const OLD_MTM_SKY = "CLOUDY2";
 
 /** Just a track's sky for a weather, when the weather changes in a race (GOLD mode). */
 export async function buildSky(vfs, sitPath, weather, mtm1 = MTM1_DEFAULTS) {
+  if (/\.LVL$/i.test(sitPath)) return buildTvSky(vfs, sitPath);
   const sitBytes = await vfs.read(sitPath);
   if (sitBytes && isEvoSit(sitBytes)) return buildEvoSky(vfs, sitPath, sitBytes, weather);
   const level = await loadLevel(vfs, sitPath);

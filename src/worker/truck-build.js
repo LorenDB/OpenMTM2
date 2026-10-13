@@ -9,6 +9,7 @@
 import { MTM_WHEEL_KEYS, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
 import { decodeModel } from "./models.js";
 import { artStem, loadAoMap, loadArtTexture, loadNormalMap } from "./art-texture.js";
+import { buildForeignTruckRender, parseForeignTruckId } from "./foreign-truck-build.js";
 
 async function model(vfs, name) {
   if (!name) return null;
@@ -24,6 +25,8 @@ async function model(vfs, name) {
  * @param {ReturnType<import("./palette-resolver.js").createPaletteResolver>} paletteResolver
  */
 export async function buildTruckRender(vfs, trkName, paletteResolver) {
+  // A CPR car or a 4x4 Evolution truck (`<GAME>:<file>`) is built from its own game's files.
+  if (parseForeignTruckId(trkName)) return buildForeignTruckRender(vfs, trkName);
   const title = podPathTitle(trkName).toUpperCase();
   const bytes = await vfs.read(`TRUCK\\${title.endsWith(".TRK") ? title : `${title}.TRK`}`);
   if (!bytes) return null;

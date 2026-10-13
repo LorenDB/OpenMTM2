@@ -1,7 +1,7 @@
 /*
   The drag race's Christmas tree on the HUD (game/drag-race.js), laid out as the exe's 0x548ff0
   draws it: seven lamps a side, the left lane's and the right lane's, the labels between them.
-  The player's lane is marked.
+  The player's lane is marked. Under the tree is the timing slip: each lane's reaction time and elapsed time.
 */
 import { el } from "./dom.js";
 import { LAMP_LABELS } from "../game/drag-race.js";
@@ -21,19 +21,29 @@ export function createDragTree() {
     return el("div", { class: "drag-row" }, lamp(0), el("span", { class: "drag-label" }, label.trim()), lamp(1));
   });
   const marks = [el("span", { class: "drag-mark" }), el("span", { class: "drag-mark" })];
-  const element = el("div", { class: "drag-tree", hidden: true }, el("div", { class: "drag-marks" }, marks[0], el("span"), marks[1]), ...rows);
+  const slipCell = () => el("span", { class: "drag-time" });
+  const times = { reaction: [slipCell(), slipCell()], et: [slipCell(), slipCell()] };
+  const slipRow = (label, cells) => el("div", { class: "drag-slip" }, cells[0], el("span", { class: "drag-label" }, label), cells[1]);
+  const element = el("div", { class: "drag-tree", hidden: true }, el("div", { class: "drag-marks" }, marks[0], el("span"), marks[1]), ...rows,
+    slipRow("R/T", times.reaction), slipRow("ET", times.et));
   let shown = "";
   return {
     element,
-    /** `lamps` per lane (bits), `playerLane` the player's lane, or null to hide the tree. */
-    set(lamps, playerLane) {
-      const key = lamps ? `${lamps.join(",")}:${playerLane}` : "";
+    /**
+     * `lamps` per lane (bits), `playerLane` the player's lane, or null to hide the tree. `slip` per lane:
+     * `{ reaction, et, out }` (seconds or null; `out` the word shown for a truck with no time), or null for an empty lane.
+     */
+    set(lamps, playerLane, slip = []) {
+      const text = (side, value) => (!slip[side] ? "" : value === null || value === undefined ? "-" : value.toFixed(3));
+      const lines = [0, 1].map((side) => [text(side, slip[side]?.reaction), slip[side]?.out ?? text(side, slip[side]?.et)]);
+      const key = lamps ? `${lamps.join(",")}:${playerLane}:${lines.join(",")}` : "";
       if (key === shown) return;
       shown = key;
       element.hidden = !lamps;
       if (!lamps) return;
       sides.forEach((dots, side) => dots.forEach((dot, k) => dot.classList.toggle("lit", !!((lamps[side] ?? 0) & (1 << k)))));
       marks.forEach((m, side) => { m.textContent = side === playerLane ? "YOU" : ""; });
+      lines.forEach(([reaction, et], side) => { times.reaction[side].textContent = reaction; times.et[side].textContent = et; });
     },
   };
 }

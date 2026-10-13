@@ -167,3 +167,14 @@ By Juan Pablo Utreras. Licensed under the Apache License 2.0 (see [LICENSE](LICE
 Monster Truck Madness 2 is a trademark of Microsoft Corporation and was developed by Terminal
 Reality Inc. OpenMTM2 is an independent project, not affiliated with or endorsed by either. It
 includes none of their code or data: you need your own copy of the game.
+
+Third-party assets, each under its own license and not under Apache 2.0:
+
+- `assets/start-background.webp`, the Start screen's background, is adapted from
+  ["Untitled"](https://www.flickr.com/photos/fortes/222692658/) by
+  [Filipe Fortes](https://www.flickr.com/photos/fortes/), used under
+  [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/). The photo was modified;
+  the adapted image is shared under the same CC BY-SA 2.0 license.
+- `assets/fonts/league-spartan-*.woff2`, the screen headers' typeface, is
+  [League Spartan](https://github.com/theleagueof/league-spartan) by The League Spartan Project
+  Authors, under the [SIL Open Font License 1.1](assets/fonts/OFL.txt).

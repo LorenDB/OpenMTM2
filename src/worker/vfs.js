@@ -6,7 +6,7 @@
   OpenMTM2 copies no loose files, so a miss is a miss.
 
   Archives of other games can be mounted beside MTM2's (worker/addon-store.js). Each mount has a
-  `family` ("MTM", "CPR", "EVO1", "EVO2" or "" when unknown; "MTM" when it states none), and a
+  `family` ("MTM", "CPR", "EVO1", "EVO2", "TV" (Terminal Velocity and Fury3), "HB" or "" when unknown; "MTM" when it states none), and a
   lookup goes through the mounts of one family first, in mount order, then through the rest: a
   CPR or Evo archive never shadows an MTM2 file of the same name, whatever the order. The VFS
   itself looks up for "MTM"; `scoped(family)` is the same VFS for another game's track.

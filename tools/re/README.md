@@ -1,7 +1,8 @@
 # MONSTER.EXE reverse-engineering helpers
 
 Tools used to analyse the retail Monster Truck Madness 2 executable (2.00.42) for
-`docs/MONSTER_EXE_ANALYSIS.md` and `docs/MTM2_PHYSICS.md`.
+`docs/MONSTER_EXE_ANALYSIS.md` and `docs/MTM2_PHYSICS.md`, and the retail Monster Truck Madness
+executable (1.00, 9 August 1996) for `docs/MTM1_MONSTER_EXE_ANALYSIS.md`.
 
 The decompiled code, the Ghidra project and working notes live in `re/` at the repository root.
 That folder is **git-ignored and must never be published**: it is derived from Microsoft's and
@@ -13,6 +14,9 @@ Terminal Reality's code. Only facts, layouts and constants go into the docs and 
 brew install ghidra
 MTM2_DIR=~/games/mtm2 tools/re/decompile.sh
 ```
+
+For MTM1: `MTM1_DIR=~/games/mtm1 tools/re/decompile.sh mtm1`, which works in `re/mtm1/` and
+leaves the MTM2 workspace alone. Every helper below reads MTM2 unless `RE_TARGET=mtm1` is set.
 
 This analyses `MONSTER.EXE` from the install, exports every function decompiled to
 `re/out/decomp.c` plus `functions.tsv` and `strings.tsv` (with cross-references), and builds the
@@ -35,6 +39,25 @@ Run them with `re/venv/bin/python` from the repository root. Addresses are hexad
 | `consts.py 467a00 4bb700` | lists the `.rdata` floating-point constants each function in a range uses |
 | `postprocess.py` | rebuilds `cg.json` and `func_strings.txt` |
 | `ExportAll.java` | the Ghidra post-script behind `decompile.sh` |
+| `FindFuncs.java` | Ghidra post-script: makes functions of the code only reached through tables (MFC message maps, vtables), which auto-analysis leaves out |
+| `imm.py c4 a1` | finds instructions carrying a 32-bit immediate (dialog templates, command ids, state numbers) |
+| `rsrc.py MONSTER.EXE` | dumps dialogs with their control ids, menus, accelerators and string tables |
+| `msgmap.py` | lists every MFC message map: class, entries, command ids and handler addresses |
+| `match.py 446cd0 489ca0 468e70 4bb4b0` | pairs the functions of an MTM1 range with their MTM2 counterparts and scores each pair |
+| `fdiff.py 44d1e0 470810` | diffs an MTM1 function against an MTM2 one with addresses and variable names blanked (`-k` keeps them) |
+| `dconsts.py re/mtm1/out/match_sim.tsv` | compares the tunable `.data` globals used by each matched pair |
+
+## Things to know about the MTM1 binary
+
+- It is not incrementally linked: calls are direct and Ghidra's caller counts are right. A third
+  of the code is MFC handlers reached only through message maps, so run `FindFuncs.java`.
+- Game code is 0x401000-0x4e0000; the C runtime and MFC follow. There are no assertion strings
+  with source paths.
+- The simulation (0x446cd0-0x489000) is MTM2's, function for function and in the same order:
+  `match.py` and `fdiff.py` read one against the other.
+- The engine globals: `0x8143cc` current truck, `0x7d6718` the player's truck, `0x833ae0` the
+  truck pointers, `0x836318` the substep dt, `0x839ef4` the race type, `0x7ea4a0` the key
+  states by scan code.
 
 ## Things to know about this binary
 

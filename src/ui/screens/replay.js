@@ -18,9 +18,9 @@ import { loadFont } from "../../render/bitmap-text.js";
 import { createCaption } from "../../render/caption.js";
 import { createWaterEffects, createWaterSurface } from "../../render/water-effects.js";
 import { formatRaceTime } from "../../game/race-setup.js";
-import { createTrackWorld, disposeObject, moveObjects, skyColor, updateTrackWorld } from "../../render/track-scene.js";
+import { createTrackWorld, disposeObject, moveObjects, skyColor, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createTruckObject } from "../../render/truck-object.js";
-import { toSceneMatrix } from "../../shared/scene-frame.js";
+import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
 import { createTrackLights } from "../../render/track-lights.js";
 
 /** A terrain cell's side: the draw distance is set in cells. */
@@ -108,6 +108,8 @@ export default async function mount(container, context, { replay }) {
   let turn = 0, zoom = 1;
   let clock = 0, rate = 1, playing = true;
   const chase = createChaseCamera();
+  /** Where the watched truck was last drawn: the picture's place in its own unbroken space. */
+  let drawAnchor = null;
   const straights = build.sim.course, centroid = courseCentroid(straights);
   const cockpitEye = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() }, scratchScale = new THREE.Vector3();
 
@@ -226,8 +228,11 @@ export default async function mount(container, context, { replay }) {
       return;
     }
     const yaw = pose.euler[2];
-    const special = viewMode === 3 ? (centroid ? blimpCamera(pose.pos, centroid) : blimpCameraNoCourse(pose.pos, yaw, ground))
-      : viewMode === 4 ? (raceCamera(straights, pose.pos, pose.course ?? 0, ground) ?? blimpCameraNoCourse(pose.pos, yaw, ground)) : null;
+    // The course is in the simulation's world: these cameras are found there, then moved to where the picture is.
+    const sim = [wrapFt(pose.pos[0]), pose.pos[1], wrapFt(pose.pos[2])], off = [pose.pos[0] - sim[0], 0, pose.pos[2] - sim[2]];
+    const stood = viewMode === 3 ? (centroid ? blimpCamera(sim, centroid) : blimpCameraNoCourse(sim, yaw, ground))
+      : viewMode === 4 ? (raceCamera(straights, sim, pose.course ?? 0, ground) ?? blimpCameraNoCourse(sim, yaw, ground)) : null;
+    const special = stood && { ...stood, position: stood.position.map((v, k) => v + off[k]), target: stood.target.map((v, k) => v + off[k]) };
     const result = special ?? chase.update(viewMode, pose.pos, yaw, ground, dt, { turn, scale: zoom });
     if (special) {
       const fov = zoomToFov(special.zoom);
@@ -253,6 +258,13 @@ export default async function mount(container, context, { replay }) {
     if (held.has("ArrowDown")) zoom = Math.min(6, zoom * (1 + dt * 1.5));
     const headlights = !!WEATHER_LOOK[replay.weather ?? 0]?.headlights;
     const state = playback.at(clock);
+    // The world is a torus: every truck is drawn at the copy nearest the one the camera is on.
+    // The watched truck where it was last drawn (the picture's space has no seam), and the others beside it.
+    const watched = state.trucks[focus] ?? state.trucks.find(Boolean);
+    if (watched) {
+      watched.pos = drawAnchor = nearestCopy(watched.pos, drawAnchor ?? watched.pos);
+      for (const pose of state.trucks) if (pose && pose !== watched) pose.pos = nearestCopy(pose.pos, watched.pos);
+    }
     state.trucks.forEach((pose, i) => {
       if (!pose || !drawn[i]) return;
       // The axles rest on the truck's own hubs (the game does not record the suspension).
@@ -279,7 +291,7 @@ export default async function mount(container, context, { replay }) {
     trackLights?.update(camera, !!WEATHER_LOOK[weatherScene.weather]?.headlights);
     weatherScene.update(dt, state.trucks.filter(Boolean).map((p) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2] })));
     const sky = world.getObjectByName("sky");
-    if (sky) { sky.position.set(camera.position.x, 0, camera.position.z); sky.visible = weatherScene.skyShown; }
+    if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
     updateTrackWorld(world, camera, dt);
     caption.update(dt);
     renderer.render(scene, camera);

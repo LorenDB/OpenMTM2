@@ -11,6 +11,8 @@
 */
 import { isEvoSit, parseEvoSit, parseMtmSit, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
 import { courseLengthFt } from "./cpr-road.js";
+import { FOREIGN_TRUCK_GAMES, foreignTruckId } from "./foreign-truck-build.js";
+import { drivableTvLevel } from "./tv-track-build.js";
 
 /**
  * CART Precision Racing's track types by the SIT's code (its own enum: 4 Road, 5 Speedway, 6 Short oval, 7 Street).
@@ -55,6 +57,41 @@ async function evoTracks(vfs, problems) {
   return tracks;
 }
 
+/** The games whose levels are listed as places to drive or fly about in, and how each is titled. */
+export const TV_LEVEL_GAMES = Object.freeze({ TV: "TV/F3", HB: "HB" });
+
+/**
+ * The Terminal Velocity, Fury3 and Hellbender levels among the mounted archives (worker/tv-track-build.js): the
+ * surface levels, each named by its `LEVELS\<level>.LVL`. They have no race: free roam and fly-by only, and no
+ * tournament takes them (`freeRoamOnly`, `noTournament`). A Terminal Velocity level and a Fury3 one cannot be told
+ * apart by their files, so both are "TV/F3".
+ */
+async function tvLevels(vfs, problems) {
+  const tracks = [];
+  for (const [game, label] of Object.entries(TV_LEVEL_GAMES)) {
+    const view = vfs.scoped?.(game);
+    if (!view) continue;
+    const seen = new Set();
+    for (const { path, mount, entry } of view.list(".LVL")) {
+      const file = podPathTitle(path).toUpperCase();
+      if (mount.family !== game || seen.has(file) || !/^LEVELS[\\/]/i.test(path)) continue;
+      seen.add(file);
+      try {
+        const lvl = drivableTvLevel(await mount.readEntry(entry));
+        if (!lvl || (lvl.origin === "HB") !== (game === "HB")) continue;
+        tracks.push({
+          path, pod: mount.name, file, name: lvl.displayName || file.replace(/\.LVL$/, ""), locale: "",
+          game, scope: game, typeLabel: `Level (${label})`, freeRoamOnly: true, noTournament: true,
+          typeCode: 0, raceType: "freeroam", weatherMask: null, trackLength: null, defaultLaps: 1, ambientSound: null, level: file, hidden: false,
+        });
+      } catch (err) {
+        problems.push(`${path}: ${err.message}`);
+      }
+    }
+  }
+  return tracks;
+}
+
 /** The CPR tracks among the mounted archives, looked up as a CPR track sees them (worker/vfs.js). */
 async function cprTracks(vfs, problems) {
   const cpr = vfs.scoped?.("CPR");
@@ -73,6 +110,8 @@ async function cprTracks(vfs, problems) {
       tracks.push({
         path, pod: mount.name, file, name: sit.trackName || file, locale: sit.localeName,
         game: "CPR", scope: "CPR", typeLabel: `${type} (CPR)`,
+        // The SIT's own picture and icon, where it names them.
+        logoBmp: bmpStem(sit.logoBmp), mapBmp: bmpStem(sit.mapBmp),
         // No weather mask in a CPR SIT: every MTM2 weather is offered.
         typeCode: sit.trackTypeCode, raceType: "circuit", weatherMask: null, trackLength,
         defaultLaps: defaultLaps("circuit", trackLength ?? undefined), ambientSound: null, level: sit.lvlName, hidden: false,
@@ -84,11 +123,50 @@ async function cprTracks(vfs, problems) {
   return tracks;
 }
 
+/** A header's bitmap name as the UI archive is asked for it: no folder, no extension, upper case; null when it is no plain name. */
+export function bmpStem(name) {
+  const stem = String(name ?? "").replace(/^.*[\\/]/, "").replace(/\.bmp$/i, "").toUpperCase();
+  return /^[A-Z0-9_-]+$/.test(stem) ? stem : null;
+}
+
+/**
+ * The vehicles of the other games among the mounted archives (worker/foreign-truck-build.js): CPR's cars and the 4x4
+ * Evolution trucks, after MTM's own, each named `<GAME>:<file>` and titled with its game, "Davis/Salles (CPR)".
+ */
+async function foreignTrucks(vfs, problems) {
+  const trucks = [];
+  for (const [game, { folder, extension, kind }] of Object.entries(FOREIGN_TRUCK_GAMES)) {
+    const view = vfs.scoped?.(game);
+    if (!view) continue;
+    const seen = new Set();
+    for (const { path, mount, entry } of view.list(extension)) {
+      if (mount.family !== game || !path.toUpperCase().replace(/\//g, "\\").startsWith(`${folder}\\`)) continue;
+      const file = podPathTitle(path).toUpperCase();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      try {
+        const parsed = parseTruckManifest(await mount.readEntry(entry), file);
+        if (parsed.kind !== kind) continue;
+        trucks.push({
+          path, pod: mount.name, file: foreignTruckId(game, file), name: `${parsed.manifest.truckName || file} (${game})`,
+          game, scope: game, dialect: game, waves: [], hidden: false,
+        });
+      } catch (err) {
+        problems.push(`${path}: ${err.message}`);
+      }
+    }
+  }
+  return trucks;
+}
+
 export const HIDDEN_TRACKS = Object.freeze(["WAR.SIT", "GRAVEY.SIT"]);
 export const HIDDEN_TRUCKS = Object.freeze(["CHUCK.TRK"]);
 
-/** Race types by the SIT's track type code (MONSTER_EXE_ANALYSIS.md section 6). */
-export const RACE_TYPES = Object.freeze({ 1: "drag", 2: "circuit", 3: "rally", 4: "summit" });
+/**
+ * Race types by the SIT's track type code (MONSTER_EXE_ANALYSIS.md section 6). Type 0 is the engine's free roam: no
+ * course is followed and no checkpoint is tested (MTM1_MONSTER_EXE_ANALYSIS.md 2.6; MTM1's HILLCLIM.SIT is one).
+ */
+export const RACE_TYPES = Object.freeze({ 0: "freeroam", 1: "drag", 2: "circuit", 3: "rally", 4: "summit" });
 
 /**
  * A track's default lap count (MONSTER_EXE_ANALYSIS.md 3, "Default lap count"): for a Circuit
@@ -140,6 +218,15 @@ export async function buildCatalog(vfs) {
         game: sit.origin,
         typeCode: sit.trackTypeCode,
         raceType: RACE_TYPES[sit.trackTypeCode] ?? "unsupported",
+        /** A type 0 track has no race on it: it is driven in free roam and nothing else. */
+        freeRoamOnly: sit.trackTypeCode === 0,
+        /**
+         * The SIT header's own picture, overhead map and description (MTM1's setup screens and zoom map,
+         * MTM1_MONSTER_EXE_ANALYSIS.md 2.10): `UI\<logo>.BMP`, `UI\<map>.BMP` and `WORLD\<description>`, or null.
+         */
+        logoBmp: bmpStem(sit.logoBmp), mapBmp: bmpStem(sit.mapBmp), descriptionTxt: sit.descriptionTxt ?? null,
+        /** A drag strip's par time, seconds (the fly-by line as a number), or null. */
+        dragParTime: sit.dragParTime ?? null,
         weatherMask: sit.weatherMask,
         trackLength: sit.trackLength,
         defaultLaps: defaultLaps(RACE_TYPES[sit.trackTypeCode], sit.trackLength),
@@ -151,11 +238,12 @@ export async function buildCatalog(vfs) {
       problems.push(`${path}: ${err.message}`);
     }
   }
-  tracks.push(...await cprTracks(vfs, problems), ...await evoTracks(vfs, problems));
+  tracks.push(...await cprTracks(vfs, problems), ...await evoTracks(vfs, problems), ...await tvLevels(vfs, problems));
   const trucks = [];
   for (const { path, mount } of vfs.list(".TRK")) {
-    // A CPR `.TRK` is a track's road layer and an Evo one another manifest: neither is an MTM truck.
-    if ((mount.family ?? "MTM") !== "MTM") continue;
+    // A CPR `.TRK` is a track's road layer and an Evo one another manifest: neither is an MTM truck. An archive whose
+    // game is not known ("") may be an add-on truck's: its manifest says below whether it is one.
+    if (!["MTM", ""].includes(mount.family ?? "MTM")) continue;
     try {
       const parsed = parseTruckManifest(await vfs.read(path), podPathTitle(path));
       if (parsed.kind !== "mtm") continue;
@@ -174,5 +262,6 @@ export async function buildCatalog(vfs) {
       problems.push(`${path}: ${err.message}`);
     }
   }
+  trucks.push(...await foreignTrucks(vfs, problems));
   return { tracks, trucks, problems };
 }

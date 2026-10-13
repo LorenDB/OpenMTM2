@@ -89,3 +89,14 @@ test("a damage code lists its zones and levels; a replay's level names its track
   assert.equal(levelPath("WORLD\\junk.sit"), "WORLD\\JUNK.SIT");
   assert.deepEqual([...RATES], [0.25, 0.5, 1, 2, 4, 8]);
 });
+
+test("a truck recorded either side of the world's seam is played back across it, not back round the world", () => {
+  const rec = createReplayRecorder({ level: "x.sit", vehicles: [{ truck: "A.TRK", driver: "A" }] });
+  rec.update(0.25, [snap(8190)], [], () => 0);
+  rec.update(0.5, [snap(6)], [], () => 0);
+  const play = createPlayback(rec.build());
+  // From 8190 to 6 is 8 ft through the seam: halfway it is 2 ft over the edge, drawn from the copy beside where it is going.
+  const mid = play.at(0.125).trucks[0].pos[0];
+  assert.ok(Math.abs(mid - 2) < 1e-6, `halfway at x ${mid}`);
+  assert.ok(Math.abs(play.at(0.25).trucks[0].pos[0] - 6) < 1e-9);
+});

@@ -9,7 +9,7 @@
 import { DIFFICULTY, ENGINE, G, INV_G, LATERAL_TABLE, MPH_10, TRUCK } from "../constants.js";
 import { eulerToMatrix, matrixToEuler, wrapPi, wrapTwoPi } from "../math.js";
 import { cutFactor, surfaceMu, surfaceSinkFt, surfaceType } from "../world/surface.js";
-import { weatherGrip } from "../constants.js";
+import { groundWeatherGrip } from "../world/ground.js";
 import { deliveredTorque, gearRatio, stepGearbox } from "./drivetrain.js";
 import { solveHullContacts } from "./contacts.js";
 import { fluidAreas } from "./water-drag.js";
@@ -112,7 +112,7 @@ export function stepTruck(s, p, ctx, dt) {
         force[k] += drag[k];
     }
     // Tires (§14.3-§14.6).
-    const weather = weatherGrip(ctx.ground.weather);
+    const weather = groundWeatherGrip(ctx.ground);
     for (let i = 0; i < 4; i++) {
         const t = s.tires[i];
         const axleIdx = i < 2 ? 0 : 1;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captionPose, IN_TRANSITIONS, OUT_TRANSITIONS } from "../src/render/caption.js";
+import { captionPose, layoutCaption, readingSeconds, IN_TRANSITIONS, MAX_LINE_WIDTH, OUT_TRANSITIONS } from "../src/render/caption.js";
 
 const bar = { width: 280, height: 30 };
 const rest = captionPose("hold", 1, 0, bar);
@@ -44,4 +44,27 @@ test("the interlaced slide sends odd rows and letters the other way", () => {
   const p = captionPose("in", 0.2, 6, bar);
   assert.ok(p.rowOffset(0) < 0 && p.rowOffset(1) > 0);
   assert.ok(p.letter(0).dx < 0 && p.letter(1).dx > 0);
+});
+
+test("a message too long for the bar is broken at a space into lines, the bar as tall as they need", () => {
+  // Every glyph 10 wide, a line 31 high: a letter advances 11, a space 13.
+  const glyphs = new Map(Array.from({ length: 96 }, (_, i) => [32 + i, { x: 0, y: 0, w: 10, h: 27 }]));
+  const font = { glyphs, lineHeight: 31, width: 16, height: 16, mask: new Uint8Array(256) };
+  const short = layoutCaption(font, "Chase Near of Snake Bite");
+  assert.equal(short.lines.length, 1);
+  assert.equal(short.height, 30);
+  const long = layoutCaption(font, "Fly-by: Terminal Velocity. Arrows steer (Up is nose down), A and Z throttle, Home and Page Up roll");
+  assert.equal(long.lines.length, 2);
+  assert.equal(long.height, 57);
+  for (const line of long.lines) assert.ok(line.width <= MAX_LINE_WIDTH);
+  assert.equal(long.width, Math.ceil(Math.max(...long.lines.map((l) => l.width)) + 8));
+  // The words are all there, in order.
+  assert.equal(long.lines.map((l) => l.text).join(" "), "Fly-by: Terminal Velocity. Arrows steer (Up is nose down), A and Z throttle, Home and Page Up roll");
+});
+
+test("a longer message is held longer: a second and a half, and a second more for every 16 letters past 24", () => {
+  assert.equal(readingSeconds("Chase Near"), 1.5);
+  assert.equal(readingSeconds("x".repeat(24)), 1.5);
+  assert.equal(readingSeconds("x".repeat(56)), 3.5);
+  assert.equal(readingSeconds("x".repeat(120)), 7.5);
 });

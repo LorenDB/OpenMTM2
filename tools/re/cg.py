@@ -6,7 +6,10 @@
 """
 import sys
 
-from recommon import call_graph
+from recommon import TARGET, call_graph
+
+# the game code, without the MFC and C runtime that follow it
+GAME = (0x407000, 0x5A0000) if TARGET == "mtm2" else (0x401000, 0x4E0000)
 
 
 def tree(graph, name, depth=0, seen=None):
@@ -16,7 +19,7 @@ def tree(graph, name, depth=0, seen=None):
         return
     seen.add(name)
     for callee in graph["calls"].get(name, []):
-        if 0x407000 <= int(callee[4:], 16) < 0x5A0000:
+        if GAME[0] <= int(callee[4:], 16) < GAME[1]:
             tree(graph, callee, depth + 1, seen)
 
 

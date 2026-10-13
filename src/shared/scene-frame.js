@@ -48,3 +48,23 @@ export const WORLD_FT = 8192;
  * space is scaled by this once, where it is placed in the scene, so the world is life size.
  */
 export const FEET_PER_METRE = 1 / 0.3048;
+
+/**
+ * `pos` (game feet, `[x, y, z]`) moved by whole worlds to the copy nearest `to`: the world is a torus (the game wraps a
+ * truck's position every frame, and draws it at the copy nearest the view: MONSTER_EXE_ANALYSIS.md "The wrapping world").
+ * Returns `pos` itself when it is already the nearest.
+ */
+export function nearestCopy(pos, to) {
+  const shift = (v, ref) => {
+    const d = ((v - ref + WORLD_FT / 2) % WORLD_FT + WORLD_FT) % WORLD_FT - WORLD_FT / 2;
+    return d - (v - ref);
+  };
+  const dx = shift(pos[0], to[0]), dz = shift(pos[2], to[2]);
+  return dx || dz ? [pos[0] + dx, pos[1], pos[2] + dz] : pos;
+}
+
+/** A coordinate brought into the world, [0, WORLD_FT). */
+export function wrapFt(v) {
+  const w = v % WORLD_FT;
+  return w < 0 ? w + WORLD_FT : w;
+}

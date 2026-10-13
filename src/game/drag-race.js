@@ -1,26 +1,50 @@
 /*
-  Drag races: an addition rebuilt from what the retail game kept of MTM1's drag strip
-  (MONSTER_EXE_ANALYSIS.md 6.4). The exe still has the Christmas tree's lamps and their labels
-  ("Prestage", "Stage", the three ambers, "Go", "Disqualify"), the tree's lamp bits (0x548cb0:
-  1 prestaged, 3 staged, 0x40 disqualified, the ambers by the tree timer, 0x20 Go) and the
-  staging globals, but nothing in 2.00.42 advances them.
+  One drag pass (MONSTER_EXE_ANALYSIS.md 6.4): prestaging, staging, the tree, the launch, the
+  disqualifications and the timing. The rules are from the CP3 author's written description of
+  drag racing; he provided no source code. Pure, so it runs under Node; the simulation worker feeds it
+  each lane's truck and drives the trucks by what it says.
 
   A drag strip's SIT has eight checkpoints: the prestage, stage and start beams across both
-  lanes, the finish line, then each lane's two boundaries (lane 1: 4 and 5, lane 2: 6 and 7),
-  which count only when crossed outward. Grid slot n races in lane n.
+  lanes, the finish beam, then each lane's centre line and outer edge (lane 0: 4 and 5, lane 1:
+  6 and 7), which count only when crossed outward. Grid slot n races in lane n.
 
-  - Staging: each truck creeps forward until its front breaks the prestage and then the stage
-    beam, and holds there (auto-staging, for every truck).
-  - The tree: with both lanes staged (or after STAGE_TIMEOUT_S), the three ambers light in turn,
-    AMBER_S apart, then Go.
-  - A truck whose front crosses the start beam before Go is red-lighted; one that crosses its
-    lane's boundary before the finish is disqualified. Either way the other lane wins.
+  The beams are broken by the front tyre alone, and only where the tyre passes through the beam
+  itself, between its two ends: never by the bodywork, never by a truck that is merely beyond the
+  beam's line somewhere else on the strip.
+
+  `rules` "mtm1" runs the pass by the 1996 game's code where it differs and the difference is one
+  of rules (MTM1_MONSTER_EXE_ANALYSIS.md 5 and 7.2): no backing-up rule, and the Disqualify lamp
+  for a red light only. The simulation worker adds the third: the computer launches on the green.
+  Not followed: the 1996 game breaks the beams with the hull points and judges the lane by the
+  truck overlapping its boundary boxes; here both stay as described above.
 */
 
-export const AMBER_S = 0.5;
-export const STAGE_TIMEOUT_S = 12;
-/** Creeping speed while staging, ft/s. */
-export const CREEP_SPEED = 6;
+/** Seconds: the prestage and stage phases' limits, the wait after the last truck stages, the tree, the pass's limit. */
+export const PRESTAGE_TIMEOUT_S = 30;
+export const STAGE_TIMEOUT_S = 30;
+export const TREE_DELAY_S = 2;
+export const TREE_S = 0.5;
+export const DRAG_MAX_S = 33;
+/** The fastest a truck is staged at, ft/s. */
+export const MAX_STAGE_SPEED = 2;
+/** Backing up faster than this (ft/s) for this long (s) after the green, a wheel on the ground, disqualifies. */
+export const REVERSE_SPEED = 2;
+export const REVERSE_S = 0.5;
+/** How far into the gap between the stage and start beams an auto-staged truck rolls, as a share of it. */
+export const STAGE_DEPTH = 0.25;
+/** How far past the prestage beam an auto-staged truck stops, ft. */
+const PRESTAGE_PAST_FT = 0.25;
+/** The staging speed law's gain: `(distance * 2 * k) ^ 1/4`. The game's `decel_k` is not known; 1 is the port's. */
+const STAGE_DECEL_K = 1;
+
+/** A truck's state in the pass (the game's `ap.staged`). */
+export const STAGED = Object.freeze({ NONE: 0, PRESTAGED: 1, STAGED: 2, LAUNCHED: 3 });
+/** What puts a truck out (the game's `ap.staged` codes from 95 up). 95 is not a disqualification: the pass is run again. */
+export const OUT = Object.freeze({ RERUN: 95, TIMEOUT: 96, LANE: 97, NOT_STAGED: 98, RED_LIGHT: 99 });
+/** The disqualifications by name, as the lanes carry them in `dq`. */
+export const DQ_CODE = Object.freeze({
+  "timeout": OUT.TIMEOUT, "out of lane": OUT.LANE, "reversing": OUT.LANE, "not staged": OUT.NOT_STAGED, "red light": OUT.RED_LIGHT,
+});
 /** The tree's lamp bits (0x548cb0), and the labels the HUD draws beside them (0x651700). */
 export const LAMP = Object.freeze({ PRESTAGE: 1, STAGE: 2, AMBER1: 4, AMBER2: 8, AMBER3: 16, GO: 32, DQ: 64 });
 export const LAMP_LABELS = Object.freeze(["Prestage", "Stage", "\\", " Get Set", "/", "Go", "Disqualify"]);
@@ -30,7 +54,7 @@ function gateFrame(cp) {
   const g = cp.gate ?? cp;
   const pos = g.position ?? g.pos;
   const psi = g.angles?.[2] ?? 0;
-  return { pos, heading: psi, f: [Math.sin(psi), Math.cos(psi)], r: [Math.cos(psi), -Math.sin(psi)], half: (g.size?.[0] ?? 0) / 2 };
+  return { pos, heading: psi, f: [Math.sin(psi), Math.cos(psi)], r: [Math.cos(psi), -Math.sin(psi)], half: (g.size?.[0] ?? 0) / 2, depth: g.size?.[2] ?? 1 };
 }
 
 /** A point in a gate's frame: `z` along its forward axis, `x` across it. */
@@ -39,10 +63,21 @@ function local(gate, p) {
   return { z: dx * gate.f[0] + dz * gate.f[1], x: dx * gate.r[0] + dz * gate.r[1] };
 }
 
-const beyond = (gate, p) => {
-  const l = local(gate, p);
-  return l.z >= 0 && Math.abs(l.x) <= gate.half;
-};
+/**
+ * Whether a point broke a beam this step, and when: the share of the step (0 to 1) that had gone
+ * by, or null. `seen` keeps the point's last place by `key`. The point must pass through the
+ * beam between its ends, from behind: a J-drag's finish beam faces the other way and lies across
+ * the way out, where the trucks pass it from in front, and counts only on the way back. A point
+ * first seen standing in the beam has broken it.
+ */
+function breaks(gate, seen, key, p) {
+  const now = local(gate, p), was = seen[key];
+  seen[key] = now;
+  if (Math.abs(now.x) > gate.half) return null;
+  if (!was) return Math.abs(now.z) <= gate.depth / 2 ? 0 : null;
+  if (Math.abs(was.x) > gate.half) return null;
+  return was.z < 0 && now.z >= 0 ? was.z / (was.z - now.z) : null;
+}
 
 /** Whether a SIT's checkpoints make a drag strip this module can run. */
 export function isDragStrip(checkpoints) {
@@ -50,77 +85,154 @@ export function isDragStrip(checkpoints) {
 }
 
 /**
- * A drag race over the strip's checkpoints (raw SIT gates). `used` says which of the two lanes
- * has a truck; an empty lane counts as staged.
+ * A drag pass over the strip's checkpoints (raw SIT gates). `used` says which of the two lanes
+ * has a truck; an empty lane is left out of every rule, so one truck can run alone.
  */
-export function createDrag(checkpoints, used = [true, true]) {
+export function createDrag(checkpoints, used = [true, true], rules = "cp3") {
   const frames = checkpoints.map(gateFrame);
   return {
-    phase: "staging", time: 0, tree: 0, elapsed: 0,
+    rules,
+    phase: "prestage", clock: 0, phaseTime: 0, tree: 0, greenAt: null,
     prestage: frames[0], stage: frames[1], start: frames[2], finish: frames[3],
+    /** The staging gap: from the stage beam to the start beam, measured on this strip. */
+    gap: Math.max(0, local(frames[1], frames[2].pos).z),
     bounds: [frames.slice(4, 6), frames.slice(6, 8)],
-    lanes: used.map((u) => ({ prestaged: !u, staged: !u, dq: null, reaction: null, side: [], empty: !u })),
+    lanes: used.map((u) => ({
+      empty: !u, state: STAGED.NONE, stagedAt: null, dq: null, rerun: false, reaction: null, et: null, seen: {}, side: [], reverse: 0,
+    })),
   };
 }
 
+const out = (lane) => !!lane.dq || lane.rerun;
+/** Whether a lane's truck has nothing left to do: no truck, out, or timed. */
+const settled = (lane) => lane.empty || out(lane) || lane.et !== null;
+
+/** Whether the pass has ended: every truck is finished or out. */
+export function dragOver(drag) {
+  return drag.lanes.every(settled);
+}
+
 /**
- * One step. `fronts` and `centres` are each lane's truck front and centre, `finished` whether
- * each has crossed the finish, `launched` whether each truck's driver has put its foot down
- * (for the reaction time). Returns "go" on the step the tree turns green.
+ * One step. `trucks[i]` is lane i's truck, or null: `front` its front tyre's leading point,
+ * `centre` its body's centre, `reversing` whether it is backing up faster than REVERSE_SPEED with
+ * a wheel on the ground. Returns "go" on the step the tree turns green.
  */
-export function dragTick(drag, fronts, centres, finished, launched, dt) {
-  drag.time += dt;
-  if (drag.phase === "go") drag.elapsed += dt;
+export function dragTick(drag, trucks, dt) {
+  const before = drag.clock;
+  drag.clock += dt;
+  drag.phaseTime += dt;
+  const green = drag.phase === "go";
   let event = null;
   drag.lanes.forEach((lane, i) => {
-    if (lane.dq) return;
-    const front = fronts[i];
-    if (!front) return;
-    if (drag.phase !== "go") {
-      if (beyond(drag.prestage, front)) lane.prestaged = true;
-      if (beyond(drag.stage, front)) lane.staged = lane.prestaged = true;
-      if (beyond(drag.start, front)) lane.dq = "red light";
-      return;
+    const truck = trucks[i];
+    if (lane.empty || !truck) return;
+    // A truck that is out is judged no more; its beams are still followed, so nothing is re-read later.
+    const at = (key, gate) => {
+      const share = breaks(gate, lane.seen, key, truck.front);
+      return share === null ? null : before + share * dt;
+    };
+    const pre = at("prestage", drag.prestage), stage = at("stage", drag.stage), start = at("start", drag.start);
+    const finish = at("finish", drag.finish);
+    if (settled(lane)) return;
+    if (pre !== null && lane.state < STAGED.PRESTAGED) lane.state = STAGED.PRESTAGED;
+    if (stage !== null && lane.state < STAGED.STAGED) { lane.state = STAGED.STAGED; lane.stagedAt = drag.clock; }
+    if (start !== null && lane.state < STAGED.LAUNCHED) {
+      // The start beam before the green is the red light; after it, the reaction time.
+      if (!green || start < drag.greenAt) { lane.dq = "red light"; return; }
+      lane.state = STAGED.LAUNCHED;
+      lane.reaction = start - drag.greenAt;
     }
-    if (lane.reaction === null && launched[i]) lane.reaction = drag.elapsed;
-    if (finished[i]) return;
-    // Outward over the lane's own boundary.
+    if (!green) return;
+    if (finish !== null && lane.state === STAGED.LAUNCHED) { lane.et = finish - drag.greenAt; return; }
+    // Outward over the lane's own centre line or edge.
     for (const [k, gate] of (drag.bounds[i] ?? []).entries()) {
-      const l = local(gate, centres[i]);
+      const l = local(gate, truck.centre);
       const inside = Math.abs(l.x) <= gate.half;
       if (inside && lane.side[k] !== undefined && lane.side[k] < 0 && l.z >= 0) lane.dq = "out of lane";
       lane.side[k] = inside ? l.z : undefined;
     }
+    lane.reverse = truck.reversing && drag.rules !== "mtm1" ? lane.reverse + dt : 0;
+    if (lane.reverse >= REVERSE_S) lane.dq = "reversing";
+    if (!lane.dq && drag.clock - drag.greenAt >= DRAG_MAX_S) lane.dq = "timeout";
   });
-  if (drag.phase === "staging") {
-    const ready = drag.lanes.every((l) => l.staged || l.dq);
-    if (ready || drag.time >= STAGE_TIMEOUT_S) { drag.phase = "tree"; drag.tree = 0; }
-  } else if (drag.phase === "tree") {
+
+  const running = drag.lanes.filter((l) => !l.empty && !out(l));
+  const move = (phase) => { drag.phase = phase; drag.phaseTime = 0; };
+  /** Leave a staging phase: every truck there, or one there and the phase's limit gone by. Those not there are out. */
+  const advance = (state, limit, next, wait = 0) => {
+    const there = running.filter((l) => l.state >= state);
+    if (!there.length) return;
+    const all = there.length === running.length;
+    if (all ? wait > 0 && drag.clock - Math.max(...there.map((l) => l.stagedAt ?? 0)) < wait : drag.phaseTime < limit) return;
+    for (const l of running) if (l.state < state) l.dq = "not staged";
+    move(next);
+  };
+  if (drag.phase === "prestage") advance(STAGED.PRESTAGED, PRESTAGE_TIMEOUT_S, "stage");
+  else if (drag.phase === "stage") advance(STAGED.STAGED, STAGE_TIMEOUT_S, "tree", TREE_DELAY_S);
+  else if (drag.phase === "tree") {
     drag.tree += dt;
-    if (drag.tree >= AMBER_S * 3) { drag.phase = "go"; event = "go"; }
+    if (drag.tree >= TREE_S) { move("go"); drag.greenAt = drag.clock; event = "go"; }
   }
   return event;
 }
 
-/** A lane's lamp bits for the tree. */
+/**
+ * Two trucks touched. A truck already disqualified that runs into a clean one before it has
+ * finished spoils that truck's pass: the clean truck is out with a re-run to come (code 95).
+ */
+export function dragCollision(drag, a, b) {
+  for (const [guilty, wronged] of [[drag.lanes[a], drag.lanes[b]], [drag.lanes[b], drag.lanes[a]]]) {
+    if (guilty?.dq && wronged && !settled(wronged)) wronged.rerun = true;
+  }
+}
+
+/** A lane's lamp bits for the tree. The Disqualify lamp stands alone; a truck that never staged gets none. */
 export function dragLamps(drag, i) {
   const lane = drag.lanes[i];
-  if (!lane) return 0;
-  let bits = (lane.prestaged ? LAMP.PRESTAGE : 0) | (lane.staged ? LAMP.STAGE : 0);
-  if (lane.dq) return bits | LAMP.DQ;
-  if (drag.phase === "tree") bits |= LAMP.AMBER1 << Math.min(2, Math.floor(drag.tree / AMBER_S));
+  if (!lane || lane.empty) return 0;
+  if (lane.dq && drag.rules === "mtm1") return lane.dq === "red light" ? LAMP.DQ : 0;
+  if (lane.dq) return lane.dq === "not staged" ? 0 : LAMP.DQ;
+  let bits = (lane.state >= STAGED.PRESTAGED ? LAMP.PRESTAGE : 0) | (lane.state >= STAGED.STAGED ? LAMP.STAGE : 0);
+  // The game's `1 << (int(timer * 8) + 1)`: the Stage lamp's own bit for the first eighth, then the three ambers.
+  if (drag.phase === "tree") bits |= 1 << (Math.min(3, Math.floor(drag.tree * 8)) + 1);
   if (drag.phase === "go") bits |= LAMP.GO;
   return bits;
 }
 
-/** Whether a lane's truck should still be creeping toward the stage beam. */
+/**
+ * How far (ft) a staging truck's front tyre still has to roll, or null when it is to hold: while
+ * prestaging to just past the prestage beam, while staging to `depth` of the staging gap past the
+ * stage beam.
+ */
+export function stagingDistance(drag, i, front, depth = STAGE_DEPTH) {
+  const lane = drag.lanes[i];
+  if (!lane || settled(lane)) return null;
+  if (drag.phase === "prestage" && lane.state < STAGED.PRESTAGED) return PRESTAGE_PAST_FT - local(drag.prestage, front).z;
+  if (drag.phase === "stage" && lane.state < STAGED.STAGED) return Math.min(0.85, Math.max(0, depth)) * drag.gap - local(drag.stage, front).z;
+  return null;
+}
+
+/** The speed (ft/s) a staging truck is driven at, `distance` feet short of where it stops. */
+export function stageSpeed(distance) {
+  if (!(distance > 0)) return 0;
+  return Math.min(MAX_STAGE_SPEED, (distance * 2 * STAGE_DECEL_K) ** 0.25);
+}
+
+/** Whether a lane's truck is still on its way to a staging beam. */
 export function stillStaging(drag, i) {
   const lane = drag.lanes[i];
-  return drag.phase === "staging" && !!lane && !lane.staged && !lane.dq;
+  return !!lane && !settled(lane) && ((drag.phase === "prestage" && lane.state < STAGED.PRESTAGED) || (drag.phase === "stage" && lane.state < STAGED.STAGED));
+}
+
+/** What each lane's truck made of the pass: the timing slip's lines, and what a drag event settles a pairing by. */
+export function dragResults(drag) {
+  return drag.lanes.map((lane) => (lane.empty ? null : {
+    reaction: lane.reaction, et: lane.et, dq: lane.dq, code: lane.rerun ? OUT.RERUN : lane.dq ? DQ_CODE[lane.dq] : null, rerun: lane.rerun,
+  }));
 }
 
 /**
- * The places: finishers by time, then trucks still running, then the disqualified. `rows` are
+ * The places: finishers by time, then trucks still running, then those that are out. `rows` are
  * `{ finished, raceTime, dq }`, one per truck.
  */
 export function dragPlaces(rows) {

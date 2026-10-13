@@ -28,6 +28,13 @@ export function createAudio(assets, volumes = {}) {
   music.connect(master);
   commentary.connect(master);
   master.connect(limiter);
+  // A tap on the mix for the DANCE code's oscilloscope: made the first time it is asked for.
+  let scope = null;
+  const waveform = (out) => {
+    if (!scope) { scope = ctx.createAnalyser(); scope.fftSize = 1024; master.connect(scope); }
+    scope.getByteTimeDomainData(out);
+    return out;
+  };
   limiter.connect(ctx.destination);
   const buffers = new Map();
   let active = 0;
@@ -211,6 +218,8 @@ export function createAudio(assets, volumes = {}) {
     /** Load samples ahead of their first use, so a one-shot plays the moment it is asked for. */
     preload(names) { for (const name of names) if (name) sample(name); },
     context: ctx, sample, play, playMod, setVolumes, setDucking, setListener,
+    /** The mix as it sounds now: `out` (a Uint8Array of up to 1024) filled with samples, 128 the silence. */
+    waveform,
     /** The audible range in feet, which the weather sets (`soundRange`). */
     setRange(feet) { range = feet; },
     /** For tests and debugging: the context state, the samples asked for and the voices playing. */
@@ -235,6 +244,6 @@ export function createSilentAudio() {
   const voice = { done: Promise.resolve(), stopped: true, setGain() {}, setRate() {}, setPosition() {}, stop() {} };
   return {
     context: null, stats: () => ({ state: "none", samples: 0, sampleNames: [], voices: 0 }), sample: async () => null, preload() {}, play: async () => voice, playMod: async () => voice, setVolumes() {}, setListener() {}, setRange() {},
-    setDucking() {}, setEffectsPaused() {}, resume: async () => {}, suspend: async () => {}, dispose: async () => {},
+    setDucking() {}, setEffectsPaused() {}, waveform: (out) => out.fill(128), resume: async () => {}, suspend: async () => {}, dispose: async () => {},
   };
 }

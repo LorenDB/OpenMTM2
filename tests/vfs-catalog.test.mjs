@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parsePod, readPodEntry, writePod1 } from "../src/vendor/openphotex/index.js";
 import { createVfs } from "../src/worker/vfs.js";
-import { buildCatalog } from "../src/worker/catalog.js";
+import { RACE_TYPES, bmpStem, buildCatalog, defaultLaps } from "../src/worker/catalog.js";
 import { parsePodIni } from "../src/install/pod-ini.js";
 import { skipWithoutStock, stockVfs } from "./helpers/stock.mjs";
 
@@ -86,4 +86,23 @@ test("each stock truck lists its three name clips for the announcer", { skip: sk
   const bigfoot = trucks.find((t) => t.file === "BIGFOOT.TRK");
   assert.deepEqual(bigfoot.waves, ["bfootf.wav", "bfootu.wav", "bfootd.wav"]);
   assert.ok(trucks.every((t) => t.waves.length === 3), "three each");
+});
+
+test("track type 0 is free roam, and only that", () => {
+  assert.equal(RACE_TYPES[0], "freeroam");
+  assert.equal(defaultLaps(RACE_TYPES[0]), 1);
+});
+
+test("a header's bitmap name is asked of the UI archive by its stem", () => {
+  assert.equal(bmpStem("circ1t.bmp"), "CIRC1T");
+  assert.equal(bmpStem("ui\\drag5m.BMP"), "DRAG5M");
+  assert.equal(bmpStem(null), null);
+  assert.equal(bmpStem("bad name!.bmp"), null);
+});
+
+test("stock and add-on tracks carry the preview and icon their SIT names", { skip: skipWithoutStock() }, async () => {
+  const { tracks } = await buildCatalog(stockVfs());
+  const farm = tracks.find((t) => t.file === "TPARK.SIT");
+  assert.deepEqual([farm.logoBmp, farm.mapBmp], ["FARM", "TN-FM29"]);
+  for (const t of tracks.filter((t) => t.game === "MTM2" || t.game === "MTM1")) assert.ok(t.logoBmp, `${t.file} names its picture`);
 });

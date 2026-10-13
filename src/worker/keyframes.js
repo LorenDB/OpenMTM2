@@ -13,6 +13,8 @@ export async function resolveKeyframeModel(model, loadFrame) {
     ...first.frame,
     name: model.name,
     frameNames: [...model.frameNames],
+    /** The time one frame lasts, from the control file (OpenPhotex `frameSeconds`). */
+    frameSeconds: model.frameSeconds ?? null,
     resolvedFrame: first.name,
   };
   const morphs = keyframeMorphs(first.frame, frames.map(({ frame }) => frame).filter((frame) => frame?.meshes?.length));

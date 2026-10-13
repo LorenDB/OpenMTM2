@@ -1,7 +1,7 @@
 /* Hall Of Fame: one selected track and the six columns already printed on the classic art. */
 import { el } from "../dom.js";
 import { getHall } from "../../app/profile-store.js";
-import { topFor } from "../../game/hall-of-fame.js";
+import { TOURNAMENT_MODE, topFor, tournamentBoards } from "../../game/hall-of-fame.js";
 import { formatRaceTime, ordinal } from "../../game/race-setup.js";
 import { frame } from "../frame.js";
 
@@ -12,7 +12,8 @@ export default async function mount(container, context) {
   const { createPreviewSlot } = await import("../truck-preview-slot.js");
   const hall = await getHall(context);
   const catalog = await context.assets.call("catalog");
-  const tracks = catalog.tracks;
+  // The tournaments that were finished are listed after the tracks, each a board of points totals.
+  const tracks = [...catalog.tracks, ...tournamentBoards(hall).map(({ key, name }) => ({ file: key, name: `${name} (tournament)`, raceType: TOURNAMENT_MODE }))];
   let track = tracks.find((item) => item.file === context.settings.lastTrack) ?? tracks[0];
   const truckNames = new Map(catalog.trucks.map((item) => [item.file.toUpperCase(), item.name]));
   const picker = el("select", { "aria-label": "Tracks", class: "hall-track" },

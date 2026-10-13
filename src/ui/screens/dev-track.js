@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { el } from "../dom.js";
-import { createTrackWorld, createTruck, disposeObject, skyColor } from "../../render/track-scene.js";
+import { createTrackWorld, createTruck, disposeObject, placeBlocks, skyColor, placeSky } from "../../render/track-scene.js";
 
 export default async function mount(container, context, { track }) {
   const status = el("p", { class: "dev-status" }, `Loading ${track.name}…`);
@@ -77,14 +77,15 @@ export default async function mount(container, context, { track }) {
   window.addEventListener("keydown", onKey);
 
   // For debugging from the console and from automated checks.
-  window.__openmtm2Dev = { THREE, scene, camera, renderer, controls, build, render: () => renderer.render(scene, camera) };
+  window.__openmtm2Dev = { THREE, scene, camera, renderer, controls, build, render: () => { if (world) placeBlocks(world, camera); renderer.render(scene, camera); } };
 
   let frame = 0;
   const loop = () => {
     frame = requestAnimationFrame(loop);
     const sky = world.getObjectByName("sky");
-    if (sky) sky.position.set(camera.position.x, 0, camera.position.z);
+    placeSky(sky, camera);
     controls.update();
+    if (world) placeBlocks(world, camera);
     renderer.render(scene, camera);
   };
   loop();

@@ -516,33 +516,22 @@ compared before and after on seven tracks in both looks: it is the same pixel fo
 and differs elsewhere only in what moves between two runs (snowflakes, an animated model's
 frame) and in a handful of single pixels.
 
-- **The world is drawn nine times** (the original and eight wrapped copies). Each copy had its
-  own mesh for every placed object, and the camera-facing scenery was turned toward the camera
-  one object at a time in JavaScript. Now every model part that does not animate is one
-  instanced mesh holding its placements in all nine copies, and the camera-facing ones are
-  turned in the vertex shader (`src/render/track-scene.js`). Only the original copy's instances
-  cast shadows; a shadow is that of the model as it is turned.
-- **The terrain was one mesh of 131072 triangles per copy.** It is now 16 chunks per copy
-  sharing their vertex buffers, so what is off screen is not drawn.
+- **The world is drawn once, as a window around the view.** Terrain, ground boxes, roads,
+  scenery and water are split into 512 ft blocks. Each block is moved by whole worlds to the
+  copy nearest the camera, matching the game's wrapped renderer without drawing eight duplicate
+  worlds (`src/shared/object-chunks.js`, `src/render/track-scene.js`).
+- **Repeated static scenery is instanced per block.** A forest therefore costs only the blocks
+  in view, in both the picture and the shadow map. Terrain blocks share their vertex buffers,
+  so the camera frustum skips the rest without duplicating the terrain.
 
-On Farm Road 29 from the cab, both eyes together: 1.91 million triangles in 728 draw calls
-before, about 0.5 million in 180 to 250 after. The flat screen went from 362 to 169 draw calls
-there, and from 842 to 142 on Voodoo Island.
-
-**What a headset leaves out.** The fog's end is as far as the eye sees. In a headset, terrain
-chunks wholly beyond it are not drawn, and neither is any copy of the world whose ground lies
-wholly beyond it (with 600 ft to spare for what stands on its edge): its ground, its water, its
-animated objects and its share of the placed objects. The instances of each model are kept in
-blocks, a copy of the world each; the copies in view are moved to the front and only those
-blocks are drawn (the original stays first, since it alone casts shadows). The flat screen draws
-every copy, as it always has.
+**What a headset leaves out.** The fog's end is as far as the eye sees. In a headset, a world
+block wholly beyond it is not submitted. The flat screen keeps the weather's normal range and
+relies on the same block bounds and camera frustum.
 
 **View distance.** Should a headset not keep its frame rate, the option draws the view in: the
 fog closes at 4000 ft (Medium) or 2500 ft (Short) instead of the weather's own range, keeping
 its proportions, and everything beyond goes the way of the paragraph above. It never lets the
-eye see further than the weather does, and the flat screen is not touched. On Scrapyard Run, the
-heaviest stock track, from the start line and both eyes together: about 690 thousand triangles
-at Full, 410 thousand at Medium, 320 thousand at Short.
+eye see further than the weather does, and the flat screen is not touched.
 
 The enhanced look's shadows are four cascades drawn besides; on a standalone headset the classic
 look (the default) is the one to use. Sharpness and Edge detail trade picture for speed too.

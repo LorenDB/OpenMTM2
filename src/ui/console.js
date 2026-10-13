@@ -123,3 +123,21 @@ export function createConsole({ parent, window: win, commands, history = [], ban
     dispose() { win.removeEventListener("keydown", onKey, true); panel.remove(); },
   };
 }
+
+/**
+ * The `distance` command, the same in a race and in a fly-by: how far the world is drawn, in terrain cells of 32 ft
+ * (16 to 256, the Options' Draw distance). The screens follow the setting at once.
+ */
+export function distanceCommand(context, save = null) {
+  return {
+    usage: "distance <16-256>", help: "how far the world is drawn, in terrain cells of 32 ft (128 is the standard)",
+    run: async ([word]) => {
+      const now = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
+      const cells = Math.trunc(Number(word));
+      if (!word || !Number.isFinite(cells)) return `Usage: distance <16-256>. Now ${now} cells (${now * 32} ft).`;
+      context.settings.drawCells = Math.max(16, Math.min(256, cells));
+      (save ?? (await import("../app/settings.js")).saveSettings)(context.settings);
+      return `Draw distance: ${context.settings.drawCells} cells (${context.settings.drawCells * 32} ft).`;
+    },
+  };
+}

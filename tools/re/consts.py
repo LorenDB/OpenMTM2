@@ -7,9 +7,9 @@ import sys
 
 import capstone
 
-from recommon import IMAGE_BASE, functions, image
+from recommon import IMAGE_BASE, functions, image, section
 
-RDATA = (0x607000, 0x63E000)
+RDATA = section(".rdata")
 
 img = image()
 lo, hi = int(sys.argv[1], 16), int(sys.argv[2], 16)

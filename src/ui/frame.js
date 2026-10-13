@@ -26,6 +26,8 @@ const BUTTONS = {
 const BARS = {
   main: [["driver", "Driver Check-in", "drivers"], ["races", "Races", "races"], ["garage", "Garage", "garage"], ["multi", "Multiplayer", null], ["go", "GO", "go"]],
   hall: [["continue", "Continue", "back"]],
+  // The Winner's Circle after a tournament's race: Continue goes back to the tournament.
+  tournament: [["hall", "Hall of Fame", "hall"], ["replay", "Instant Replay", "replay"], ["continue", "Continue", "tournament"]],
   results: [["hall", "Hall of Fame", "hall"], ["replay", "Instant Replay", "replay"], ["continue", "Continue", "races"]],
   start: [["startWeb", "Web Page", "web"], ["startDemo", "Monster Demo", "demo"], ["startManual", "Monster Manual", null], ["startDriver", "Driver Check-in", "drivers"]],
   none: [],
@@ -45,19 +47,19 @@ export function uiImageUrl(assets, name) {
  * @param {HTMLElement} container
  * @param {object} context
  * @param {{ title: string, backdrop?: string, bar?: keyof typeof BARS, regions?: Record<string, number[]>, options?: boolean,
- *   labels?: [string, number[]][], modernRegions?: Record<string, number[]>, current?: string }} spec
+ *   labels?: [string, number[]][], modernRegions?: Record<string, number[]>, current?: string, scene?: string }} spec
  *   `regions`: panel rectangles on the 640 x 480 stage. Both skins lay a screen out the same way: the classic one on the game's
  *   art, the modern one on a plain stage that draws what the art would (the title, `labels` such as "Player Name" baked into the
  *   art, and the bottom bar's buttons with their names) and may move panels with `modernRegions`. `current` is the bar button of
- *   this screen, shown pressed in the modern skin.
+ *   this screen, shown pressed in the modern skin. `scene` names the modern stage (`stage-scene-<scene>`) so a screen can dress it.
  * @returns {Promise<{ classic: true, art: boolean, regions: Record<string, HTMLElement>, unmount?: () => void }>}
  */
-export async function frame(container, context, { title, backdrop, bar = "main", regions = { main: [24, 120, 592, 280] }, options = true, labels = [], modernRegions = {}, current = null, plainTitle = false }) {
+export async function frame(container, context, { title, backdrop, bar = "main", regions = { main: [24, 120, 592, 280] }, options = true, labels = [], modernRegions = {}, current = null, plainTitle = false, scene = null }) {
   const url = resolveSkin(context.settings.skin, context.exeVersion) === "classic" && backdrop ? await uiImageUrl(context.assets, backdrop) : null;
   const art = !!url;
   // Every menu screen can put the game in a headset, where the browser has one (docs/VR.md).
   const enterVr = context.xr ? vrButton(context, url ? "stage-vr" : "screen-vr") : null;
-  const stage = el("div", { class: `stage${art ? "" : " stage-modern"}`, role: "group", "aria-label": title });
+  const stage = el("div", { class: `stage${art ? "" : ` stage-modern${scene ? ` stage-scene-${scene}` : ""}`}`, role: "group", "aria-label": title });
   if (art) stage.append(el("img", { class: "stage-backdrop", src: url, alt: "", draggable: "false" }));
   else {
     stage.append(el("h1", { class: plainTitle ? "stage-title stage-title-plain" : "stage-title" }, context.t?.(title) ?? title));
@@ -117,7 +119,7 @@ async function navigate(context, action) {
   if (action === "demo") return goDemo(context);
   if (action === "web") return window.open("https://mtm2.com/", "_blank", "noopener");
   if (action === "replay") return context.lastReplay ? router.go("replay", { replay: context.lastReplay }) : undefined;
-  const screens = { drivers: ["drivers"], garage: ["garage"], hall: ["hall"], start: ["start"], races: ["race-select", { mode: context.raceConfig?.mode ?? "circuit" }] };
+  const screens = { tournament: ["tournament"], drivers: ["drivers"], garage: ["garage"], hall: ["hall"], start: ["start"], races: ["race-select", { mode: context.raceConfig?.mode ?? "circuit" }] };
   const [name, params = {}] = screens[action];
   return router.go(name, params, { replace: true });
 }

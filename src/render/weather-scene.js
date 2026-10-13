@@ -134,7 +134,8 @@ export function createWeatherScene(env) {
       scene.fog = new THREE.Fog(color, Math.min(w.fogStartFt ?? 0, drawDistance * 0.5), Math.min(w.fogEndFt, drawDistance));
       scene.background = color;
     } else {
-      scene.fog = new THREE.Fog(skyAverage, Math.min(2500, drawDistance * 0.35), Math.min(7000, drawDistance * 0.9));
+      // The haze starts close and thickens slowly to the edge of what is drawn, so the far ground fades in and does not appear all at once.
+      scene.fog = new THREE.Fog(skyAverage, Math.min(1200, drawDistance * 0.15), Math.min(7000, drawDistance * 0.97));
       scene.background = skyAverage;
     }
   }

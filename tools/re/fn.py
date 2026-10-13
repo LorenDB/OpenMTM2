@@ -15,8 +15,14 @@ def main(queries):
             va = int(q, 16)
         except ValueError:
             va = None
+        exact = va is not None and any(start == va for start, _n, _t in blocks)
         for start, name, text in blocks:
-            hit = name == q if va is None else start <= va < start + max(sizes.get(start, 1), 1) + 0x10
+            if va is None:
+                hit = name == q
+            elif exact:
+                hit = start == va
+            else:
+                hit = start <= va < start + max(sizes.get(start, 1), 1) + 0x10
             if hit:
                 print("\n".join(line for line in text.splitlines() if line.strip()))
                 if va is not None:

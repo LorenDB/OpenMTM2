@@ -1,3 +1,4 @@
+import { wrapCoord } from "./wrap.js";
 /** Bucket side in feet. */
 const BUCKET_FT = 32;
 /** The steepest a triangle may be and still carry a wheel: its unit normal's y. */
@@ -46,6 +47,9 @@ export function createRoadGround(base, road) {
     /** The highest road triangle over (x, z): its index, with its height left in `found`; -1 for none. */
     let found = 0;
     function triangleAt(x, z, limit = Infinity) {
+        // The road is in the one world: a point a world away is over the same triangle.
+        x = wrapCoord(x);
+        z = wrapCoord(z);
         const list = buckets.get(key(Math.floor(x / BUCKET_FT), Math.floor(z / BUCKET_FT)));
         if (!list)
             return -1;

@@ -78,7 +78,8 @@ export function detectSitOrigin(lines, sitTitle = "") {
   are 4; California and Michigan 5; Gateway, Homestead, Milwaukee, Nazareth and Rio 6; Surfers
   Paradise, Long Beach, Cleveland, Toronto and Vancouver 7.
 */
-const MTM_TRACK_TYPES = { 1: "DRAG", 2: "CIRCUIT", 3: "RALLY", 4: "RUMBLE" };
+// Type 0 is the engine's free roam: no course is followed and no checkpoint tested (MTM1's HILLCLIM.SIT).
+const MTM_TRACK_TYPES = { 0: "FREE ROAM", 1: "DRAG", 2: "CIRCUIT", 3: "RALLY", 4: "RUMBLE" };
 const CPR_TRACK_TYPES = { 4: "ROAD", 5: "SPEEDWAY", 6: "SHORT OVAL", 7: "STREET" };
 export function sitTrackTypeName(code, origin) {
     return (origin === "CPR" ? CPR_TRACK_TYPES : MTM_TRACK_TYPES)[code] ?? "UNKNOWN";
@@ -146,6 +147,11 @@ export function parseMtmSit(input, sitTitle = "") {
         flyBy: valueAfter("Track Fly-By .AVI file")?.trim() ?? null,
         sonicTrack: valueAfter("Track Fly-By .AVI file")?.trim() === "Sonic",
         localeName: valueAfter("Race Track Locale")?.trim() ?? null,
+        logoBmp: valueAfter("Track Logo .BMP file")?.trim() || null,
+        mapBmp: valueAfter("Track Map .BMP file")?.trim() || null,
+        descriptionTxt: valueAfter("Track Description .TXT file")?.trim() || null,
+        announcerWav: valueAfter("Track Announcer .WAV file")?.trim() || null,
+        dragParTime: null,
         trackTypeCode: null,
         redbookTrack: null,
         ambientSound: null,
@@ -163,6 +169,8 @@ export function parseMtmSit(input, sitTitle = "") {
     const trackType = valueAfter("Track Race Type");
     if (trackType !== null)
         sit.trackTypeCode = parseLeadingInt(trackType);
+    if (sit.trackTypeCode === 1 && sit.flyBy !== null && /^\d+(\.\d+)?$/.test(sit.flyBy))
+        sit.dragParTime = Number(sit.flyBy);
     /*
       @Redbook Audio Track: the CD audio track the game plays on this course. MTM1 and CPR have no
       ambient-sound field at all (that line is one of the two MTM2 markers), and carry this instead.

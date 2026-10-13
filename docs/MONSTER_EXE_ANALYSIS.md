@@ -528,11 +528,169 @@ remnants of it run:
 `0xa2f210` and `0xa2f230` are read there and written nowhere; `bothStaged`, `0x6ee758` and the
 tree timer are only cleared by the level loader (`0x5523d6`, `0x552482`, `0x55341e`).
 
-The port rebuilds drag racing as an addition from these remnants and the strips' data
-(`src/game/drag-race.js`). An MTM1 drag strip has eight checkpoints: the prestage, stage and
-start beams across both lanes (1 ft apart, then 3 ft), the finish line, then each lane's two
-boundaries (lane 1: checkpoints 5 and 6, lane 2: 7 and 8), facing outward. The grid has two slots,
-one per lane, and the course is lane 1's (lane 2 drives its mirror image across the strip).
+The port rebuilds drag racing as an addition (`src/game/drag-race.js`), from these remnants, the
+strips' data, and the rules below.
+
+**Source of the rules.** The pass's rules, numbers and codes are not read from `MONSTER.EXE`
+2.00.42, where nothing drives them. They come from a description of drag racing that the author
+of Community Patch 3 wrote for this project
+(`https://www.mtm2.com/~mtmg/misc/drag_racing_cp3.md`). **He provided no source code:** the
+document is prose and tables that state behaviour and rules only, and nothing in this port was
+written from, or with sight of, the MTM2 or CP3 sources. The document gives as its own
+grounds the 1998 MTM2 source, the CP3 source and a decompile of MTM1's `MONSTER.EXE` (August
+1996). That
+document says the pass survived in the MTM2 source; why the retail build does not run it is
+**open** (compiled out, or a routine this analysis has not found: the constants 2.0, 0.5, 30 and
+33 s near `bothStaged` are what to look for). Where the port follows a CP3 correction in place of
+the 1998 behaviour, the list says so.
+
+**The strip.** A drag SIT (race type 1) has eight checkpoints with fixed meanings:
+
+| Checkpoint | Meaning |
+|---|---|
+| 0 | prestage beam |
+| 1 | stage beam |
+| 2 | start beam: breaking it before the green is the red light |
+| 3 | finish beam |
+| 4, 6 | centre line of lane 0, lane 1 |
+| 5, 7 | outer edge of lane 0, lane 1 |
+
+The beams run across both lanes (on the MTM1 strips the stage beam 1.5 ft after the prestage
+beam and the start beam 2.5 ft after that); the lane lines face outward. The grid has two slots, one per lane. **The lanes are the courses:** lane 0 drives
+course 1 and lane 1 course 2, so on a drag strip Professional's course 2 rule (section 9) does
+not apply. A strip with no course 2 gets lane 0's course mirrored across the strip (the port's).
+A J-drag runs out, turns and comes back; its finish beam faces the other way and lies across the
+way out (`DRAG5.SIT`: 67 ft down the strip from the start beam, across both lanes), so the
+trucks pass it from in front as they leave and it counts only on the way back. On an MTM1 strip
+the header's Fly-By field holds a number, the strip's base elapsed time for computer trucks
+(`DRAG3.SIT`: 3.67, `DRAG.SIT`: 4.83, `DRAG5.SIT`: 12.43), used by MTM1's drag event only. The
+MTM1 strips read (`DRAG`, `DRAG3`, `DRAG5`) each have a course 2 down lane 1.
+
+**State.** `bothStaged`: 0 prestaging, 1 staging, 2 the tree, 3 green. Per truck `ap.staged`:
+0 nothing, 1 prestaged, 2 staged, 3 launched, and from 95 up the truck is out:
+
+| Code | Meaning |
+|---|---|
+| 95 | not a disqualification: a truck that was already disqualified ran into this one before it finished, so the pass is to be run again |
+| 96 | not finished 33 s after the green |
+| 97 | over its lane's centre line or edge (CP3: also backing up after the green) |
+| 98 | did not prestage or stage in time |
+| 99 | red light |
+
+**The pass.**
+
+| Phase | Rule |
+|---|---|
+| Prestage | each truck drives to the prestage beam. The phase ends when both have prestaged, or when one has and 30 s have passed (the port counts them from the start of the phase); a truck that has not is out (98) |
+| Stage | the trucks creep to the stage beam. The phase ends when both are staged and 2.0 s have passed since the last one staged, or when one is staged and 30 s have passed; a truck that has not is out (98) |
+| Tree | 0.5 s, then green; the lamps are those of `0x548cb0` above |
+| Launch | a computer truck launches on the green. The port delays it by a reaction time by difficulty (0.55, 0.38, 0.24 s plus up to 0.15 s), an addition |
+| Run | the elapsed time runs **from the green**, not from the truck's own start, so the reaction time is inside it. The reaction time is the start beam's crossing time minus the green |
+| Timeout | a truck not finished 33 s after the green is out (96) |
+
+The pass ends when every truck is finished or out. A red light does not end the other truck's
+pass. One truck may run alone (CP3: the 1998 code never went green with one). The Disqualify
+lamp shows 96, 97 and 99.
+
+- **The beams (CP3).** A beam is broken by the **front tyre** only, never the bodywork (the 1998
+  test used the body's corners, so a truck whose nose overhangs its tyre could not stage), and
+  only where the tyre passes through the beam between its ends (a test by projection alone read
+  a J-drag's reversed finish beam as broken from the start line). The port takes the tyre's
+  leading point, on the truck's centre line, and counts a beam only when the tyre passes it from
+  behind.
+- **The lanes (CP3, as MTM1 had it).** Each truck is judged against its own lane's two lines,
+  crossed outward (the 1998 code judged both trucks against lane 0's). The port tests the
+  truck's centre.
+- **Backing up (CP3).** More than 2 ft/s backwards for 0.5 s after the green, a wheel on the
+  ground, is out (97). Backing up while staging is allowed.
+- **A truck that is out is judged no more** (CP3). The port also holds a disqualified truck on
+  its brakes.
+- **Staging a computer truck.** The autopilot drives to `checkpoint[bothStaged]` at
+  `clamp((distance x 2 x decel_k) ^ 1/4, 0, 2.0)` ft/s (`MAX_STAGE_SPEED` 2 ft/s) and holds the
+  truck once the tree runs. `decel_k` is **not known**; the port uses 1. The port stops the front
+  tyre a quarter of a foot past the prestage beam, then a quarter of the way into the gap between
+  the stage and start beams, measured on the strip (2.5 ft on the MTM1 strips; CP3 measures the gap too, and lets each
+  driver choose the depth, up to 85%).
+- **Auto Stage.** The game's Auto Stage key (S) hands the player's truck to the autopilot
+  (`controlflag` 3) until it has staged, then gives it back. The port has the key (T, since S is
+  Brake) and a Game option that does the same in every pass, on by default; without either the
+  player stages by hand, in any gear.
+- **A single race on a drag strip (CP3):** one lap, one computer opponent picked at random (the
+  list takes no more than one), or none.
+- **The timing slip (CP3):** both lanes' reaction and elapsed times. The port shows it under the
+  tree.
+
+**The drag weekend.** The event around the pass: qualifying, a bracket, a winner. MTM1 had one
+inside its tournaments; MTM2 cut it (the structures are commented out in its source, and the
+dialogs `IDD_DRAGDRAW` (4401), `IDD_MCDRAGFINALS` (312) and `IDD_DRAGPYRAMID` (219) are resource
+IDs with no code); CP3 rebuilt it as its Drag Weekend. The port follows **CP3's rules**, as the
+same document describes them (its section 7; again a description, no source code), in
+`src/game/events/drag-event.js`, hosted by `src/app/drag-weekend.js`.
+
+- **The field** is 2 to 16 drivers on one strip. The bracket is the field rounded up to 2, 4, 8
+  or 16, and a seed the field does not reach is a **bye**, settled at once. The rounds are the
+  Round of 16, the Round of 8, the Semi-final and the Final.
+- **Qualifying.** The player runs one pass alone, in the lane they like. Beside them runs a
+  **measurement truck**: a plain computer truck with no personality and no launch offset, whose
+  elapsed time is the weekend's **baseline**. Each computer driver's qualifying time is computed:
+  `baseline / pace`, scattered by 4% either way (less for a consistent driver), about 1 run in 25
+  scrappy at 10 to 22% slower (more often for a risky driver), then the launch (below; a computed
+  false start is no time), then a soft cap: a computed time beats the baseline by about 3% at
+  most, on a curve that flattens out, since a floor would make dead heats. Fastest first is the
+  seeding; no time seeds last.
+- **The first round** by seed puts the two best in opposite halves (8 drivers: 1 v 8, 4 v 5,
+  2 v 7, 3 v 6), and the winner of pair p goes to pair p / 2. CP3 itself lays out 1 v N,
+  2 v N - 1 in order, which its author names as a bug (seeds 1 and 2 meet before the final); the
+  port uses the order he gives as the fix.
+- **The lanes.** The better seed chooses and the other takes what is left. A computer driver
+  takes the lane it has been quicker in this weekend, or a coin.
+- **A pairing** is driven (the player is in it), watched (two computer trucks on autopilot) or
+  simulated (computed: each driver's own qualifying time as the base, then their form, the
+  scatter, the launch and the cap). Run All Others simulates every pairing of two computer
+  drivers left in the round. Watching and simulating use the same lanes and the same launch
+  roll. Win odds for a pairing come from the same numbers and are for show.
+- **Settling.** Times are compared at hundredths, rounded.
+
+  | Situation | Result |
+  |---|---|
+  | both have a real elapsed time (1 to 30 s) and they differ | the lower wins |
+  | one is disqualified | the other wins, finished or not |
+  | one has no time but is not disqualified | the other wins with a real time |
+  | a dead heat | the whole pairing is run again |
+  | both disqualified | the whole pairing is run again |
+  | code 95 (a disqualified truck hit the clean one) | as a double disqualification: the whole pairing is run again |
+
+  The times of a pass that is run again stay on show.
+- **The launch layer.** One function gives every computer launch, driven or simulated: a
+  reaction offset in seconds. Positive is a slow start, which a driven pass adds by itself since
+  the elapsed time runs from the green. Negative is a false start: driven, the truck leaves that
+  long before the green and the start beam gives a real red light; simulated, it loses. The foul
+  rate is about 5% at risk 1.0, from about 4% for a calm driver to about 7% for an error-prone
+  one. The "choker" is steady early, then has 2.5 times the risk in the semi-final and 3.5 times
+  in the final. A nervier driver also stages deeper (up to 85% of the gap).
+- **Form.** Each new round gives everyone still in it a new form.
+- **The end.** The final order is by the round each driver went out in, then by best elapsed
+  time. A drag round inside a CP3 tournament scores by that order.
+
+The port's own, where the description gives no number: the five personalities and their values
+(`PERSONALITIES`: pace 0.99 to 1.02, the share of the scatter, risk 0.8 to 1.4, the slowest
+reaction 0.08 to 0.22 s), a false start's lead of 0.3 to 0.5 s on the green, the cap's curve
+(`3% x (1 - exp(-gain / 3%))`), form as 1% either way on the pace, a failed qualifier's simulated
+base of 1.08 baselines, and the staging depth `0.2 + (risk - 0.8) x 0.75`. Not taken: confidence
+across rounds and seasons, and the split screen. Whether a driven false start always breaks the
+start beam before the green is **to be checked in play** (CP3 found a truck staged shallow
+absorbs it into a rolling start).
+
+**MTM1's event, for reference** (the document's section 6, from its author's reading of the MTM1
+decompile; not what the port runs). A field of 2, 4 or 8 with no byes, inside a tournament. The
+player qualifies alone in the left lane (33.33 s when out); each computer truck gets the strip's
+Fly-By number plus or minus 0.5 s without running; qualifying pays 100, 90, 80, 70, then 60
+points. First round 1 v 8, 4 v 5, 3 v 6, 2 v 7. The player always picks the lane. A pairing of
+two computer trucks is watched or skipped (base plus or minus 0.5 s, drawn until they differ).
+Times are truncated to hundredths; a tie or a double disqualification runs the pairing again,
+and after code 95 the wronged truck runs again alone. A round won pays 250, the final
+`(7 - starting round) x 50`, a pass lost 200 unless by a red light. A tournament, when the port
+has one, may want these in place of CP3's.
 
 The `TOURNEY\*.TRN` files in `STARTUP.POD` ("Monster Truck Triathlon", "Doug's Tournament of
 Evil", "Whirlwind Circuit Madness") reference MTM1 tracks (`DRAG5.SIT`, `CIRC4.SIT`,
@@ -1743,3 +1901,82 @@ unused art. The port draws tracks on soft ground as an addition.
 
 **Sparks**: `0x531e40` throws two scrape sparks every eighth of a second from a hull zone in contact while the truck moves. The port draws
 them (and a burst with dust on a hard hit) as points under gravity; it is an addition, as the game shows none.
+
+## The wrapping world
+
+The world is a torus 8192 ft (256 cells of 32 ft) a side. How the game keeps it one, read from the code:
+
+- **A truck's position is wrapped every frame.** `0x5559c0`, called from the frame loop (`0x585dab`), goes through
+  every truck and, for x (`+0xfe0`) and z (`+0xfe8`) alone: above 8192.0 it subtracts 8192, below zero it adds 8192.
+  So a truck is always inside the one world, and everything placed in it (boxes, ramps, checkpoints, the course) is
+  where the truck finds it however far it drives. Nothing else of the truck is touched: not its velocity, and not
+  its height.
+- **A moving object's position is wrapped the same way** where it is stepped (`0x5543c0`: `+0x4c` and `+0x54`).
+- **What is placed is brought into the world when it loads:** a box, a ramp or a top-crush car with a negative x or
+  z gets 8192 added (`0x5495e0`, `0x549b40`, `0x54a000`), a course segment's ends likewise (`0x4e097b`), and
+  `0x42d870` wraps both ends of a pair of points both ways.
+- **Lookups by cell are masked.** The terrain, the surface and the ground boxes are read through the cell of a
+  position, `(trunc(256 x) >> 13) & 255` (`MTM2_PHYSICS.md` 2.1, 14.14), so they repeat without a seam.
+- **A truck is drawn at the copy nearest the view.** `0x41bbd0` fills a truck's drawing record from its position and
+  then, against the view's position (`0x66fd40`, `0x66fd48`, copied each frame from the view object's `+0x1c` and
+  `+0x24` by `0x41f980`): when the truck is more than 4096 ft beyond the view on an axis it is moved 8192 ft back,
+  and the other way likewise. So a truck just across the seam from the camera is seen beside it, not a world away.
+- **No distance is taken the short way round in the simulation.** No routine in the simulation's address range
+  (`0x468e70` to `0x4bb4b0`) uses 8192 or 4096: a pair test (truck against truck, truck against a box) subtracts the
+  two positions as they are. Two things either side of the seam are therefore a world apart to the game, and do not
+  meet until one of them has been wrapped across.
+- **The ground is drawn as a window around the view, not as copies of the world.** The world's draw routine
+  (`0x5010f0`) takes the view's cell, `(x & 0x1fe000) >> 13` of the view's position in 1/256 ft, and first has
+  `0x4f9ff0` lay out the cells in sight: from the corners of the view it finds the least and greatest cell offsets,
+  widens them by two cells, clamps them to the view range (`0x64cfb0`, `0x64cfb4`, in cells), and for every offset in
+  that rectangle places the cell at `(view cell + offset) * 8192` units, which is not wrapped, while reading the
+  cell's height and tile from `((row & 255) * 256) + (col & 255)`. Then it walks the cells ring by ring from the edge
+  of the range in to the view's own cell, and for each calls the terrain cell's draw (`0x4fc370`) and `0x500b80`,
+  which masks the cell to 0..255 and, where the cell's two ground-box heights differ, draws its ground box
+  (`0x4fcbe0`). So every cell and ground box is drawn once, beside the view, whichever side of the map's edge its data
+  is on; nothing is drawn twice and there is no second world. **Not traced:** how the placed objects (the models) are
+  picked and placed around the view, and the stadium's exception.
+
+## Animated models
+
+`engine/Keyframe.c`, `0x431530` (load) and `0x431960` (play; reached only through the model-type table at `0x64c448`,
+so no direct call names it).
+
+An animated BIN (signature 0x20) is a control record, used in memory as it is on disk:
+
+| Offset | Meaning |
+|---|---|
+| `+0x00` | 0x20 |
+| `+0x08` | frame count |
+| `+0x0c` | **the time one frame lasts**, 16.16 seconds |
+| `+0x10` | the animation's clock (0 in the file) |
+| `+0x14` | pointer to the working model (0 in the file) |
+| `+0x18` | the frame names, 16 bytes each |
+| `+0x118` | pointers to the loaded frames |
+
+- **Loading:** every named frame is loaded; the working model is a copy of the first. Each frame must have the working
+  model's vertex count ("Key frame vertex mismatch") and is scaled to its magnify.
+- **Playing**, each time the model is drawn: `position = clock / frame time`, a frame number and a fraction `t`; then the
+  record's clock is set to `frame clock mod (frame count x frame time)`, where the frame clock `0x644618` is the sum of
+  every frame's `dt` (section 5). So **every animated model in the world is at the same point of its loop**, the frames
+  **loop** (no ping-pong), and a model's time does not start when it comes into view.
+- **Between frames the vertices follow a Catmull-Rom spline** through four frames, the one before (`a`), the current
+  (`b`), the next (`c`) and the one after (`d`), each index wrapped round the list:
+
+      a: -0.5 t^3 +     t^2 - 0.5 t
+      b:  1.5 t^3 - 2.5 t^2 + 1
+      c: -1.5 t^3 + 2   t^2 + 0.5 t
+      d:  0.5 t^3 - 0.5 t^2
+
+  The weights are taken to 16.16 and applied to the integer vertex words. It is not a linear blend: halfway between two
+  frames the weights are -1/16, 9/16, 9/16, -1/16.
+- **Normals:** after the vertices move, the face records of the working model are walked and the normals of opcodes
+  0x18 and 0x19 recomputed (`0x431380`, `0x4311d0`); opcode 0x17 is skipped.
+
+Frame times in the files at hand: `TERYL.BIN` 0.25 s (four frames, a flap a second), `CEILTAL0.BIN` 0.25 s,
+`PUMPJACK.BIN` 0.5 s, `REX.BIN`, `WREC1.BIN` and `OSCFAN0.BIN` 1 s. OpenPhotex gives it as `frameSeconds`.
+
+**In OpenMTM2:** `src/shared/keyframe-spline.js` (the weights), used by `render/track-scene.js` for placed models and
+`render/heli-object.js` for the pterodactyl; the frames are morph targets. The port had blended two frames linearly at
+a fixed half second a frame (an eighth for the pterodactyl). **Not traced:** where `MRGL_TEXTURECYCLE` faces take their
+frame from (the port steps them 15 times a second), and the in-record `MRGL_KEYFRAME` opcode, which no stock model uses.

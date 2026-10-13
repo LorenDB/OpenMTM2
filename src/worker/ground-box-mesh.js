@@ -44,8 +44,10 @@ const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0,
  * The game's ground boxes for a level, or null when it has none. `atlas` is the terrain's
  * (buildTerrainAtlas), whose tiles are the texture slots the faces name.
  */
-export function buildGroundBoxMesh({ ra0, ra1, cl0 }, atlas, lte = null, heights = null, cells = null) {
+export function buildGroundBoxMesh({ ra0, ra1, cl0 }, atlas, lte = null, heights = null, cells = null, { stepFt = STEP_FT, heightsFt = null } = {}) {
   if (!ra0 || !ra1) return null;
+  // `stepFt`, `heightsFt`: a level whose height step is not MTM's 2 ft (Hellbender's 1.5), its ground given in feet.
+  const STEP = stepFt;
   // Ground boxes are drawn with their terrain cell, so a stadium's footprint limits them too.
   const boxes = decodeGroundBoxes(ra0, ra1, cl0, 256).filter((b) => !cells
     || (b.x >= cells.col0 && b.x < cells.col1 && b.y >= cells.row0 && b.y < cells.row1));
@@ -60,7 +62,7 @@ export function buildGroundBoxMesh({ ra0, ra1, cl0 }, atlas, lte = null, heights
   const hasLte = !!lte && lte.length >= 256 * 256 * 7;
   let q = 0;
   const cell = (x, y) => ((y & 255) * 256 + (x & 255));
-  const ground = (x, y) => (heights ? heights[cell(x, y)] * STEP_FT : -Infinity);
+  const ground = (x, y) => (heightsFt ? heightsFt[cell(x, y)] : heights ? heights[cell(x, y)] * STEP_FT : -Infinity);
   // Side faces in scene order +X (east, col + 1), -X (west, col - 1), +Z (south, row - 1), -Z (north, row + 1).
   const NEIGHBOUR = { 0: [1, 0], 1: [-1, 0], 4: [0, -1], 5: [0, 1] };
   // The two grid corners along each side, for where the terrain meets it.
@@ -69,7 +71,7 @@ export function buildGroundBoxMesh({ ra0, ra1, cl0 }, atlas, lte = null, heights
     const x0 = box.x * CELL_FT, x1 = x0 + CELL_FT;
     // Scene z of the cell's rows: row r sits at -r * 32.
     const z1 = -box.y * CELL_FT, z0 = z1 - CELL_FT;
-    const y0 = box.lower * STEP_FT, y1 = Math.max(y0 + 0.01, box.upper * STEP_FT);
+    const y0 = box.lower * STEP, y1 = Math.max(y0 + 0.01, box.upper * STEP);
     const visible = (face) => {
       if (face === 2) return true;
       if (face === 3) {

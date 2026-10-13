@@ -8,9 +8,10 @@ thunk at 0x401000-0x406fff. This scans .text for rel32 calls and jumps instead.
 import struct
 import sys
 
-from recommon import IMAGE_BASE, functions, image, owner
+from recommon import IMAGE_BASE, functions, image, owner, section, thunk_end
 
-TEXT_START, TEXT_END, THUNK_END = 0x1000, 0x207000, 0x407000
+TEXT_START, TEXT_END = (a - IMAGE_BASE for a in section(".text"))
+THUNK_END = thunk_end()
 
 
 def refs(img, target):

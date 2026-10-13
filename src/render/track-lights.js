@@ -10,6 +10,7 @@
 */
 import * as THREE from "three";
 import { BEAM_AXIS, BEAM_INTENSITY, beamGeometry, beamMaterial } from "./light-beam.js";
+import { blockShift } from "../shared/object-chunks.js";
 
 const POOL_LIGHTS = 8;
 /** A headlight's pool strength in this scene (render/weather-scene.js SPOT_INTENSITY); `bright` scales it. */
@@ -70,7 +71,14 @@ export function createTrackLights(scene, lights, ground) {
       root.visible = night;
       if (!night) return;
       const cx = camera.position.x, cz = -camera.position.z;
-      const nearest = items.map((item) => ({ item, d: Math.hypot(item.l.pool[0] - cx, item.l.pool[1] - cz) }))
+      // The world is drawn as a window around the camera (track-scene.js `placeBlocks`): each lamp is lit at the copy
+      // of its place nearest the camera, `shift` whole worlds from where the level has it (game feet: x, and z forward).
+      for (const item of items) {
+        const [sx, sz] = blockShift(item.l.head[0], item.l.head[2], cx, cz);
+        item.shift = [sx, sz];
+        for (const part of [item.glow, item.cone]) if (part) part.position.set(item.l.head[0] + sx, item.l.head[1], -(item.l.head[2] + sz));
+      }
+      const nearest = items.map((item) => ({ item, d: Math.hypot(item.l.pool[0] + item.shift[0] - cx, item.l.pool[1] + item.shift[1] - cz) }))
         .sort((a, b) => a.d - b.d).slice(0, spots.length);
       spots.forEach((spot, i) => {
         const near = nearest[i]?.item;
@@ -78,8 +86,8 @@ export function createTrackLights(scene, lights, ground) {
         const { l } = near;
         const drop = Math.max(1, l.head[1] - near.poolY);
         spot.color.copy(near.color);
-        spot.position.set(l.head[0], l.head[1], -l.head[2]);
-        spot.target.position.set(l.pool[0], near.poolY, -l.pool[1]);
+        spot.position.set(l.head[0] + near.shift[0], l.head[1], -(l.head[2] + near.shift[1]));
+        spot.target.position.set(l.pool[0] + near.shift[0], near.poolY, -(l.pool[1] + near.shift[1]));
         // Opened to the pool's radius on the ground; reaching max(2 x height, rad) as the engine bounds it, and past it.
         spot.angle = Math.min(Math.PI / 2.2, Math.max(0.05, Math.atan2(l.rad, drop)));
         spot.distance = Math.hypot(Math.max(2 * drop, l.rad), l.rad) * 1.2;

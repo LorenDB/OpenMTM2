@@ -8,6 +8,18 @@
 
 const KEY = "openmtm2.settings";
 
+/**
+ * The physics a race can run under, as Options (Game) and the console's `physics` list them. A model is one more entry
+ * here and its rules in the simulation (OpenPhotex `simRules`). "mtm1" is Monster Truck Madness 1.00's differences
+ * from MTM2 as read from its executable (MTM1_MONSTER_EXE_ANALYSIS.md 4.3), and its drag pass rules (7.2).
+ */
+export const PHYSICS_MODELS = Object.freeze([
+  Object.freeze({ id: "mtm2", label: "Monster Truck Madness 2", note: "The 1998 game's" }),
+  Object.freeze({ id: "mtm1", label: "Monster Truck Madness", note: "The 1996 game's: tires that touch throw trucks twice as hard, water stops a truck, no deep water, weather does not change the grip, no crash damage, and its own drag rules" }),
+]);
+/** A physics model by id; an unknown id is the first, MTM2's. */
+export const physicsModel = (id) => PHYSICS_MODELS.find((m) => m.id === id) ?? PHYSICS_MODELS[0];
+
 export const DEFAULT_SETTINGS = Object.freeze({
   look: "enhanced",           // "classic" or "enhanced"
   view: 1,                    // the camera view the race starts in (the exe's modes 0 to 9)
@@ -41,6 +53,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   shortViewCycle: false,      // the Camera key steps through the cockpit, Chase Near and Chase Far only
   zModeCameras: false,        // Z mode's zoom and cameras in any race, without GOLD or slew mode, and the Inertia view
   fullAutopilot: false,       // the game's "Full Autopilot": the player's truck drives itself
+  autoStage: true,            // drag races: the player's truck stages itself (off: stage it by hand, or press the Auto Stage key)
   dustEffects: true,          // MONSTER.INI smokeEffectFlag: dust puffs behind the wheels on soft ground
   tireTracks: true,           // MONSTER.INI tireTrackFlag: treads left on soft ground (the game reads it but never draws them)
   waterSplash: true,          // drops thrown up where wheels run through water, more with speed (not in the game)
@@ -54,6 +67,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showHiddenTracks: true,     // the two hidden tracks are listed unless this is turned off
   vr: Object.freeze({}),      // the headset's preferences, see game/vr/settings.js (docs/VR.md)
   offline: true,              // keep a copy of the app in the browser, to start without a server (app/offline.js)
+  physics: "mtm2",            // the physics model, one of PHYSICS_MODELS
+  flyControls: "traxx",       // how the fly-by camera is flown: "traxx" (JSTrackViewer's), "tv" (Terminal Velocity) or "hb" (Hellbender)
 });
 
 export function loadSettings() {

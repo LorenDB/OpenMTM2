@@ -8,6 +8,7 @@
   always move, are in every frame). Playback shows the state between two frames by interpolating.
   Pure, so it runs under Node.
 */
+import { nearestCopy } from "../shared/scene-frame.js";
 import { REPLAY_FRAME_TICKS, REPLAY_RING_RECORDS, REPLAY_TICKS_PER_SECOND, mtm2Sim } from "../vendor/openphotex/index.js";
 
 export const FRAME_SECONDS = REPLAY_FRAME_TICKS / REPLAY_TICKS_PER_SECOND;
@@ -113,7 +114,8 @@ export function createPlayback(replay, { restTravel = [-4, -4] } = {}) {
         mtm2Sim.eulerToMatrix(angles[0], angles[1], angles[2], matrix);
         const tires = (ra.tires ?? [0, 0, 0, 0]).map((v, n) => ({ angle: lerp(v, rb.tires?.[n] ?? v, k), onGround: true }));
         trucks.push({
-          pos: lerpVec(ra.ipos, rb.ipos, k), matrix: [...matrix], euler: angles,
+          // Either side of the world's seam the two records are a world apart: blended from the copy beside the later one.
+          pos: lerpVec(nearestCopy(ra.ipos, rb.ipos), rb.ipos, k), matrix: [...matrix], euler: angles,
           tires, steer: lerp(ra.steering?.[0] ?? 0, rb.steering?.[0] ?? 0, k), rearSteer: lerp(ra.steering?.[1] ?? 0, rb.steering?.[1] ?? 0, k),
           axles: [{ articulation: 0, travel: restTravel[0] }, { articulation: 0, travel: restTravel[1] }],
           gear: ra.gear ?? 0, course: ra.course ?? 0, speed: Math.hypot(...lerpVec(ra.bvel, rb.bvel, k)), throttle: lerp(ra.throttle ?? 0, rb.throttle ?? 0, k),
@@ -129,7 +131,7 @@ export function createPlayback(replay, { restTravel = [-4, -4] } = {}) {
         const kk = gap ? Math.max(0, 1 - (b.t - t) / FRAME_SECONDS) : k;
         const angles = [0, 1, 2].map((n) => lerpAngle(a.record.angles[n], b.record.angles[n], kk));
         mtm2Sim.eulerToMatrix(angles[0], angles[1], angles[2], matrix);
-        moved.push({ sitIndex: number, pos: lerpVec(a.record.ipos, b.record.ipos, kk), matrix: [...matrix] });
+        moved.push({ sitIndex: number, pos: lerpVec(nearestCopy(a.record.ipos, b.record.ipos), b.record.ipos, kk), matrix: [...matrix] });
       }
       return { trucks, damage, objects: moved };
     },

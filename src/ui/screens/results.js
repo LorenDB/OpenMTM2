@@ -13,6 +13,7 @@ import { raceFromBoard } from "../../app/vr-lobby.js";
 import { createMenu } from "../../game/vr/menu.js";
 import { racePoints } from "../../game/race-points.js";
 import { frame, uiImageUrl } from "../frame.js";
+import { takeRace } from "../../app/tournament.js";
 
 const DIFFICULTIES = ["Rookie", "Intermediate", "Professional"];
 
@@ -21,7 +22,7 @@ export function winnerCells(row, { summit = false, laps = 1, difficulty = 1, poi
   return [
     ordinal(row.place), row.name, row.truckName, DIFFICULTIES[difficulty] ?? DIFFICULTIES[1],
     summit ? String(Math.round(row.score)) : points === null ? "" : String(points),
-    summit ? formatRaceTime(laps * 60) : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
+    summit ? formatRaceTime(laps * 60) : row.rerun ? "Rerun" : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
     row.best ? formatRaceTime(row.best) : "",
   ];
 }
@@ -46,7 +47,7 @@ export function winnerBoard(rows, { summit = false, laps = 1, difficulty = 1, no
   });
 }
 
-export default async function mount(container, context, { track, laps, difficulty = 1, rows, mode, truck }) {
+export default async function mount(container, context, { track, laps, difficulty = 1, rows, mode, truck, tournament = false }) {
   // Loaded here, not at the top: the previews need three.js, which the pure parts of this file do not.
   const { createPreviewSlot } = await import("../truck-preview-slot.js");
   const summit = mode === "summit";
@@ -63,6 +64,8 @@ export default async function mount(container, context, { track, laps, difficult
   const ordered = [...rows].sort((a, b) => a.place - b.place);
   const pointList = racePoints(ordered, laps);
   const pointsOf = new Map(ordered.map((r, i) => [r, summit ? Math.round(r.score) : pointList[i]]));
+  // A tournament's race (app/tournament.js): its points go to the tournament, once.
+  if (tournament && context.tournament) await takeRace(context, rows, rows.map((r) => pointsOf.get(r) ?? 0));
   // A finished race, or any Rumble, may earn a Hall of Fame place.
   let hallNote = null;
   if (me && !counted && (summit || (me.finished && !me.dq && me.raceTime > 0))) {
@@ -90,7 +93,7 @@ export default async function mount(container, context, { track, laps, difficult
     onLeave: () => context.xr.exit(),
   }));
   const ui = await frame(container, context, {
-    title: "Winner's Circle", backdrop: "RESULTS", bar: "results",
+    title: "Winner's Circle", backdrop: "RESULTS", bar: tournament && context.tournament ? "tournament" : "results",
     labels: [["First", [24, 196, 140, 18]], ["Second", [476, 291, 140, 18]]],
     // Without the art's frames: each place is a preview and its two columns of data side by side, first above, second below.
     modernRegions: {

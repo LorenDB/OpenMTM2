@@ -1,14 +1,16 @@
 /* One all-types track table, track preview, exact CPU field and allowed weather selection. */
+import { startDragWeekend } from "../../app/drag-weekend.js";
+import { MAX_FIELD, MIN_FIELD } from "../../game/events/drag-event.js";
 import { el } from "../dom.js";
 import { currentDriver, getProfiles } from "../../app/profile-store.js";
 import { saveSettings } from "../../app/settings.js";
 import { setRaceConfig } from "../../app/flow.js";
-import { raceLengthLabel, raceTypeName, trackPreviewNames } from "../../game/menu-data.js";
+import { raceLengthLabel, raceTypeName, trackPreviewBmp } from "../../game/menu-data.js";
 import { WEATHER_NAMES, allowedWeathers, resolveWeather } from "../../game/weather.js";
 import { playMenuSound } from "../../audio/menu-sounds.js";
 import { frame, uiImageUrl } from "../frame.js";
 
-const SUPPORTED = new Set(["circuit", "rally", "summit", "drag"]);
+const SUPPORTED = new Set(["circuit", "rally", "summit", "drag", "freeroam"]);
 
 export default async function mount(container, context) {
   const { settings } = context;
@@ -24,12 +26,29 @@ export default async function mount(container, context) {
 
   const validOpponentFiles = new Set(trucks.filter((item) => item.file !== driver.lastTruck).map((item) => item.file));
   // The player's own list (which may be empty: no opponents), or without one the default number (Options, Game).
+  // Spectator mode (the Computer Opponents dialog): the computer's trucks race alone, the player's own among them if
+  // picked, a full grid of eight at most.
+  let spectator = !!settings.spectator;
+  const allFiles = new Set(trucks.map((item) => item.file));
   let selectedOpponents = (Array.isArray(settings.opponentTrucks) ? settings.opponentTrucks : [])
-    .filter((file, index, all) => validOpponentFiles.has(file) && all.indexOf(file) === index).slice(0, 7);
+    .filter((file, index, all) => (spectator ? allFiles : validOpponentFiles).has(file) && all.indexOf(file) === index).slice(0, spectator ? 8 : 7);
   if (!Array.isArray(settings.opponentTrucks)) {
     const count = Number.isInteger(settings.defaultOpponents) ? settings.defaultOpponents : 3;
-    selectedOpponents = trucks.filter((item) => item.file !== driver.lastTruck).slice(0, count).map((item) => item.file);
+    selectedOpponents = trucks.filter((item) => item.file !== driver.lastTruck && (!item.game || item.game === "MTM")).slice(0, count).map((item) => item.file);
   }
+
+  // A drag strip takes one computer truck, picked at random until the player picks their own (or none: a pass alone).
+  // The list for the other tracks is kept apart and comes back with them.
+  let dragOpponents = null;
+  const onDragStrip = () => track.raceType === "drag";
+  const opponentsNow = () => {
+    if (!onDragStrip()) return selectedOpponents;
+    if (!dragOpponents) {
+      const files = [...validOpponentFiles];
+      dragOpponents = files.length ? [files[Math.floor(Math.random() * files.length)]] : [];
+    }
+    return dragOpponents;
+  };
 
   const laps = el("input", { type: "number", min: 1, max: 99, value: track.defaultLaps, class: "race-length", "aria-label": "Laps or minutes" });
   const lengthLabel = el("span", { class: "race-length-label" });
@@ -46,9 +65,39 @@ export default async function mount(container, context) {
     freeRoam.checked = !!track.freeRoamOnly || !!settings.freeRoam;
     freeRoam.disabled = !!track.freeRoamOnly;
     opponentsButton.disabled = isFreeRoam();
-    laps.disabled = isFreeRoam();
+    laps.disabled = isFreeRoam() || onDragStrip();
+    // A disabled number box looks the same on the menu art: grey it and its label.
+    laps.classList.toggle("race-off", laps.disabled);
+    lengthLabel.classList.toggle("race-off", laps.disabled);
   };
   const goButton = el("button", { class: "primary", "data-menu-sound": "STARTOFF" }, "Race");
+  // Fly-by (ui/screens/fly-by.js): the track with no truck on it and a camera to fly through it. Every track has it.
+  const flyByButton = el("button", { class: "race-flyby", "data-menu-sound": "STARTOFF", title: "Fly through the track, no truck and no race" }, context.t("Fly-by"));
+  flyByButton.addEventListener("click", () => {
+    const chosen = remember();
+    context.router.go("fly-by", { track, weather: chosen.weather });
+  });
+  // On a drag strip: a drag weekend (ui/screens/drag-event.js), a new one or the one in progress.
+  const weekendButton = el("button", { class: "stage-event", "data-menu-sound": "STARTOFF", hidden: true });
+  const showWeekend = () => {
+    weekendButton.hidden = !onDragStrip() && !context.dragWeekend;
+    weekendButton.textContent = context.dragWeekend ? "Resume drag weekend" : "Drag weekend";
+  };
+  // Tournaments (ui/screens/tournament.js), beside Options: the list, or the one under way.
+  const tourneyButton = el("button", { class: "stage-event stage-tourney", "data-menu-sound": "STARTOFF", onclick: () => { remember(); context.router.go("tournament"); } },
+    context.tournament ? "Resume tournament" : "Tournament");
+  weekendButton.addEventListener("click", async () => {
+    if (!context.dragWeekend) {
+      const size = await chooseField();
+      if (!size) return;
+      const chosen = remember();
+      startDragWeekend(context, {
+        track, trucks, playerTruck: (trucks.find((item) => item.file === driver.lastTruck) ?? trucks[0]).file, playerName: driver.name, size,
+        difficulty: chosen.difficulty, weather: chosen.weather,
+      });
+    }
+    context.router.go("drag-event");
+  });
   let previewRequest = 0;
 
   const fillWeather = () => {
@@ -63,24 +112,40 @@ export default async function mount(container, context) {
   };
   const showPreview = async () => {
     const request = ++previewRequest;
-    let url = null;
-    for (const name of trackPreviewNames(track.file)) {
-      url = await uiImageUrl(context.assets, name);
-      if (url || request !== previewRequest) break;
-    }
+    // The picture the track's SIT names ("Track Logo .BMP file"), and no other.
+    const name = trackPreviewBmp(track);
+    const url = name ? await uiImageUrl(context.assets, name) : null;
     if (request !== previewRequest) return;
     preview.hidden = !url;
     if (url) { preview.src = url; preview.alt = `${track.name} preview`; }
   };
+  // An MTM1 track's zoom map (MTM1_MONSTER_EXE_ANALYSIS.md 2.10): the button is there when the map the SIT names is.
+  const zoomButton = el("button", { class: "race-zoom", hidden: true, title: "The track's map and description" }, context.t("Zoom"));
+  let zoomRequest = 0;
+  const showZoom = async () => {
+    const request = ++zoomRequest, item = track;
+    zoomButton.hidden = true;
+    if (item.game !== "MTM1" || !item.mapBmp) return;
+    const url = await uiImageUrl(context.assets, item.mapBmp);
+    if (request === zoomRequest) zoomButton.hidden = !url;
+  };
+  zoomButton.addEventListener("click", async () => {
+    const item = track, url = await uiImageUrl(context.assets, item.mapBmp);
+    if (!url) return;
+    const text = item.descriptionTxt ? await context.assets.call("trackText", { name: item.descriptionTxt }).catch(() => null) : null;
+    openZoomMap(item, url, text);
+  });
   const remember = () => {
     const value = Math.max(1, Math.min(99, Math.trunc(Number(laps.value)) || track.defaultLaps));
     laps.value = String(value);
     const chosen = {
       mode: track.raceType, track: track.file, laps: value, difficulty: settings.difficulty,
-      opponents: [...selectedOpponents], weather: weather.value === "random" ? "random" : Number(weather.value),
+      opponents: [...opponentsNow()], weather: weather.value === "random" ? "random" : Number(weather.value),
       freeRoam: isFreeRoam(),
+      spectator: spectator && !isFreeRoam(),
     };
     Object.assign(settings, {
+      spectator,
       lastTrack: track.file, weather: chosen.weather, opponentTrucks: [...selectedOpponents], opponents: selectedOpponents.length,
     });
     saveSettings(settings);
@@ -95,7 +160,10 @@ export default async function mount(container, context) {
     lengthLabel.textContent = raceLengthLabel(item.raceType);
     fillWeather();
     showFreeRoam();
+    showWeekend();
+    showSelected();
     show();
+    showZoom();
     showPreview();
     remember();
   };
@@ -107,6 +175,13 @@ export default async function mount(container, context) {
     if (!words.length) return tracks;
     return tracks.filter((item) => { const text = `${item.name} ${typeLabel(item)} ${item.file}`.toLowerCase(); return words.every((w) => text.includes(w)); });
   };
+  // Above the filter: the track that is picked, which the filter or the scrolling may have taken out of sight.
+  const selectedLabel = el("div", { class: "race-length-label race-track-selected", "aria-live": "polite" });
+  const showSelected = () => {
+    selectedLabel.textContent = `${context.t("Selected")}: ${track.name} - ${typeLabel(track)}`;
+    selectedLabel.title = selectedLabel.textContent;
+  };
+  const listHead = el("div", { class: "race-track-head" }, filter);
   filter.addEventListener("input", () => { context.trackFilter = filter.value; show(); });
   // Typing in the box is not driving the menus.
   filter.addEventListener("keydown", (event) => event.stopPropagation());
@@ -116,7 +191,10 @@ export default async function mount(container, context) {
   }, el("td", {}, item.name), el("td", {}, typeLabel(item)))));
 
   opponentsButton.addEventListener("click", async () => {
-    selectedOpponents = await chooseOpponents(trucks, driver.lastTruck, selectedOpponents);
+    // A drag strip has two lanes, the other tracks a grid of eight.
+    const picked = await chooseOpponents(trucks, driver.lastTruck, opponentsNow(), onDragStrip() ? 2 : 8, spectator);
+    if (onDragStrip()) dragOpponents = picked.files; else selectedOpponents = picked.files;
+    spectator = picked.spectator;
     remember();
   });
   freeRoam.addEventListener("change", () => { settings.freeRoam = freeRoam.checked; showFreeRoam(); remember(); });
@@ -126,7 +204,10 @@ export default async function mount(container, context) {
   goButton.addEventListener("click", () => { remember(); context.router.go("garage"); });
   fillWeather();
   lengthLabel.textContent = raceLengthLabel(track.raceType);
+  showWeekend();
+  showSelected();
   show();
+  showZoom();
   await showPreview();
   remember();
 
@@ -135,42 +216,92 @@ export default async function mount(container, context) {
     regions: {
       list: [42, 141, 274, 189], lengthLabel: [48, 350, 58, 24], length: [106, 350, 38, 24],
       opponents: [343, 81, 132, 38], preview: [342, 124, 258, 210], weather: [488, 349, 109, 27], weatherLabel: [0, 0, 0, 0],
-      freeRoam: [488, 378, 110, 22],
+      freeRoam: [488, 378, 110, 22], flyBy: [404, 378, 78, 22], selected: [42, 88, 296, 24],
     },
     // Without the art: the list takes its own column headings, and Weather sits beside Laps under the list, in the same type.
-    modernRegions: { opponents: [343, 84, 200, 32], list: [42, 122, 274, 208], weatherLabel: [150, 350, 70, 24], weather: [222, 350, 94, 24], freeRoam: [322, 350, 110, 24] },
+    modernRegions: { opponents: [343, 84, 200, 32], list: [42, 122, 274, 208], weatherLabel: [150, 350, 70, 24], weather: [222, 350, 94, 24], freeRoam: [322, 350, 110, 24], flyBy: [522, 350, 78, 24] },
   });
+  ui.regions.list.parentElement.append(weekendButton, tourneyButton);
   if (ui.classic) {
     if (ui.art) { opponentsButton.textContent = ""; opponentsButton.title = "Computer Opponents"; }
-    ui.regions.list.append(filter, table);
+    ui.regions.list.append(listHead, table);
     ui.regions.lengthLabel.append(lengthLabel);
     ui.regions.length.append(laps);
     ui.regions.opponents.append(opponentsButton);
-    ui.regions.preview.append(preview);
+    ui.regions.preview.append(preview, zoomButton);
+    ui.regions.selected.append(selectedLabel);
     ui.regions.weather.append(weather);
     ui.regions.freeRoam.append(freeRoamLabel);
+    ui.regions.flyBy.append(flyByButton);
     if (!ui.art) {
       ui.regions.weatherLabel.append(el("span", { class: "race-length-label" }, context.t("Weather")));
       table.prepend(el("thead", {}, el("tr", {}, el("th", {}, context.t("Track Name")), el("th", {}, context.t("Track Type")))));
     }
   } else {
-    ui.regions.list.append(filter, table,
+    ui.regions.list.append(selectedLabel, listHead, table,
       el("div", { class: "form-row" },
-        el("label", {}, lengthLabel, " ", laps), el("label", {}, "Weather ", weather), freeRoamLabel, opponentsButton),
-      el("div", { class: "track-preview-modern" }, preview),
+        el("label", {}, lengthLabel, " ", laps), el("label", {}, "Weather ", weather), freeRoamLabel, opponentsButton, flyByButton),
+      el("div", { class: "track-preview-modern" }, preview, zoomButton),
       el("div", { class: "screen-actions" }, goButton));
   }
   return { unmount: ui.unmount };
 }
 
-async function chooseOpponents(trucks, playerTruck, initial) {
+/**
+ * MTM1's zoom map as a dialog: the track's map bitmap filling a 640 x 480 stage with its description over it, in the
+ * rectangle the game draws it in (344, 26 to 624, 440), and OK.
+ */
+function openZoomMap(track, url, text) {
+  const dialog = el("dialog", { class: "zoom-map-modal", "aria-label": `${track.name} map` },
+    el("div", { class: "zoom-map-stage" },
+      el("img", { src: url, alt: `${track.name} map`, draggable: "false" }),
+      text ? el("div", { class: "zoom-map-text" }, ...text.split(/\n/).map((line) => el("p", {}, line))) : null,
+      el("button", { class: "primary zoom-map-ok", onclick: () => dialog.close() }, "OK")));
+  // A click outside the stage closes it, as Escape does.
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+/** The Drag weekend dialog: how many drivers, 2 to 16. Returns the number, or null when cancelled. */
+async function chooseField() {
   return new Promise((resolve) => {
-    let selected = [...initial];
+    const size = el("select", { "aria-label": "Drivers" }, ...Array.from({ length: MAX_FIELD - MIN_FIELD + 1 }, (_, k) => k + MIN_FIELD).map((n) => el("option", { value: n, selected: n === 8 }, `${n} drivers`)));
+    const dialog = el("dialog", { class: "opponents-modal", "aria-label": "Drag weekend" },
+      el("h1", {}, "Drag weekend"),
+      el("p", {}, "Qualifying, then an elimination bracket on this strip. You qualify alone; the order seeds the bracket, and a field short of 2, 4, 8 or 16 gives the best seeds a bye."),
+      el("div", { class: "form-row" }, el("label", {}, "Field ", size)),
+      el("div", { class: "screen-actions" },
+        el("button", { onclick: () => dialog.close() }, "Cancel"),
+        el("button", { class: "primary", onclick: () => dialog.close("start") }, "Start")));
+    dialog.addEventListener("close", () => { dialog.remove(); resolve(dialog.returnValue === "start" ? Number(size.value) : null); }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
+/**
+ * The Computer Opponents dialog. `full` is the grid (eight; a drag strip's two lanes): the player drives against up to
+ * `full - 1` trucks, or with Spectator mode ticked watches up to `full` of them, their own truck among them if picked.
+ * Filling the grid ticks Spectator mode by itself. Returns `{ files, spectator }`.
+ */
+async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching = false) {
+  return new Promise((resolve) => {
+    let selected = [...initial], spectator = !!watching;
+    const before = { selected: [...initial], spectator };
+    const spectatorBox = el("input", { type: "checkbox", checked: spectator });
+    const note = el("p", { class: "muted" });
+    const limit = () => (spectator ? full : full - 1);
     const availableList = el("select", { multiple: true, size: 10, "aria-label": "Available trucks" });
     const selectedList = el("select", { multiple: true, size: 10, "aria-label": "Selected opponents" });
     const draw = () => {
       const picked = new Set(selected);
-      availableList.replaceChildren(...trucks.filter((item) => item.file !== playerTruck && !picked.has(item.file))
+      spectatorBox.checked = spectator;
+      note.textContent = spectator
+        ? `Spectator mode: these ${selected.length === 1 ? "truck races" : "trucks race"} and you watch. Up to ${full}.`
+        : `You race against up to ${full - 1}. Pick ${full} to watch them race instead.`;
+      availableList.replaceChildren(...trucks.filter((item) => (spectator || item.file !== playerTruck) && !picked.has(item.file))
         .map((item) => el("option", { value: item.file }, item.name)));
       selectedList.replaceChildren(...selected.map((file) => {
         const item = trucks.find((truck) => truck.file === file);
@@ -179,7 +310,9 @@ async function chooseOpponents(trucks, playerTruck, initial) {
     };
     const add = () => {
       for (const option of availableList.selectedOptions) {
-        if (selected.length < 7 && !selected.includes(option.value)) selected.push(option.value);
+        // The truck that fills the grid leaves no place for the player: the race is one to watch.
+        if (!spectator && selected.length === full - 1 && !selected.includes(option.value)) spectator = true;
+        if (selected.length < limit() && !selected.includes(option.value)) selected.push(option.value);
       }
       draw();
     };
@@ -195,12 +328,20 @@ async function chooseOpponents(trucks, playerTruck, initial) {
         el("div", { class: "opponent-moves" }, el("button", { onclick: add }, "Add >"), el("button", { onclick: remove }, "< Remove"),
           el("button", { onclick: () => { selected = []; draw(); } }, "Remove all")),
         el("label", {}, "Selected opponents", selectedList)),
+      el("label", { class: "form-row opponent-spectator" }, spectatorBox, " Spectator mode"),
+      note,
       el("div", { class: "screen-actions" },
-        el("button", { onclick: () => { selected = [...initial]; dialog.close(); } }, "Cancel"),
+        el("button", { onclick: () => { selected = before.selected; spectator = before.spectator; dialog.close(); } }, "Cancel"),
         el("button", { class: "primary", onclick: () => dialog.close() }, "Done")));
     availableList.addEventListener("dblclick", add);
     selectedList.addEventListener("dblclick", remove);
-    dialog.addEventListener("close", () => { dialog.remove(); resolve(selected); }, { once: true });
+    spectatorBox.addEventListener("change", () => {
+      spectator = spectatorBox.checked;
+      // Driving again: the player's own truck and the grid's last place are the player's.
+      if (!spectator) selected = selected.filter((file) => file !== playerTruck).slice(0, full - 1);
+      draw();
+    });
+    dialog.addEventListener("close", () => { dialog.remove(); resolve({ files: selected, spectator }); }, { once: true });
     document.body.append(dialog);
     draw();
     dialog.showModal();

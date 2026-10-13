@@ -34,14 +34,16 @@ export function binScale(magnify) {
 
 /**
  * Decode a model. Returns `{ name, meshes, textureNames, bounds }` or null for anything that is
- * not a plain MRGL model (animated BINs list frame models instead; see `frameNames`).
+ * not a plain MRGL model (animated BINs list frame models instead; see `frameNames`). `unitScale` multiplies the
+ * model's size, for a game whose vertex units are not MTM's.
  */
-export function decodeModel(bytes, name) {
+export function decodeModel(bytes, name, unitScale = 1) {
   const bin = parseBin(bytes);
-  if (bin.kind === "animated") return { name, meshes: [], textureNames: [], frameNames: bin.frameNames, bounds: null };
+  if (bin.kind === "animated") return { name, meshes: [], textureNames: [], frameNames: bin.frameNames, frameSeconds: bin.frameSeconds ?? null, bounds: null };
   if (bin.kind !== "mrgl" || !bin.vertexListValid) return null;
   const magnify = bin.magnifyRecords.length ? bin.magnifyRecords[bin.magnifyRecords.length - 1] : bin.magnify;
-  const scale = binScale(magnify);
+  // `unitScale`: another game's models count their units finer (worker/tv-track-build.js).
+  const scale = binScale(magnify) * unitScale;
   const w = bin.vertices;
   const count = w.length / 3;
   // Scene-frame vertices: (x, y, -z).

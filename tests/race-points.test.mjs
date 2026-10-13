@@ -16,3 +16,12 @@ test("the fastest lap bonus goes to the fastest alone; a tie or no times give no
   assert.deepEqual(racePoints([{ place: 1, best: 200 }, { place: 2, best: 200 }], 3), [933, 700]);
   assert.deepEqual(racePoints([{ place: 1, best: 0 }, { place: 9, best: 0 }], 3), [933, 0]);
 });
+
+test("laps led: a share of 100 for each lap finished in first place, the full 100 for leading them all", () => {
+  // Three laps: the winner led the last two, the runner-up the first.
+  assert.deepEqual(racePoints([{ place: 1, best: 200, led: 2 }, { place: 2, best: 210, led: 1 }], 3), [900 + 100 + 66, 700 + 33]);
+  // Led every lap: 100, not 3 x 33.
+  assert.deepEqual(racePoints([{ place: 1, best: 200, led: 3 }, { place: 2, best: 210, led: 0 }], 3), [1100, 700]);
+  // The winner who led no lap until the flag: the last lap is one he closed first, counted by the simulation.
+  assert.deepEqual(racePoints([{ place: 1, best: 210, led: 0 }, { place: 2, best: 200, led: 4 }], 5), [900, 700 + 100 + 80]);
+});

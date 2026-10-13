@@ -8,7 +8,7 @@ import { el } from "../dom.js";
 import { WorkerClient } from "../../shared/worker-client.js";
 import { createKeyboardInput } from "../../game/input/keyboard.js";
 import { createGamepadInput } from "../../game/input/gamepad.js";
-import { createTrackWorld, disposeObject, moveObjects, skyColor } from "../../render/track-scene.js";
+import { createTrackWorld, disposeObject, moveObjects, placeBlocks, skyColor, placeSky } from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { toSceneMatrix } from "../../shared/scene-frame.js";
 
@@ -145,11 +145,13 @@ export default async function mount(container, context, { track, truckFile }) {
     truckObject.update(drawn);
     placeCamera(drawn, dt);
     const sky = world.getObjectByName("sky");
-    if (sky) sky.position.set(camera.position.x, 0, camera.position.z);
+    placeSky(sky, camera);
     const c = latest.current;
     hud.textContent = `${(c.speed / 1.4667).toFixed(0)} mph   gear ${GEAR_NAMES[c.gear] ?? c.gear}   ${c.rpm.toFixed(0)} rpm   `
       + `${CAMERAS[cameraIndex].name}`
       + (c.heliTimer > 0 ? `   helicopter ${c.heliTimer.toFixed(1)} s` : c.heliTimer < 0 ? `   stuck ${(-c.heliTimer).toFixed(1)} s` : "");
+    // The world is drawn as a window around the camera.
+    placeBlocks(world, camera);
     renderer.render(scene, camera);
   };
   frame = requestAnimationFrame(loop);

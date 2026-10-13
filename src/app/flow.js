@@ -29,6 +29,19 @@ export async function goDemo(context) {
   });
 }
 
+export const SPECTATOR_WARNING = "Spectator mode is on: the computer trucks race and you watch. You will not drive.\n\nStart the race?";
+
+/**
+ * The trucks of a race to be watched, or null when the race is one to drive: spectator mode is asked for, the track has
+ * a race, and at least one computer truck is picked (`config.opponents` as a list of files that are installed).
+ */
+export function spectatorField(config, track, trucks) {
+  if (!config?.spectator || config.freeRoam || track?.freeRoamOnly || !Array.isArray(config.opponents)) return null;
+  const installed = new Set(trucks.map((t) => t.file));
+  const field = config.opponents.filter((file) => installed.has(file));
+  return field.length ? field : null;
+}
+
 /** Start the chosen race, or open the Races screen when nothing is chosen yet. */
 export async function goRace(context) {
   const config = context.raceConfig;
@@ -39,6 +52,15 @@ export async function goRace(context) {
   const driver = currentDriver(await getProfiles(context));
   const truck = trucks.find((t) => t.file === driver.lastTruck) ?? trucks[0];
   if (!track || !truck) return context.router.go("race-select", { mode: config.mode }, { replace: true });
+  // Spectator mode: the computer's trucks alone, watched. Not in free roam, which has no race to watch.
+  const watched = spectatorField(config, track, trucks);
+  if (watched) {
+    if (!window.confirm(SPECTATOR_WARNING)) return undefined;
+    return context.router.go("race", {
+      track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: watched.slice(1), weather: config.weather,
+      freeRoam: false, truck: watched[0], trucks, setup: undefined, spectator: true,
+    });
+  }
   return context.router.go("race", {
     track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather,
     // Free roam (the Races screen's box, or a track that has no checkpoints): the player alone, no race.

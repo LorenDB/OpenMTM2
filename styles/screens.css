@@ -17,6 +17,7 @@
 }
 
 .screen-title {
+  font-family: var(--font-heading);
   font-size: clamp(1.8rem, 5vw, 3rem);
   color: var(--accent);
   text-transform: uppercase;
@@ -81,6 +82,9 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 .drag-row, .drag-marks { display: grid; grid-template-columns: 18px 84px 18px; align-items: center; justify-items: center; height: 18px; }
 .drag-marks { height: 14px; font-size: 10px; color: #fff; }
 .drag-label { font-size: 11px; }
+.drag-slip { display: grid; grid-template-columns: 1fr 26px 1fr; align-items: center; justify-items: center; height: 16px; color: #fff; font-size: 11px; }
+.drag-row + .drag-slip { margin-top: 4px; }
+.drag-time { font-variant-numeric: tabular-nums; }
 .drag-lamp { width: 13px; height: 13px; border-radius: 50%; background: #262626; border: 1px solid #000; box-shadow: inset 0 0 2px #000; }
 .drag-lamp.lit { background: var(--lit); box-shadow: 0 0 8px var(--lit); }
 .race-hud { position: absolute; z-index: 3; top: 4px; left: 6px; color: #fff; font: 600 15px/1.35 ui-monospace, monospace; image-rendering: pixelated; }
@@ -218,7 +222,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .race-cockpit { z-index: 2; }
 .race-finder { z-index: 3; }
 .race-mirror { position: absolute; z-index: 2; pointer-events: none; }
-.race-caption { position: absolute; z-index: 4; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }
+/* The 640 x 480 caption canvas keeps its shape, at the bottom of the view: the letters are the game's size against the height. */
+.race-caption { position: absolute; z-index: 4; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center bottom; pointer-events: none; image-rendering: pixelated; }
 .race-caption[hidden] { display: none; }
 .replay-controls { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: rgba(8, 10, 8, 0.78); color: #e8e8e8; font: 600 13px system-ui, sans-serif; }
 .replay-controls button, .replay-controls select { font: inherit; padding: 3px 8px; }
@@ -249,8 +254,17 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 /* The modern skin: the classic layout on a plain stage that draws what the art would. */
 .stage-view-modern { background: #0b0d12; }
 .stage-modern { background: radial-gradient(120% 90% at 30% 20%, #2a3550 0%, #151a26 55%, #0b0d12 100%); border: 1px solid #2c3346; border-radius: 6px; box-shadow: 0 0 40px rgba(0, 0, 0, 0.6); }
-.stage-title { position: absolute; left: 22px; top: 14px; margin: 0; font: italic 800 40px/1 "Arial Black", Arial, sans-serif; letter-spacing: 1px; color: #e9eefc; text-shadow: 2px 2px 0 #3a5bbf, 4px 4px 0 rgba(0, 0, 0, 0.6); text-transform: uppercase; }
-.stage-title-plain { text-transform: none; }
+.stage-title { position: absolute; left: 22px; top: 14px; margin: 0; font: italic 800 40px/1 var(--font-heading); letter-spacing: 1px; color: #e9eefc; text-shadow: 2px 2px 0 #3a5bbf, 4px 4px 0 rgba(0, 0, 0, 0.6); text-transform: uppercase; }
+.stage-title-plain { text-transform: none; font-style: normal; font-weight: 700; }
+/* The Start screen: a photo fills the stage (credit in README.md), the four switches run along its foot. */
+.stage-scene-start { background: linear-gradient(rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, 0.6)), url("../assets/start-background.webp") center / cover #0b0d12; }
+.stage-scene-start .stage-title { text-shadow: 2px 2px 0 #1c2f73, 4px 4px 0 rgba(0, 0, 0, 0.6); }
+.stage-modern.stage-scene-start .stage-panel-main { padding: 0; border: 0; background: none; overflow: visible; }
+.stage-scene-start .start-actions { flex-direction: row; flex-wrap: nowrap; align-items: stretch; gap: 8px; height: 100%; }
+.stage-scene-start .start-actions button { flex: 1; padding: 0 8px; font-size: 14px; }
+.stage-scene-start .start-actions button:not(.primary) { background: rgba(10, 14, 24, 0.78); }
+.stage-credit { position: absolute; right: 24px; bottom: 12px; margin: 0; font-size: 10px; line-height: 1.2; color: #e9eefc; text-shadow: 0 1px 2px #000; }
+.stage-credit a { color: inherit; }
 .stage-label { position: absolute; display: grid; place-items: center; font: 700 12px/1 Arial, sans-serif; color: #f2c14e; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; }
 .stage-modern .stage-panel { background: rgba(10, 14, 24, 0.72); border: 1px solid rgba(160, 180, 230, 0.35); border-radius: 4px; }
 .stage-modern .stage-panel-lit { background: none; border: 0; }
@@ -259,6 +273,25 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .stage-button:disabled { opacity: 0.45; cursor: default; }
 .stage-button.current { background: linear-gradient(#2b3348, #1a2030); color: #f2c14e; border-color: #f2c14e; }
 .stage-button.go { border-radius: 22px; font-size: 20px; color: #9cf27a; }
+/* The Races screen's way into a drag weekend, and the weekend's own screen (ui/screens/drag-event.js). */
+.stage-event { position: absolute; z-index: 20; top: 10px; right: 236px; padding: 5px 12px; background: rgba(0, 0, 0, 0.72); }
+.stage-event[hidden] { display: none; }
+.drag-event { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; }
+.drag-event-head { margin: 0; font-weight: 700; font-size: 15px; color: #f2c14e; }
+.drag-event-note { margin: 0; min-height: 17px; }
+.drag-event-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.stage-panel table.drag-event-table td:nth-child(n+4), .stage-panel table.drag-event-table th:nth-child(n+4) { text-align: right; font-variant-numeric: tabular-nums; }
+.drag-event-table th { color: #f2c14e; font-size: 10px; text-transform: uppercase; }
+.drag-bracket { display: flex; gap: 8px; align-items: stretch; }
+.drag-round { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-around; gap: 4px; }
+.drag-round h2 { margin: 0; font-size: 11px; text-transform: uppercase; }
+.drag-pair { border: 1px solid rgba(160, 180, 230, 0.35); border-radius: 3px; background: rgba(255, 255, 255, 0.04); }
+.drag-pair.current { border-color: #f2c14e; box-shadow: 0 0 6px rgba(242, 193, 78, 0.6); }
+.drag-pair-line { display: flex; justify-content: space-between; gap: 6px; min-height: 15px; padding: 0 4px; font-size: 11px; white-space: nowrap; overflow: hidden; }
+.drag-pair-line + .drag-pair-line { border-top: 1px solid rgba(160, 180, 230, 0.2); }
+.drag-pair-line.won { font-weight: 700; color: #9cf27a; }
+.drag-pair-line.player span:first-child { color: #f2c14e; }
+.drag-event-actions { justify-content: flex-end; gap: 8px; }
 .stage-back { position: absolute; z-index: 20; top: 10px; right: 96px; padding: 5px 12px; background: rgba(0, 0, 0, 0.72); }
 
 /* Options: tabs by category, and rows of one height. */
@@ -288,7 +321,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .stage-panel-weatherLabel { display: grid; place-items: center end; padding: 0 4px 0 0; }
 .stage-panel-sonic { padding: 0; border: 0; background: transparent; display: flex; align-items: center; }
 .sonic-trucks { display: flex; align-items: center; gap: 6px; color: #fff; font-weight: 700; text-shadow: 0 1px 3px #000; }
-.race-track-table th { padding: 2px 5px; font: 700 11px/1.2 Arial, sans-serif; color: #f2c14e; text-transform: uppercase; text-align: center; border-bottom: 1px solid rgba(160, 180, 230, 0.35); }
+.race-track-table th { padding: 2px 5px; font: 700 10px/1.2 Arial, sans-serif; color: #f2c14e; text-transform: uppercase; text-align: center; border-bottom: 1px solid rgba(160, 180, 230, 0.35); }
 .stage-modern .stage-panel-list .race-track-table { background: rgba(10, 14, 24, 0.72); }
 .stage-modern .stage-panel-opponents .opponents-button { border: 1px solid #6c7fb3; background: linear-gradient(#56637f, #2b3348); color: #fff; font-weight: 700; }
 .stage-modern .garage-dot { border: 2px solid #6c7fb3; background: rgba(10, 14, 24, 0.7); }
@@ -317,7 +350,18 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .stage-panel-freeRoam, .stage-modern .stage-panel-freeRoam { display: grid; place-items: center start; padding: 0; overflow: visible; border: 0; border-radius: 0; background: none; }
 
 /* The track filter above the Races list. */
-.race-track-filter { display: block; position: sticky; top: 0; z-index: 1; box-sizing: border-box; width: 100%; height: 20px; margin: 0; padding: 1px 6px; font-size: 11px; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 0; background: rgba(0, 0, 0, 0.8); color: #fff; }
+.race-track-filter { display: block; box-sizing: border-box; width: 100%; height: 22px; margin: 0; padding: 1px 6px; font: inherit; font-weight: 700; border: 1px solid #6c7fb3; border-radius: 0; background: #10141f; color: #fff; }
+.race-track-filter::placeholder { color: #b8c0d8; font: inherit; font-weight: 700; opacity: 1; }
+/* A little smaller than the list's own type, as the column headings are. */
+.race-track-filter, .race-track-filter::placeholder { font-size: 0.88em; }
+/* The picked track and the filter stay at the top of the list while it scrolls, and so do the column headings under them. */
+.race-track-head { position: sticky; top: 0; z-index: 2; }
+/* The picked track, beside the Computer Opponents button, in the type of Laps and Weather. */
+.stage-panel-selected, .stage-modern .stage-panel-selected { display: grid; place-items: center start; padding: 0; overflow: hidden; border: 0; border-radius: 0; background: none; }
+.race-track-selected { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.race-track-table thead th { position: sticky; top: 22px; z-index: 1; background: #10141f; }
+.race-off { opacity: 0.45; }
+input.race-off { background: #777; color: #222; }
 
 /* The in-game console (ui/console.js). */
 .game-console { position: absolute; z-index: 20; top: 0; left: 0; right: 0; height: 45%; min-height: 160px; display: flex; flex-direction: column; background: rgba(8, 10, 16, 0.88); border-bottom: 2px solid #f2c14e; color: #d8e0ee; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; }
@@ -332,3 +376,43 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 
 /* The pause menu: every button the same width. */
 .race-pause > button { box-sizing: border-box; width: 220px; }
+/* The Fly-by button, on the row of Laps, Weather and Free roam, in their type. */
+.stage-panel-flyBy { padding: 0; border: 0; background: none; overflow: visible; }
+.stage-panel .race-flyby { box-sizing: border-box; width: 100%; height: 100%; padding: 0 6px; font: inherit; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; border: 1px solid rgba(255, 255, 255, 0.45); border-radius: 3px; background: rgba(0, 0, 0, 0.55); cursor: pointer; }
+.stage-panel .race-flyby:hover { background: rgba(255, 255, 255, 0.2); }
+/* Zoom sits inside the track's picture, in its bottom right corner. */
+.stage-panel-preview, .track-preview-modern { position: relative; }
+.stage-panel .race-zoom, .race-zoom { position: absolute; right: 4px; bottom: 4px; z-index: 2; padding: 1px 8px; font: inherit; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; border: 1px solid rgba(255, 255, 255, 0.6); border-radius: 3px; background: rgba(0, 0, 0, 0.7); cursor: pointer; }
+.race-zoom:hover { background: rgba(60, 80, 160, 0.85); }
+.race-zoom[hidden] { display: none; }
+/* MTM1's zoom map: the map bitmap as a 640 x 480 stage, the description in the game's rectangle. */
+.zoom-map-modal { padding: 0; border: 2px solid #6c7fb3; background: #000; max-width: none; max-height: none; overflow: hidden; }
+.zoom-map-modal::backdrop { background: rgba(0, 0, 0, 0.7); }
+.zoom-map-stage { position: relative; width: min(960px, 96vw, calc(96vh * 4 / 3)); aspect-ratio: 4 / 3; container-type: inline-size; }
+.zoom-map-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.zoom-map-text { position: absolute; left: 53.75%; top: 5.42%; width: 43.75%; height: 86.25%; box-sizing: border-box; overflow: auto; color: #fff; font: 700 2.1cqw/1.3 Arial, sans-serif; text-shadow: 0 1px 2px #000, 0 0 4px #000; }
+.zoom-map-text p { margin: 0 0 0.6em; min-height: 0.6em; }
+.zoom-map-ok { position: absolute; right: 2%; bottom: 2.5%; min-width: 12%; }
+/* The DANCE code's oscilloscope, over the race. */
+.gold-scope { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.gold-scope[hidden] { display: none; }
+/* Tournaments: the button beside Options (the Drag weekend button sits left of it), and the screen. */
+.stage-event.stage-tourney { right: 96px; }
+.tournament .tournament-body { display: flex; flex-direction: column; gap: 6px; overflow: auto; min-height: 0; flex: 1; }
+.tournament-pick { display: grid; grid-template-columns: 230px 1fr; gap: 10px; }
+.tournament-pick select { width: 100%; }
+.tournament-detail p { white-space: pre-line; }
+.tournament-events { margin: 4px 0; padding-left: 22px; line-height: 1.35; }
+.tournament-events .tournament-next, th.tournament-next { color: #f2c14e; font-weight: 700; }
+.tournament textarea { width: 360px; font: inherit; }
+.tournament input[type="text"] { width: 280px; }
+
+/* The fly camera's list of keys (ui/fly-controller.js), shown by the O key. */
+.fly-keys { position: absolute; left: 16px; top: 16px; z-index: 6; padding: 10px 14px; background: rgba(0, 0, 0, 0.62); color: #e8e8e8; font: 13px/1.5 system-ui, sans-serif; border-radius: 4px; pointer-events: none; }
+.fly-keys[hidden] { display: none; }
+.fly-keys p { margin: 0; }
+.fly-keys-title { color: var(--accent, #f2c14e); font-weight: 700; margin-bottom: 4px !important; }
+.fly-key { display: inline-block; min-width: 96px; color: #fff; font-weight: 600; }
+/* A name tag in the game's bitmap font is a canvas (render/name-tags.js); without the font, lines of plain text. */
+.name-tag-font { image-rendering: pixelated; text-shadow: none; }
+.name-tag-line { display: block; text-align: center; }

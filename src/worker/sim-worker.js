@@ -12,7 +12,7 @@
 import { mtm2Sim as S } from "../vendor/openphotex/index.js";
 import { createCrossingLog, raceGap, recordCrossings } from "../game/timing.js";
 import { buildRumbleField, createRumbleDriver, rumbleControls } from "../game/rumble-ai.js";
-import { CREEP_SPEED, createDrag, dragLamps, dragPlaces, dragTick, mirrorCourse, stillStaging } from "../game/drag-race.js";
+import { REVERSE_SPEED, TREE_S, createDrag, dragCollision, dragLamps, dragOver, dragPlaces, dragTick, mirrorCourse, stageSpeed, stagingDistance } from "../game/drag-race.js";
 import { createFlight, departVisual, flightVisual, nearestCourseSpot, stepFlight, timerVisual } from "../game/heli-flight.js";
 
 export const STEP = 1 / 60;
@@ -67,6 +67,38 @@ function noteHull(t) {
   }
 }
 
+/** A truck's speed, height and turn rate past which its state is taken for broken, ft/s, ft and rad/s. */
+export const SANE_SPEED_FT_S = 2000, SANE_HEIGHT_FT = 1e5, SANE_RATE = 500;
+
+/** Whether a truck's state is one the simulation can go on from: every number finite and none absurd. */
+export function stateIsSane(s) {
+  for (const list of [s.pos, s.bvel, s.rates, s.matrix, s.euler]) for (let i = 0; i < list.length; i++) if (!Number.isFinite(list[i])) return false;
+  return Math.hypot(s.bvel[0], s.bvel[1], s.bvel[2]) < SANE_SPEED_FT_S && Math.abs(s.pos[1]) < SANE_HEIGHT_FT && Math.hypot(s.rates[0], s.rates[1], s.rates[2]) < SANE_RATE;
+}
+
+/** A deep copy of a state's numbers, and the same numbers put back into the live state (its objects are kept). */
+export function copyState(value) {
+  if (ArrayBuffer.isView(value)) return value.slice();
+  if (Array.isArray(value)) return value.map(copyState);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, copyState(v)]));
+  return value;
+}
+export function restoreState(live, saved) {
+  for (const [key, value] of Object.entries(saved)) {
+    const now = live[key];
+    if (ArrayBuffer.isView(value) && ArrayBuffer.isView(now) && now.length === value.length) now.set(value);
+    else if (value && typeof value === "object" && now && typeof now === "object" && !ArrayBuffer.isView(now)) restoreState(now, value);
+    else live[key] = copyState(value);
+  }
+  return live;
+}
+
+/** A top-crush car's crush as a share of the most it can be: the roof stops 0.25 ft over the body (14.27.5). */
+export function crushShare(car) {
+  const most = 1 - (car.body.height + 0.25) / car.cab.height;
+  return most > 0 ? Math.max(0, Math.min(1, car.crush / most)) : 0;
+}
+
 /** The hull contacts counted since the last look, `[{ zone, steps, force }]`; reset on reading. */
 function damageOf(t) {
   const out = [...t.dmg].map(([zone, { steps, force }]) => ({ zone, steps, force }));
@@ -87,7 +119,7 @@ function soundOf(t, ground) {
   const air = 4 - s.tires.filter((x) => x.onGround).length;
   const tires = s.tires.map((x) => ({ onGround: x.onGround, grip: x.grip, force: [x.force[0], x.force[1], x.force[2]], spin: x.spin }));
   const out = {
-    rpm: s.rpm, throttle: s.controls.throttle, gear: s.controls.gear, airborne: air, forward: s.bvel[2],
+    rpm: s.rpm, throttle: s.controls.throttle, brake: Math.max(s.controls.brakeFront, s.controls.brakeRear), gear: s.controls.gear, airborne: air, forward: s.bvel[2],
     speed: Math.hypot(s.bvel[0], s.bvel[1], s.bvel[2]), 
     impact: t.snd.impact, hit: t.snd.hit, clearance: s.pos[1] - ground.height(s.pos[0], s.pos[2]), splash: t.snd.splash, tires, surface: S.surfaceType(ground.surface(s.pos[0], s.pos[1] + 100, s.pos[2])), heli: s.heliTimer > 0, heliTeryl: !!s.heliVisual?.teryl, heliPos: s.heliVisual ? [...s.heliVisual.pos] : null,
   };
@@ -141,12 +173,15 @@ export function createSession(init) {
     ? S.createSurfaceMap(new Uint16Array(init.clr), new Int32Array(init.textureValues))
     : null;
   let weather = init.weather ?? 0;
-  const terrainGround = S.createTerrainGround(terrain, surfaces, weather, init.waterLevelFt ?? null);
+  // The physics model's rules (app/settings.js PHYSICS_MODELS): MTM2's unless the race asks for the 1996 game's.
+  const rules = S.simRules(init.rules);
+  const terrainGround = S.createTerrainGround(terrain, surfaces, weather, init.waterLevelFt ?? null, rules);
   // CPR's road layer lies over the terrain and is the ground where it does (OpenPhotex world/road.ts).
   const ground = init.road ? S.createRoadGround(terrainGround, init.road) : terrainGround;
   // Surfaces over the terrain that count only when they are under a truck (4x4 Evolution's rocks and decks): each
   // truck asks with its own height, so what stands over it is not its ground (OpenPhotex world/road.ts `below`).
   const meshGround = init.meshGround ? S.createRoadGround(terrainGround, init.meshGround) : null;
+  for (const g of [ground, meshGround]) if (g) g.rules = rules;
   // Static scenery (CPR's walls, 4x4 Evolution's objects and trees): immovable upright boxes, found by a grid of 64 ft
   // cells (a box is in every cell it reaches).
   const WALL_CELL_FT = 64;
@@ -164,11 +199,14 @@ export function createSession(init) {
   }
   /** The walls a truck of radius `r` at (x, z) may touch, each once, onto `out`. */
   function wallsAround(x, z, r, out) {
-    if (!wallCells.size) return;
+    // A position that is not a number, or is far off the world, has no walls (and must not be walked cell by cell).
+    if (!wallCells.size || !(Math.abs(x) < 1e6) || !(Math.abs(z) < 1e6)) return;
     const seen = new Set();
+    // The cells are the one world's: a cell past its edge is the cell at the other side.
+    const cells = S.WORLD_FT / WALL_CELL_FT, inWorld = (c) => ((c % cells) + cells) % cells;
     for (let cx = Math.floor((x - r) / WALL_CELL_FT); cx <= Math.floor((x + r) / WALL_CELL_FT); cx++) {
       for (let cz = Math.floor((z - r) / WALL_CELL_FT); cz <= Math.floor((z + r) / WALL_CELL_FT); cz++) {
-        for (const box of wallCells.get(cx * 65536 + cz) ?? []) {
+        for (const box of wallCells.get(inWorld(cx) * 65536 + inWorld(cz)) ?? []) {
           if (seen.has(box)) continue;
           seen.add(box);
           out.push(box);
@@ -178,6 +216,8 @@ export function createSession(init) {
   }
   const difficulty = init.difficulty ?? S.DIFFICULTY.INTERMEDIATE;
   const sonicTrack = !!init.sonicTrack;
+  // The feet to a ground box's height step: MTM's 2, or a level's own (Hellbender's 1.5).
+  const groundBoxStepFt = init.groundBoxStepFt > 0 ? init.groundBoxStepFt : 2;
   const ra0 = init.ra0 ? new Uint8Array(init.ra0) : null;
   const ra1 = init.ra1 ? new Uint8Array(init.ra1) : null;
   const levelBoxes = [];
@@ -203,7 +243,8 @@ export function createSession(init) {
   const specs = init.trucks ?? [{ truck: init.truck, start: init.start, autopilot: init.autopilot }];
   const trucks = specs.map((spec, i) => {
     const params = S.createTruckParams(
-      { wheelAnchors: spec.truck.anchors, scrapePoints: spec.truck.scrapePoints },
+      // `tire`: another game's vehicle rolls on its own tires' size (worker/foreign-truck-build.js); an MTM truck has none.
+      { wheelAnchors: spec.truck.anchors, scrapePoints: spec.truck.scrapePoints, tireRadiusFt: spec.truck.tire?.radiusFt, tireWidthFt: spec.truck.tire?.widthFt },
       { difficulty, autoShift: init.autoShift ?? true, ...spec.setup },
     );
     const state = S.createTruckState(spec.start.pos, spec.start.heading ?? 0, S.GEAR.FIRST, params);
@@ -219,25 +260,27 @@ export function createSession(init) {
     // A foot under the body's origin: a step up to about a wheel's height is climbed, a taller face is not ground.
     const ownGround = meshGround ? meshGround.below(() => state.pos[1] - 1) : ground;
     const ctx = { ground: ownGround, human: i === 0 && !autopilot, difficulty, sonicTrack, recovery };
-    return { state, params, autopilot, recovery, ctx, radius: S.truckRadius(params), nearBoxes: [], dmg: new Map(), snd: { impact: 0, hit: null, splash: false, surface: 1 } };
+    return { state, params, autopilot, recovery, ctx, radius: S.truckRadius(params), nearBoxes: [], dmg: new Map(), snd: { impact: 0, hit: null, splash: false, surface: 1 }, safe: copyState(state), sinceSafe: 0 };
   });
   const player = trucks[0];
   // Traffic (MTM2_PHYSICS.md 14.25): every truck sees the others' last values.
   if (trucks.length > 1) apCtx.traffic = trucks.map((t) => ({ s: t.state, p: t.params }));
-  // A drag race (game/drag-race.js) runs one lap over the start beam and the finish line, its
-  // countdown replaced by staging and the tree; each lane drives its own course.
+  // A drag race (game/drag-race.js) is one pass: staging and the tree in place of the countdown, the beams and the
+  // times its own (the race's checkpoint test is left with nothing to do); each lane drives its own course.
   const dragMode = init.race?.mode === "drag" && (init.race.checkpoints?.length ?? 0) >= 4;
-  const drag = dragMode ? createDrag(init.race.checkpoints, [0, 1].map((lane) => specs.some((spec, i) => (spec.lane ?? i) === lane))) : null;
+  const drag = dragMode ? createDrag(init.race.checkpoints, [0, 1].map((lane) => specs.some((spec, i) => (spec.lane ?? i) === lane)), rules.id === "mtm1" ? "mtm1" : "cp3") : null;
   const race = init.race
     ? S.createRace(trucks.map((t, i) => ({ s: t.state, p: t.params, player: i === 0 && !t.autopilot })),
-      S.raceCheckpoints(dragMode ? init.race.checkpoints.slice(2, 4) : init.race.checkpoints), dragMode ? [] : course,
+      S.raceCheckpoints(dragMode ? [] : init.race.checkpoints), dragMode ? [] : course,
       dragMode ? 1 : init.race.laps ?? 3, difficulty, dragMode ? "circuit" : init.race.mode ?? "circuit")
     : null;
   const raceAp = dragMode ? { ...apCtx, course: [] } : apCtx;
   if (drag) {
     race.startTime = Infinity;
     const beam = init.race.checkpoints[0].gate;
-    const mirrored = S.buildCourse(mirrorCourse(init.course ?? [], beam.position, beam.angles[2]), (x, z) => ground.height(x, z), {
+    // Lane 1 drives the SIT's course 2 (the lanes are the courses, 6.4); a strip without one gets lane 0's, mirrored.
+    const other = init.race.laneCourse?.length ? init.race.laneCourse : mirrorCourse(init.course ?? [], beam.position, beam.angles[2]);
+    const mirrored = S.buildCourse(other, (x, z) => ground.height(x, z), {
       sonicTrack, gripK: sonicTrack && difficulty === S.DIFFICULTY.PROFESSIONAL ? 2 : 1.75,
     });
     specs.forEach((spec, i) => {
@@ -245,14 +288,21 @@ export function createSession(init) {
       t.lane = spec.lane ?? i;
       t.apCtx = { ...apCtx, course: t.lane === 1 ? mirrored : course, dragMode: true, traffic: undefined };
       t.recovery.dragRace = true;
-      // Each lane's front point: the hull's foremost scrape point.
-      t.frontZ = Math.max(...t.params.scrapePoints.map((q) => q[2]));
+      // What breaks the beams: the front tyre's leading point (the bodywork never counts).
+      t.frontZ = Math.max(...t.params.hubs.map((q) => q[2])) + t.params.tireRadiusFt;
     });
+    // A drag weekend's computer drivers (game/events/drag-event.js): how deep each stages, and its launch, seconds after
+    // the green or, negative, before it (a false start).
+    specs.forEach((spec, i) => { trucks[i].stageDepth = spec.stageDepth; trucks[i].launch = Number.isFinite(spec.launch) ? spec.launch : null; });
+    // Auto Stage (Options, Game, or its key during a pass): the player's truck stages itself.
+    player.autoStage = !!init.race.autoStage;
   }
   /** The autopilot context a truck drives by: its lane's in a drag race. */
   const apOf = (t) => t.apCtx ?? apCtx;
 
   const crossings = createCrossingLog(trucks.length);
+  /** Laps each truck closed in first place. */
+  const lapsLed = trucks.map(() => 0);
   let rumbleField = null;
   if (race?.summit) {
     // The ground, and the top of any ground box on it: as a second layer when it stands clear of the
@@ -292,7 +342,8 @@ export function createSession(init) {
     listed.length = 0;
     const near = (x, z, r, box) => {
       const range = r + box.radius + 10;
-      return Math.abs(box.pos[0] - x) < range && Math.abs(box.pos[2] - z) < range;
+      // The short way round: a box across the world's seam is as near as one beside the truck.
+      return Math.abs(S.wrapDelta(box.pos[0] - x)) < range && Math.abs(S.wrapDelta(box.pos[2] - z)) < range;
     };
     const nearTruck = (box) => trucks.some((t) => near(t.state.pos[0], t.state.pos[2], t.radius, box));
     for (const box of levelBoxes) {
@@ -305,19 +356,27 @@ export function createSession(init) {
     }
   }
 
+  // Top-crush cars (14.27): the truck is held up by the body and the cab, and flattens the cab.
+  const crushCars = (init.topCrush ?? []).map((car) => S.createTopCrush(car, car.bodyBounds ?? null, car.cabBounds ?? null));
+  const crushCtx = { groundNormal: (x, z) => ground.normal(x, z, [0, 0, 0]), dt: STEP, edges: S.createEdgeState() };
   /** The pair tests (14.14, 14.17, 14.19, 14.20, 14.21), trucks first in list order. */
   function pairTests() {
     for (let i = 0; i < trucks.length; i++) {
       for (let j = i + 1; j < trucks.length; j++) {
         const a = trucks[i], b = trucks[j];
         const before = [...a.state.extForce, ...b.state.extForce];
-        S.collideTrucks({ s: a.state, p: a.params }, { s: b.state, p: b.params }, STEP);
+        const met = S.collideTrucks({ s: a.state, p: a.params }, { s: b.state, p: b.params }, STEP, rules);
         // A hull against a hull: the pair's forces changed. Remember the hardest hit and where the trucks met.
         const force = Math.hypot(a.state.extForce[0] - before[0], a.state.extForce[1] - before[1], a.state.extForce[2] - before[2]);
         if (force > 0) {
+          if (drag) dragCollision(drag, a.lane, b.lane);
           const where = [0, 1, 2].map((k) => (a.state.pos[k] + b.state.pos[k]) / 2);
-          for (const t of [a, b]) if (!t.touch || force > t.touch.force) t.touch = { force, pos: where, steps: (t.touch?.steps ?? 0) + 1 };
-          else t.touch.steps++;
+          // `hull`: bodywork met, not only tires (which throw no sparks).
+          for (const t of [a, b]) {
+            const hull = met.hull || !!t.touch?.hull;
+            if (!t.touch || force > t.touch.force) t.touch = { force, pos: where, steps: (t.touch?.steps ?? 0) + 1, hull };
+            else { t.touch.steps++; t.touch.hull = hull; }
+          }
         }
       }
     }
@@ -325,14 +384,18 @@ export function createSession(init) {
     for (const t of trucks) {
       t.nearBoxes.length = 0;
       if (t.state.heliTimer > 0) continue;
-      if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxSmoothFt);
+      if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxSmoothFt, groundBoxStepFt);
       wallsAround(t.state.pos[0], t.state.pos[2], t.radius, t.nearBoxes);
-      for (const box of t.nearBoxes) S.collideTruckImmovableBox(t.state, t.params, box, STEP);
-      for (const box of listed) S.collideTruckBox(t.state, t.params, box, STEP);
+      // Each test is made with the truck as the copy nearest the thing it is tested against (OpenPhotex world/wrap.ts):
+      // what stands across the world's seam is met as what stands beside the truck is.
+      const near = (thing, test) => S.withNearest(t.state, thing.pos[0], thing.pos[2], test);
+      for (const box of t.nearBoxes) near(box, () => S.collideTruckImmovableBox(t.state, t.params, box, STEP));
+      for (const box of listed) near(box, () => S.collideTruckBox(t.state, t.params, box, STEP));
+      for (const car of crushCars) near(car, () => S.collideTruckTopCrush(car, t.state, t.params, crushCtx));
       // Ramp sides and front ends are walls (14.19), for ramps within reach of the truck.
       for (const ramp of ground.ramps) {
-        const d = Math.hypot(ramp.pos[0] - t.state.pos[0], ramp.pos[1] - t.state.pos[1], ramp.pos[2] - t.state.pos[2]);
-        if (d < ramp.radius + t.radius) S.collideTruckRamp(ramp, t.state, t.params);
+        const d = Math.hypot(S.wrapDelta(ramp.pos[0] - t.state.pos[0]), ramp.pos[1] - t.state.pos[1], S.wrapDelta(ramp.pos[2] - t.state.pos[2]));
+        if (d < ramp.radius + t.radius) near(ramp, () => S.collideTruckRamp(ramp, t.state, t.params));
       }
       grounds.push(...t.nearBoxes);
     }
@@ -410,48 +473,58 @@ export function createSession(init) {
     throw new Error(`Unknown command "${name}"`);
   }
 
-  /** A truck's front point in the world. */
+  /** A truck's front tyre, its leading point, in the world. */
   const frontOf = (t) => {
     const m = t.state.matrix, z = t.frontZ ?? 0;
     return [t.state.pos[0] + m[2] * z, t.state.pos[1] + m[5] * z, t.state.pos[2] + m[8] * z];
   };
-  /** Staging, before the green: creep up to the stage beam along the strip, then hold on the brakes. */
+  /**
+   * Staging, before the green (6.4): the truck is driven to the prestage beam, then the stage beam, slowing to a stop
+   * as its front tyre arrives, and held on the brakes there.
+   */
   function stage(t) {
     const c = t.state.controls;
+    const distance = stagingDistance(drag, t.lane, frontOf(t), t.stageDepth);
+    const target = distance === null ? 0 : stageSpeed(distance);
+    const v = t.state.bvel[2];
     c.gear = S.GEAR.FIRST;
-    if (!stillStaging(drag, t.lane)) {
+    if (target <= 0) {
       c.throttle = 0;
       c.brakeFront = c.brakeRear = 1;
       return;
     }
-    const v = t.state.bvel[2];
-    c.throttle = Math.max(0, Math.min(0.35, (CREEP_SPEED - v) * 0.15));
-    c.brakeFront = c.brakeRear = v > CREEP_SPEED + 2 ? 0.5 : 0;
+    c.throttle = Math.max(0, Math.min(0.35, (target - v) * 0.5));
+    c.brakeFront = c.brakeRear = Math.max(0, Math.min(1, (v - target) * 0.5));
     const err = Math.atan2(Math.sin(drag.stage.heading - t.state.euler[2]), Math.cos(drag.stage.heading - t.state.euler[2]));
     c.steer = Math.max(-0.45, Math.min(0.45, err * 1.5));
     c.rearSteer = S.rearSteer(c.steer, true);
   }
-  /** The drag race's tick: staging, the tree, red lights and lanes; at the green the clock starts. */
+  /** Whether a truck is staged for its driver: a computer truck, or the player's with Auto Stage until it has staged. */
+  const stagedForIt = (t) => t.autopilot || (t.autoStage && drag.lanes[t.lane].state < 2);
+  /** The drag pass's tick: staging, the tree, the beams, the lanes and the times; at the green the clock starts. */
   function dragStep() {
     const lanes = drag.lanes.map((_, lane) => trucks.find((t) => t.lane === lane) ?? null);
-    const rows = lanes.map((t) => (t ? race.trucks[trucks.indexOf(t)] : null));
-    const launched = lanes.map((t) => !!t && (t.autopilot ? t.state.controls.throttle > 0.1 : !!keys.accelerate || t.state.controls.throttle > 0.3));
-    // The throttle down on the ambers is a jump start: the player's lane is red-lighted.
-    if (drag.phase === "tree") lanes.forEach((t, lane) => { if (t && !t.autopilot && keys.accelerate && !drag.lanes[lane].dq) drag.lanes[lane].dq = "red light"; });
-    const event = dragTick(drag, lanes.map((t) => t && frontOf(t)), lanes.map((t) => t?.state.pos), rows.map((r) => !!r?.finished), launched, STEP);
+    const event = dragTick(drag, lanes.map((t) => t && {
+      front: frontOf(t), centre: t.state.pos, reversing: t.state.bvel[2] < -REVERSE_SPEED && (t.state.contactCount ?? 0) > 0,
+    }), STEP);
     if (event === "go") {
       race.startTime = race.clock;
-      // Reaction times by difficulty: Rookie slow, Professional sharp.
+      // The computer drivers' reactions to the green, by difficulty (an addition: the game's launch on the green itself).
       const base = [0.55, 0.38, 0.24][difficulty] ?? 0.38;
-      for (const t of trucks) t.reaction = base + Math.random() * 0.15;
+      // Under the 1996 rules they launch on the green itself.
+      for (const t of trucks) t.reaction = t.launch ?? (drag.rules === "mtm1" ? 0 : base + Math.random() * 0.15);
     }
     lanes.forEach((t, lane) => {
-      const rt = rows[lane];
-      if (drag.lanes[lane].dq && rt && !rt.finished) {
+      const rt = t ? race.trucks[trucks.indexOf(t)] : null, l = drag.lanes[lane];
+      if (!rt || rt.finished) return;
+      if (l.et !== null) {
+        Object.assign(rt, { raceTime: l.et, lapTimes: [l.et], fastestLap: l.et, laps: 1, finished: true });
+      } else if (l.dq || l.rerun) {
         rt.finished = true;
-        rt.dq = drag.lanes[lane].dq;
+        rt.dq = l.dq;
       }
     });
+    if (dragOver(drag)) race.over = true;
   }
 
   /**
@@ -490,7 +563,10 @@ export function createSession(init) {
     }
     // The race tick comes first in the game's frame (0x487300): checkpoints, segments, the order.
     if (race) {
+      const lapsBefore = race.trucks.map((rt) => rt.laps);
       S.raceTick(race, STEP, raceAp, { ground, rc: (rt) => recoveryOf(trucks[race.trucks.indexOf(rt)]) });
+      // The game's `bonusLaps` (0x485afc): a lap closed in first place is a lap led, for the points.
+      race.trucks.forEach((rt, i) => { if (rt.laps > lapsBefore[i] && rt.place === 1) lapsLed[i]++; });
       if (drag) dragStep();
       recordCrossings(crossings, race.trucks);
     }
@@ -507,8 +583,8 @@ export function createSession(init) {
           if (onSummit && t.state.heliTimer < 0) t.state.heliTimer = 0;
           const rivals = trucks.filter((o) => o !== t && o.state.heliTimer <= 0).map((o) => o.state.pos);
           rumbleControls(t.state, t.rumble, race.summit.zone, rivals, S.GEAR, STEP, rumbleField);
-        } else if (go && drag && race.clock - race.startTime < (t.reaction ?? 0)) {
-          // A computer driver's reaction to the green.
+        } else if (go && drag && (drag.lanes[t.lane].dq || race.clock - race.startTime < (t.reaction ?? 0))) {
+          // A computer driver's reaction to the green; a disqualified truck stays where it is.
           t.state.controls.throttle = 0;
           t.state.controls.brakeFront = t.state.controls.brakeRear = 1;
         } else if (go) {
@@ -534,7 +610,13 @@ export function createSession(init) {
     // The countdown (MONSTER_EXE_ANALYSIS.md 6.1): every truck sits in Park, so revving moves
     // nobody; at the start every truck goes into first.
     if (drag && !go) {
-      for (const t of trucks) stage(t);
+      // The player stages their own truck, in whatever gear they like, unless Auto Stage does it for them.
+      if (keys.autoStage) player.autoStage = true;
+      for (const t of trucks) {
+        // A false start: the driver goes while the tree still runs, and the start beam gives the red light.
+        if (t.autopilot && t.launch < 0 && drag.phase === "tree" && TREE_S - drag.tree <= -t.launch && !drag.lanes[t.lane].dq) S.applyAutopilot(t.state, t.params, apOf(t));
+        else if (stagedForIt(t)) stage(t);
+      }
     } else if (race && !go) {
       for (const t of trucks) {
         t.state.controls.gear = S.GEAR.PARK;
@@ -565,8 +647,34 @@ export function createSession(init) {
     }
     for (const box of listed) S.stepBox(box, ground, STEP);
     pairTests();
-    for (const t of trucks) S.postStepTruck(t.state, t.params, ground, STEP);
-    for (const t of trucks) noteHull(t);
+    // A truck whose state has blown up (a contact it was deep inside of threw it with a force no step can follow) is put
+    // back as it last stood, at rest. The game has no such guard; without one a broken number spreads and the race
+    // stops answering (a player's report: frozen after being set down under a bridge).
+    for (const t of trucks) {
+      if (stateIsSane(t.state)) {
+        if (++t.sinceSafe >= 30 && Math.hypot(t.state.bvel[0], t.state.bvel[1], t.state.bvel[2]) < 400) { t.safe = copyState(t.state); t.sinceSafe = 0; }
+        continue;
+      }
+      restoreState(t.state, t.safe);
+      for (const list of [t.state.bvel, t.state.rates, t.state.extForce, t.state.extMoment]) list.fill(0);
+      t.rescued = (t.rescued ?? 0) + 1;
+    }
+    // The world is a torus: a truck that has left it comes in at the other side, as the game wraps it every frame
+    // (MONSTER_EXE_ANALYSIS.md "The wrapping world"). The state it is drawn from goes with it, so the picture between
+    // two steps does not cross the world.
+    const wrapAfter = () => {
+      for (const t of trucks) {
+        const [dx, dz] = S.wrapTruck(t.state);
+        if (!dx && !dz) continue;
+        if (t.previous) { t.previous.pos[0] += dx; t.previous.pos[2] += dz; }
+        t.wraps = (t.wraps ?? 0) + 1;
+      }
+    };
+    // Each truck's own ground: where a level has surfaces over the terrain (a bridge's deck, a rock), the wheels must
+    // meet the same one the hull does, not the terrain under it.
+    for (const t of trucks) S.postStepTruck(t.state, t.params, t.ctx.ground, STEP);
+    wrapAfter();
+    if (rules.crashDamage) for (const t of trucks) noteHull(t);
     listed.forEach((box, i) => {
       S.postStepBox(box, ground);
       if (before[i] !== poseKey(box)) dirty.add(box);
@@ -660,11 +768,12 @@ export function createSession(init) {
   function raceView() {
     if (!race) return null;
     const since = drag && drag.phase !== "go" ? -1 : race.clock - race.startTime;
-    const places = drag ? dragPlaces(race.trucks.map((rt, i) => ({ ...rt, dq: drag.lanes[trucks[i].lane]?.dq }))) : null;
+    const laneOf = (i) => (drag ? drag.lanes[trucks[i].lane] : null);
+    const places = drag ? dragPlaces(race.trucks.map((rt, i) => ({ ...rt, dq: laneOf(i)?.dq || laneOf(i)?.rerun }))) : null;
     return {
       started: since >= 0,
-      countdown: drag && drag.phase !== "go" ? (drag.phase === "tree" ? 1.5 - drag.tree : 3) : Math.max(0, -since),
-      /** A drag race's tree: each truck's lamps, disqualification and reaction time. */
+      countdown: drag && drag.phase !== "go" ? (drag.phase === "tree" ? TREE_S - drag.tree : 3) : Math.max(0, -since),
+      /** A drag race's tree: its phase, and each truck's lamps and lane. */
       drag: drag ? {
         phase: drag.phase,
         lamps: trucks.map((t) => dragLamps(drag, t.lane)),
@@ -679,13 +788,16 @@ export function createSession(init) {
       summit: race.summit ? { left: Math.max(0, race.roundSeconds - since), states: race.summit.trucks.map((t) => t.state) } : null,
       trucks: race.trucks.map((rt, i) => ({
         place: places ? places[i] : rt.place,
-        dq: drag ? drag.lanes[trucks[i].lane]?.dq ?? null : null,
-        reaction: drag ? drag.lanes[trucks[i].lane]?.reaction ?? null : null,
+        /** A drag pass: why the truck is out (a name of game/drag-race.js `DQ_CODE`), whether its pass is to be run again, its reaction time. */
+        dq: laneOf(i)?.dq ?? null,
+        rerun: !!laneOf(i)?.rerun,
+        reaction: laneOf(i)?.reaction ?? null,
         score: race.summit ? race.summit.trucks[race.trucks.indexOf(rt)].score : 0,
         laps: rt.laps,
         lap: Math.min(rt.laps + 1, race.laps),
         lapTime: rt.finished ? (rt.lapTimes[rt.lapTimes.length - 1] ?? 0) : Math.max(0, since - rt.raceTime),
         best: rt.fastestLap,
+        led: lapsLed[i],
         raceTime: rt.raceTime,
         finished: rt.finished,
         missed: rt.state === 3,
@@ -717,12 +829,14 @@ export function createSession(init) {
     return {
       previous: poses[0].previous, current: poses[0].current, alpha: (target - time) / STEP, time, steps, boxes,
       others: poses.slice(1).map((x) => x.current), poses, race: raceView(),
+      // How far each top-crush car's cab is flattened: 0 intact, 1 as flat as it goes (its roof 0.25 ft over the body).
+      crush: crushCars.map(crushShare),
       gold: { reversed: !!apCtx.reversed, apLevel: player.apLevel, slew: gold.slew, weather },
     };
   }
 
   return {
-    state: player.state, params: player.params, trucks, race, ground, levelBoxes, course, rumbleField,
+    state: player.state, params: player.params, trucks, race, ground, levelBoxes, course, rumbleField, crushCars,
     step, advance, raceView, finishRace, command, gold, now: () => time, snapshot: () => snapshot(player.state),
   };
 }

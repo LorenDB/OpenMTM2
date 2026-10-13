@@ -8,25 +8,11 @@
   - "classic": as the 1998 software renderer shaded it. Terrain is unlit and darkened by the
     .LTE's baked ground brightness; textures are point-sampled.
   - "enhanced": the same art, lit by the level's sun with smooth normals and filtered textures.
-
-  What it costs to draw. The world wraps, so it is drawn nine times over (the original and its
-  eight neighbours), and a headset draws everything twice. Three things keep that affordable:
-  - the terrain is cut into chunks, each its own mesh, so what lies outside the view is skipped
-    (one mesh per copy would always be in view, all 131072 triangles of it);
-  - a model's placements in all nine copies are one instanced mesh, so a model costs one draw
-    however often and wherever it stands;
-  - camera-facing scenery (SIT types 8 and 9, trees and the like) is instanced too and turned
-    toward the camera in the vertex shader, instead of being hundreds of objects turned by hand.
 */
 import * as THREE from "three";
+import { DEFAULT_FRAME_SECONDS, keyframeWeights } from "../shared/keyframe-spline.js";
+import { blockShift, chunkTriangles, groupObjects, indexedBounds } from "../shared/object-chunks.js";
 import { WORLD_FT } from "../shared/scene-frame.js";
-
-/** The terrain grid: cells per side, feet per cell, and a chunk's side in cells. */
-const GRID = 256, CELL_FT = 32, CHUNK_CELLS = 64;
-/** Where the world is drawn, in worlds: the original first, then its eight neighbours. */
-const WORLD_COPIES = Object.freeze([[0, 0], [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]);
-/** What `updateTrackWorld` and `moveObjects` work on, per world, found once when it is made. */
-const PARTS = new WeakMap();
 
 export function dataTexture({ rgba, width, height }, look, repeat = false) {
   const texture = new THREE.DataTexture(rgba, width, height, THREE.RGBAFormat);
@@ -91,6 +77,32 @@ function meshGeometry(mesh) {
 }
 
 /** The terrain's atlas as a texture; ground boxes draw from it too. */
+/**
+ * A mesh of the world's ground cut into blocks (shared/object-chunks.js): a group under the mesh's name of one mesh a
+ * block, each with the mesh's name, material and vertices and its own triangles and bounds, to be drawn at the copy
+ * nearest the camera (`updateTrackWorld`).
+ */
+function inBlocks(mesh) {
+  const source = mesh.geometry, group = new THREE.Group();
+  group.name = mesh.name;
+  const positions = source.getAttribute("position").array;
+  for (const indices of chunkTriangles(positions, source.getIndex().array).values()) {
+    const geometry = new THREE.BufferGeometry();
+    for (const [name, attribute] of Object.entries(source.attributes)) geometry.setAttribute(name, attribute);
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    // The block's own bounds. three.js would take them from every vertex of the shared list, the whole world's: each
+    // block would then be placed, and culled, as if it were the world.
+    const bounds = indexedBounds(positions, indices);
+    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(...bounds.center), bounds.radius);
+    const block = new THREE.Mesh(geometry, mesh.material);
+    block.name = mesh.name;
+    block.receiveShadow = mesh.receiveShadow;
+    block.userData = { ...mesh.userData, block: true };
+    group.add(block);
+  }
+  return group;
+}
+
 export function createTerrainAtlas(atlas, look) {
   const map = dataTexture(atlas, look);
   // Mipmaps would blend neighbouring atlas tiles together.
@@ -109,7 +121,7 @@ export function createGroundBoxes(boxes, map, look) {
   if (!boxes) return null;
   const mesh = new THREE.Mesh(meshGeometry(boxes), surfaceMaterial(map, look, boxes.hasLte));
   mesh.name = "groundBoxes";
-  return mesh;
+  return inBlocks(mesh);
 }
 
 /** Detail strength where the mask is black (TERRAIN_DETAIL_MASK.md: `terrDetail` 10), the feet a detail pattern spans, and the mask's reach. */
@@ -228,10 +240,6 @@ function addRoadMask(material, mask) {
 }
 
 /**
- * The terrain as chunks of 64 x 64 cells, one mesh each (named "terrain"), in a group. The
- * worker's mesh has four vertices and two triangles per cell in row order; the chunks share its
- * vertex buffers and each has only its own cells' triangles, with a bounding sphere of its own.
- *
  * `detail`: whether Community Patch 3's terrain extras are drawn (the enhanced look only): the HD tiles' normal maps
  * and, on a track with a painted mask, the detail normals.
  */
@@ -248,41 +256,9 @@ export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.at
     if (terrain.detail?.mask) addTerrainDetail(material, terrain.detail, look);
   }
   if (terrain.roadMask) addRoadMask(material, terrain.roadMask);
-  const shared = meshGeometry(terrain);
-  const group = new THREE.Group();
-  group.name = "terrainChunks";
-  const side = CHUNK_CELLS * CELL_FT;
-  for (let chunkRow = 0; chunkRow < GRID / CHUNK_CELLS; chunkRow++) {
-    for (let chunkCol = 0; chunkCol < GRID / CHUNK_CELLS; chunkCol++) {
-      const indices = new Uint32Array(CHUNK_CELLS * CHUNK_CELLS * 6);
-      let count = 0, low = Infinity, high = -Infinity;
-      for (let row = chunkRow * CHUNK_CELLS; row < (chunkRow + 1) * CHUNK_CELLS; row++) {
-        const from = (row * GRID + chunkCol * CHUNK_CELLS) * 6;
-        for (let i = from; i < from + CHUNK_CELLS * 6; i += 3) {
-          const a = terrain.indices[i], b = terrain.indices[i + 1], c = terrain.indices[i + 2];
-          // Outside a stadium's footprint the triangles are collapsed to a point.
-          if (a === b && b === c) continue;
-          indices[count++] = a; indices[count++] = b; indices[count++] = c;
-          for (const vertex of [a, b, c]) {
-            const y = terrain.positions[vertex * 3 + 1];
-            if (y < low) low = y;
-            if (y > high) high = y;
-          }
-        }
-      }
-      if (!count) continue;
-      const geometry = new THREE.BufferGeometry();
-      for (const [name, attribute] of Object.entries(shared.attributes)) geometry.setAttribute(name, attribute);
-      geometry.setIndex(new THREE.BufferAttribute(count === indices.length ? indices : indices.slice(0, count), 1));
-      geometry.boundingSphere = new THREE.Sphere(
-        new THREE.Vector3((chunkCol + 0.5) * side, (low + high) / 2, -(chunkRow + 0.5) * side),
-        Math.hypot(side / 2, side / 2, (high - low) / 2));
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.name = "terrain";
-      group.add(mesh);
-    }
-  }
-  return group;
+  const mesh = new THREE.Mesh(meshGeometry(terrain), material);
+  mesh.name = "terrain";
+  return inBlocks(mesh);
 }
 
 /**
@@ -399,7 +375,7 @@ export function createModelLibrary(models, modelTextures, look) {
       const map = cycleKey ? textures.get(cycleKey) : mesh.textureName ? textureFor(mesh.textureName) : null;
       const material = modelMaterial(mesh, map, normalFor(mesh), normalFor(mesh, "_AO"), look);
       material.userData.textureName = mesh.textureName?.toUpperCase() ?? null;
-      return { geometry, material, frameCount: model.keyframes?.length ?? 0 };
+      return { geometry, material, frameCount: model.keyframes?.length ?? 0, frameSeconds: model.frameSeconds ?? null };
     });
     // A Mesh material (TEXSOLID) is drawn twice, as the engine does: the solid texels above (alpha tested), and glass across
     // the whole face, tinted and see-through, without writing depth.
@@ -445,209 +421,36 @@ export function setStartLights(world, on, colours) {
   });
 }
 
-/*
-  Camera-facing scenery: the model turned about its own vertical so that its +z points at the
-  camera, as `Object3D.lookAt` at the camera's place and the object's own height would turn it.
-  Done per vertex, before the instance's placement, which for these is a move without a turn.
-*/
-const facingPars = (viewer) => /* glsl */ `
-vec2 mtmFacing() {
-  #ifdef USE_INSTANCING
-    vec3 place = ( modelMatrix * instanceMatrix )[ 3 ].xyz;
-  #else
-    vec3 place = modelMatrix[ 3 ].xyz;
-  #endif
-  vec2 toCamera = ${viewer}.xz - place.xz;
-  float distance = length( toCamera );
-  // The sine and cosine of the turn; facing as placed when the camera is right above.
-  return distance > 1e-4 ? toCamera / distance : vec2( 0.0, 1.0 );
-}
-vec3 mtmFace( vec3 v, vec2 turn ) {
-  return vec3( v.x * turn.y + v.z * turn.x, v.y, v.z * turn.y - v.x * turn.x );
-}
-`;
-const FACING_PARS = facingPars("cameraPosition");
-/*
-  A shadow map is drawn from the sun, so there the camera's place is not the shader's own
-  `cameraPosition`: `updateTrackWorld` keeps it here, and the depth materials below read it, so
-  that a shadow is that of the model as the picture shows it.
-*/
-const VIEWER = { value: new THREE.Vector3() };
-const FACING_DEPTH_PARS = `uniform vec3 mtmViewer;\n${facingPars("mtmViewer")}`;
-const facingMaterials = new WeakMap(), facingDepthMaterials = new WeakMap();
-
-/** A model part's material, with its vertices turned to face the camera. One per source material. */
-function facingMaterial(material) {
-  if (!facingMaterials.has(material)) {
-    const facing = material.clone();
-    facing.onBeforeCompile = (shader) => {
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", `#include <common>\n${FACING_PARS}`)
-        .replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\n\tvec2 mtmTurn = mtmFacing();\n\tobjectNormal = mtmFace( objectNormal, mtmTurn );")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\n\ttransformed = mtmFace( transformed, mtmTurn );");
-    };
-    facingMaterials.set(material, facing);
-  }
-  return facingMaterials.get(material);
-}
-
-/** The depth material for a camera-facing part's shadow, turned the same way. One per source material: three.js gives it that material's texture. */
-function facingDepthMaterial(material) {
-  if (!facingDepthMaterials.has(material)) {
-    const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
-    depth.onBeforeCompile = (shader) => {
-      shader.uniforms.mtmViewer = VIEWER;
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", `#include <common>\n${FACING_DEPTH_PARS}`)
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\n\ttransformed = mtmFace( transformed, mtmFacing() );");
-    };
-    facingDepthMaterials.set(material, depth);
-  }
-  return facingDepthMaterials.get(material);
-}
-
-const _placement = new THREE.Matrix4();
-/** An object's matrix in one copy of the world; a camera-facing one keeps only its place. */
-function placement(elements, [dx, dz], facing) {
-  _placement.fromArray(elements);
-  if (facing) _placement.makeTranslation(elements[12], elements[13], elements[14]);
-  _placement.elements[12] += dx;
-  _placement.elements[14] += dz;
-  return _placement;
-}
-
-/** The sphere around all of a mesh's instances, with room for a camera-facing model's turning. */
-function boundInstances(mesh) {
-  mesh.computeBoundingSphere();
-  if (mesh.userData.facing) mesh.boundingSphere.radius += mesh.geometry.boundingSphere.radius;
-}
-
-/** Write one block of a mesh's instances: the model's placements, moved by a copy's offset. */
-function fillBlock(mesh, block, offset) {
-  const { perCopy, facing, places } = mesh.userData;
-  for (let i = 0; i < perCopy; i++) mesh.setMatrixAt(block * perCopy + i, placement(places[i], offset, facing));
-}
-
-/**
- * Every placed object that does not animate: one InstancedMesh per model part, holding the
- * model's placements in every copy of the world (`copies`, in worlds, the original first). A
- * model used as camera-facing scenery gets meshes of its own, with the facing material.
- *
- * The instances are kept in blocks, one copy of the world each; `order` says which copy a block
- * holds. The original is always the first block; `orderObjects` brings the copies in view to
- * the front and draws only those.
- */
-export function placeObjects(library, objects, copies = [[0, 0]]) {
-  const byKey = new Map();
-  // Where each SIT box is drawn, for moving it later: its meshes' name and its place among their instances.
-  const slots = {};
-  for (const object of objects) {
-    const parts = library.get(object.model);
-    if (!parts || parts.some((part) => part.frameCount > 1)) continue;
-    const key = object.billboard ? `${object.model}|facing` : object.model;
-    if (!byKey.has(key)) byKey.set(key, { parts, facing: !!object.billboard, matrices: [] });
-    const entry = byKey.get(key);
-    if (object.sitIndex !== undefined) slots[object.sitIndex] = [key, entry.matrices.length];
-    entry.matrices.push(object.matrix);
-  }
-  const offsets = copies.map(([dx, dz]) => [dx * WORLD_FT, dz * WORLD_FT]);
+/** Every placed object, an InstancedMesh per model part and block (shared/object-chunks.js). */
+export function placeObjects(library, objects) {
+  const { meshes: byMesh, slots } = groupObjects(objects.filter((object) => library.has(object.model)
+    && !object.billboard && !library.get(object.model).some((part) => part.frameCount > 1)));
   const group = new THREE.Group();
   group.name = "objects";
   group.userData.slots = slots;
-  group.userData.offsets = offsets;
-  group.userData.order = offsets.map((_, copy) => copy);
-  for (const [key, { parts, facing, matrices }] of byKey) {
-    const perCopy = matrices.length, total = perCopy * offsets.length;
-    for (const { geometry, material } of parts) {
-      const instanced = new THREE.InstancedMesh(geometry, facing ? facingMaterial(material) : material, total);
-      instanced.name = key;
-      // `places` is the model's placements in the original world, shared by the model's parts.
-      Object.assign(instanced.userData, { perCopy, facing, places: matrices, blocks: offsets.length });
-      if (facing) instanced.customDepthMaterial = facingDepthMaterial(material);
-      offsets.forEach((offset, block) => fillBlock(instanced, block, offset));
+  const m = new THREE.Matrix4();
+  for (const [key, { model, matrices }] of byMesh) {
+    for (const { geometry, material } of library.get(model)) {
+      const instanced = new THREE.InstancedMesh(geometry, material, matrices.length);
+      matrices.forEach((elements, i) => instanced.setMatrixAt(i, m.fromArray(elements)));
       instanced.instanceMatrix.needsUpdate = true;
-      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-      boundInstances(instanced);
-      // Only the original world casts shadows: its instances come first.
-      instanced.onBeforeShadow = () => { instanced.count = perCopy; };
-      instanced.onAfterShadow = () => { instanced.count = perCopy * instanced.userData.blocks; };
+      instanced.computeBoundingSphere();
+      instanced.name = key;
+      instanced.userData.block = true;
       group.add(instanced);
     }
   }
-  return group;
-}
-
-/**
- * Draw the placed objects only in the copies of the world that are shown (`shown`, by copy): the
- * blocks of instances holding those are brought to the front, a block changing places with one
- * behind it, and the meshes draw that many blocks.
- */
-function orderObjects(objects, shown) {
-  const { order, offsets } = objects.userData;
-  const count = shown.filter(Boolean).length;
-  const rewritten = [];
-  for (let front = 0; front < count; front++) {
-    if (shown[order[front]]) continue;
-    let behind = count;
-    while (!shown[order[behind]]) behind++;
-    [order[front], order[behind]] = [order[behind], order[front]];
-    rewritten.push(front, behind);
-  }
-  for (const mesh of objects.children) {
-    for (const block of rewritten) fillBlock(mesh, block, offsets[order[block]]);
-    if (rewritten.length) mesh.instanceMatrix.needsUpdate = true;
-    mesh.userData.blocks = count;
-    mesh.count = mesh.userData.perCopy * count;
-    boundInstances(mesh);
-  }
-}
-
-/**
- * How far past the eye's range a copy of the world still counts as in view, feet: room for what
- * stands on its edge. And the play that keeps a copy at the edge of the range from coming and
- * going with every step.
- */
-const COPY_MARGIN_FT = 600, COPY_PLAY_FT = 300;
-
-/**
- * Which copies of the world are drawn: the original always, another when any of its ground lies
- * within `range` feet of the camera. A copy out of view is not drawn at all: its ground, its
- * water, its animated objects, and its share of the placed objects.
- */
-function showCopies(parts, camera, range) {
-  const { copies, objects } = parts;
-  if (copies.length < 2) return;
-  const { x, z } = camera.position;
-  let changed = false;
-  copies.forEach((copy, i) => {
-    let shown = true;
-    if (i > 0 && range < Infinity) {
-      const away = Math.hypot(Math.max(copy.x0 - x, 0, x - copy.x1), Math.max(copy.z0 - z, 0, z - copy.z1));
-      shown = away < range + COPY_MARGIN_FT + (copy.shown ? COPY_PLAY_FT : 0);
-    }
-    if (shown === copy.shown) return;
-    copy.shown = shown;
-    copy.group.visible = shown;
-    changed = true;
-  });
-  if (changed && objects) orderObjects(objects, copies.map((copy) => copy.shown));
-}
-
-/**
- * The placed objects that animate (keyframed models), one group each with a mesh per part.
- * They need their own morph state, so each copy of the world has its own.
- */
-export function placeAnimatedObjects(library, objects) {
-  const group = new THREE.Group();
-  group.name = "animated";
-  const m = new THREE.Matrix4();
+  // Facing and keyframed objects need their own Object3D state. Static scenery stays instanced.
   for (const object of objects) {
     const parts = library.get(object.model);
-    if (!parts || !parts.some((part) => part.frameCount > 1)) continue;
+    if (!parts) continue;
+    const animated = parts.some((part) => part.frameCount > 1);
+    if (!object.billboard && !animated) continue;
     const placed = new THREE.Group();
     placed.name = "placedObject";
     placed.userData.sitIndex = object.sitIndex;
     placed.userData.billboard = !!object.billboard;
+    if (object.crushCar !== undefined) placed.userData.crushCar = object.crushCar;
     m.fromArray(object.matrix);
     if (object.billboard) placed.position.setFromMatrixPosition(m);
     else {
@@ -659,45 +462,57 @@ export function placeAnimatedObjects(library, objects) {
       if (part.frameCount > 1) {
         mesh.updateMorphTargets();
         mesh.userData.frameCount = part.frameCount;
+        mesh.userData.frameSeconds = part.frameSeconds;
+        if (object.crushCar !== undefined) mesh.userData.crushCar = object.crushCar;
       }
       placed.add(mesh);
     }
-    group.add(placed);
+    // In a holder that is moved by whole worlds, so the object keeps its own place and turn inside it.
+    const holder = new THREE.Group();
+    holder.userData.block = true;
+    holder.userData.holds = placed;
+    holder.add(placed);
+    group.add(holder);
   }
-  return group.children.length ? group : null;
+  return group;
 }
 
 /**
  * Move drawn SIT boxes: `moves` is `[{ sitIndex, matrix }]` with scene-frame matrices. Every
- * copy of the world is updated.
+ * wrapped copy of the tile is updated.
  */
 export function moveObjects(world, moves) {
-  const parts = PARTS.get(world);
-  if (!moves.length || !parts) return;
+  if (!moves.length) return;
   const m = new THREE.Matrix4();
-  for (const group of parts.placed) {
-    const moved = moves.find((item) => item.sitIndex === group.userData.sitIndex);
-    if (!moved) continue;
-    m.fromArray(moved.matrix);
-    if (group.userData.billboard) group.position.setFromMatrixPosition(m);
-    else { group.matrix.copy(m); group.matrixWorldNeedsUpdate = true; }
-  }
-  if (!parts.objects) return;
-  const { slots, offsets, order } = parts.objects.userData;
-  const touched = new Set();
-  for (const { sitIndex, matrix } of moves) {
-    const slot = slots[sitIndex];
-    if (!slot) continue;
-    for (const mesh of parts.byName.get(slot[0]) ?? []) {
-      const { perCopy, facing, places } = mesh.userData;
-      // Kept, for when a block is written afresh; then every block, the copies not drawn too.
-      places[slot[1]] = matrix;
-      order.forEach((copy, block) => mesh.setMatrixAt(block * perCopy + slot[1], placement(matrix, offsets[copy], facing)));
-      mesh.instanceMatrix.needsUpdate = true;
-      touched.add(mesh);
+  world.traverse((group) => {
+    if (group.name === "placedObject") {
+      const moved = moves.find((item) => item.sitIndex === group.userData.sitIndex);
+      if (moved) {
+        m.fromArray(moved.matrix);
+        if (group.userData.billboard) group.position.setFromMatrixPosition(m);
+        else { group.matrix.copy(m); group.matrixWorldNeedsUpdate = true; }
+      }
+      return;
     }
-  }
-  for (const mesh of touched) boundInstances(mesh);
+    if (group.name !== "objects") return;
+    const slots = group.userData.slots ?? {};
+    for (const { sitIndex, matrix } of moves) {
+      const slot = slots[sitIndex];
+      if (!slot) continue;
+      m.fromArray(matrix);
+      for (const mesh of group.children) {
+        if (mesh.name !== slot[0]) continue;
+        mesh.setMatrixAt(slot[1], m);
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.userData.moved = true;
+      }
+    }
+    for (const mesh of group.children) {
+      if (!mesh.userData.moved) continue;
+      mesh.computeBoundingSphere();
+      mesh.userData.moved = false;
+    }
+  });
 }
 
 /** Draw the SIT backdrop models as camera-centred scenery behind the world. */
@@ -759,46 +574,52 @@ export function setBackdropWeather(world, weather) {
   uniforms.backdropSaturation.value = saturation;
 }
 
-const _target = new THREE.Vector3();
+/**
+ * The world as a window around the camera: every block (a piece of ground, a block of scenery, an object that stands
+ * by itself, the water) is moved by whole worlds to the copy nearest the camera. A block's place is its bounds'
+ * centre, read each frame since what it holds may move (a train).
+ */
+export function placeBlocks(world, camera, viewRange = Infinity) {
+  let blocks = world.userData.blocks;
+  if (!blocks) {
+    blocks = [];
+    world.traverse((o) => { if (o.userData.block) blocks.push(o); });
+    world.userData.blocks = blocks;
+  }
+  const cx = camera.position.x, cz = camera.position.z;
+  for (const o of blocks) {
+    let x, z;
+    const held = o.userData.holds;
+    if (held) {
+      if (held.matrixAutoUpdate) { x = held.position.x; z = held.position.z; } else { x = held.matrix.elements[12]; z = held.matrix.elements[14]; }
+    } else if (o.userData.blockAt) {
+      [x, z] = o.userData.blockAt;
+    } else {
+      const sphere = o.boundingSphere ?? o.geometry?.boundingSphere;
+      if (!sphere) continue;
+      x = sphere.center.x; z = sphere.center.z;
+    }
+    const [dx, dz] = blockShift(x, z, cx, cz);
+    if (o.position.x !== dx || o.position.z !== dz) { o.position.x = dx; o.position.z = dz; }
+    // A headset may draw the fog in. Do not submit a block wholly beyond that range; ordinary
+    // flat rendering passes Infinity and leaves visibility to the camera frustum as before.
+    const radius = (o.boundingSphere ?? o.geometry?.boundingSphere)?.radius ?? 300;
+    o.visible = Math.hypot(x + dx - cx, z + dz - cz) <= viewRange + radius;
+  }
+}
 
 /**
- * Once a frame: advance keyframe morphs, face the camera-facing objects and keep the backdrop
- * around the camera.
- *
- * `viewRange`, when given, is how far the eye can see, in feet (the fog's end): terrain chunks
- * wholly beyond it are not drawn, nor any copy of the world that lies wholly beyond it. A
- * headset uses it (docs/VR.md, "What it costs"); the flat screen draws everything in view, as
- * it always has.
+ * Where a top-crush cab stands among its `frames` (0 the first, intact; the last, flat) when it is crushed by `share`
+ * of the most it can be (worker/sim-worker.js `crushShare`).
  */
+export function crushFrame(share, frames) {
+  return Math.max(0, Math.min(1, share)) * (frames - 1);
+}
+
+/** Face billboards, advance keyframe morphs and keep the backdrop around the camera. */
 export function updateTrackWorld(world, camera, dt, { viewRange = Infinity } = {}) {
   world.userData.animationTime = (world.userData.animationTime ?? 0) + dt;
-  const phase = world.userData.animationTime / 0.5;
-  const parts = PARTS.get(world);
-  VIEWER.value.copy(camera.position);
-  if (parts) {
-    if (parts.backdrops) parts.backdrops.position.copy(camera.position);
-    for (const object of parts.placed) {
-      if (!object.userData.billboard) continue;
-      _target.set(camera.position.x, object.position.y, camera.position.z);
-      object.lookAt(_target);
-      // The copies that cast the shadow keep a fixed turn to the sun, whatever way the object turns (race.js enableShadows).
-      const facing = world.userData.shadowFacing;
-      if (facing) for (const child of object.children) if (child.userData.shadowProxy) child.quaternion.copy(object.quaternion).invert().multiply(facing);
-    }
-    for (const mesh of parts.morphing) {
-      const n = mesh.userData.frameCount;
-      const p = phase % n, from = Math.floor(p), to = (from + 1) % n, t = p - from;
-      mesh.morphTargetInfluences.fill(0);
-      if (from > 0) mesh.morphTargetInfluences[from - 1] += 1 - t;
-      if (to > 0) mesh.morphTargetInfluences[to - 1] += t;
-    }
-    showCopies(parts, camera, viewRange);
-    for (const chunk of parts.chunks) {
-      chunk.mesh.visible = Math.hypot(chunk.x - camera.position.x, chunk.z - camera.position.z) < viewRange + chunk.radius;
-    }
-    return;
-  }
-  // A world without recorded parts: find everything by walking it.
+  placeBlocks(world, camera, viewRange);
   const target = new THREE.Vector3();
   world.traverse((object) => {
     if (object.name === "backdrops") object.position.copy(camera.position);
@@ -811,10 +632,16 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity } = {
     }
     const n = object.userData.frameCount;
     if (!n || !object.morphTargetInfluences) return;
-    const p = phase % n, from = Math.floor(p), to = (from + 1) % n, t = p - from;
-    object.morphTargetInfluences.fill(0);
-    if (from > 0) object.morphTargetInfluences[from - 1] += 1 - t;
-    if (to > 0) object.morphTargetInfluences[to - 1] += t;
+    // A top-crush car's cab is not played: its frames run from intact to flat, and it stands where its crush is.
+    if (object.userData.crushCar !== undefined) {
+      const at = crushFrame(world.userData.crush?.[object.userData.crushCar] ?? 0, n);
+      // Between two frames the nearer weighs more; frame 0 is the mesh itself.
+      for (let k = 1; k < n; k++) object.morphTargetInfluences[k - 1] = Math.max(0, 1 - Math.abs(at - k));
+      return;
+    }
+    // As the game plays it (shared/keyframe-spline.js). Frame 0 is the mesh itself: it takes what the targets leave of 1.
+    const weights = keyframeWeights(world.userData.animationTime, n, object.userData.frameSeconds || DEFAULT_FRAME_SECONDS);
+    for (let k = 1; k < n; k++) object.morphTargetInfluences[k - 1] = weights[k];
   });
 }
 
@@ -878,14 +705,20 @@ function createFlatSky(sky, look, reach) {
   const map = dataTexture(sky, look, true);
   const horizon = new THREE.Color().setRGB(sky.flat.horizon[0] / 255, sky.flat.horizon[1] / 255, sky.flat.horizon[2] / 255, THREE.SRGBColorSpace);
   const material = new THREE.ShaderMaterial({
-    uniforms: { map: { value: map }, horizon: { value: horizon }, fade: { value: new THREE.Vector2(reach * 0.4, reach) }, tile: { value: FLAT_SKY_TILE_FT } },
+    // `ceiling`: a sky fixed in the world at this height in feet (a Terminal Velocity or Hellbender level's, which can be
+    // flown up to); below zero it hangs over the camera wherever it goes, as MTM1's does.
+    uniforms: {
+      map: { value: map }, horizon: { value: horizon }, fade: { value: new THREE.Vector2(reach * 0.4, reach) }, tile: { value: FLAT_SKY_TILE_FT },
+      ceiling: { value: Number.isFinite(sky.flat.ceilingFt) ? sky.flat.ceilingFt - FLAT_SKY_HEIGHT_FT : -1e9 },
+    },
     vertexShader: `
       uniform float tile;
+      uniform float ceiling;
       varying vec2 vSkyUv;
       varying float vSkyDistance;
       void main() {
         vec4 world = modelMatrix * vec4(position, 1.0);
-        world.y += cameraPosition.y;
+        world.y += ceiling < -1.0e8 ? cameraPosition.y : ceiling;
         vSkyUv = world.xz / tile;
         vSkyDistance = length(world.xz - cameraPosition.xz);
         gl_Position = projectionMatrix * viewMatrix * world;
@@ -907,6 +740,7 @@ function createFlatSky(sky, look, reach) {
   const plane = new THREE.Mesh(geometry, material);
   plane.name = "sky";
   plane.userData.flat = true;
+  plane.userData.fixed = Number.isFinite(sky.flat.ceilingFt);
   plane.userData.reach = reach;
   plane.frustumCulled = false;
   plane.renderOrder = -1;
@@ -961,7 +795,7 @@ export function skyColor(sky) {
   return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
 }
 
-export function createWater(levelFt, reach = 1) {
+export function createWater(levelFt, reach = 3) {
   if (levelFt === null || levelFt === undefined) return null;
   // `reach`: how many worlds wide, for a level that is drawn once (its sea goes on past its edges); the texture keeps its size.
   const geometry = new THREE.PlaneGeometry(8192 * reach, 8192 * reach);
@@ -973,6 +807,10 @@ export function createWater(levelFt, reach = 1) {
   const water = new THREE.Mesh(geometry, material);
   water.name = "water";
   water.userData.levelFt = levelFt;
+  // Three worlds wide and moved by whole worlds with the camera, so its edge is never in sight and its texture, which
+  // repeats every world, stays where it was.
+  water.userData.block = true;
+  water.userData.blockAt = [4096, -4096];
   return water;
 }
 
@@ -1041,7 +879,7 @@ export function createRoad(road, look) {
     // The surface casts no shadow (it would shade itself and the ground it lies on); the walls do.
     object.name = mesh.wall ? "roadWall" : "road";
     object.receiveShadow = true;
-    group.add(object);
+    group.add(geometry.getIndex() ? inBlocks(object) : object);
   }
   return group;
 }
@@ -1050,10 +888,6 @@ export function createRoad(road, look) {
 /** `options.backdrops` draws the SIT's backdrop models (off unless asked), `options.drawDistance` the world's reach in feet (the sky dome stays inside it). */
 export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, terrainDetail = true, reflections = true } = {}) {
   const world = new THREE.Group();
-  // The world wraps at 8192 ft, so its eight neighbouring copies are drawn too; a stadium stands alone, and so does a
-  // level whose edges do not meet (`noWrap`).
-  const copies = build.stadium || build.noWrap ? WORLD_COPIES.slice(0, 1) : WORLD_COPIES;
-  // What each copy has for itself: the ground, the water and the animated objects.
   const tile = new THREE.Group();
   tile.name = "tile";
   setReflectionSky(reflections && look !== "classic" && !build.stadium ? build.sky : null, look);
@@ -1062,57 +896,35 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
   const boxes = build.groundBoxes ? createGroundBoxes(build.groundBoxes, atlas, look) : null;
   if (boxes) tile.add(boxes);
   if (build.road) tile.add(createRoad(build.road, look));
-  const library = createModelLibrary(build.models, build.modelTextures, look);
-  const animated = placeAnimatedObjects(library, build.objects);
-  if (animated) tile.add(animated);
-  const water = createWater(build.waterLevelFt, build.noWrap ? 5 : 1);
+  tile.add(placeObjects(createModelLibrary(build.models, build.modelTextures, look), build.objects));
+  const water = createWater(build.waterLevelFt);
   if (water) tile.add(water);
   world.add(tile);
-  // The copies share every geometry, material and texture with the original.
-  const tiles = [tile];
-  for (const [dx, dz] of copies.slice(1)) {
-    const copy = tile.clone();
-    copy.position.set(dx * WORLD_FT, 0, dz * WORLD_FT);
-    world.add(copy);
-    tiles.push(copy);
-  }
-  // Every other object, in all the copies at once.
-  const objects = placeObjects(library, build.objects, copies);
-  world.add(objects);
   const backdrops = createBackdrops(build, look);
   if (backdrops && showBackdrops && !build.stadium) world.add(backdrops);
   if (!build.stadium) {
+    // The world is a torus 8192 ft a side and is drawn once, as a window around the camera: every block of it is moved
+    // each frame to the copy nearest the camera (`updateTrackWorld`), as the game draws each cell once beside the view
+    // (MONSTER_EXE_ANALYSIS.md "The wrapping world"). Every level, whatever its game.
     // A stadium replaces the sky (MONSTER.EXE draws it instead).
     const sky = createSky(build.sky, look, Math.min(6000, drawDistance * 0.95));
     if (sky) world.add(sky);
   }
-
-  // The ground each copy covers (scene x and z), for telling which copies are in view. The
-  // terrain's chunks share their vertices, so any one of them has the whole ground's.
-  const vertices = tile.getObjectByName("terrain")?.geometry.attributes.position;
-  const ground = vertices ? new THREE.Box3().setFromBufferAttribute(vertices) : new THREE.Box3(new THREE.Vector3(0, 0, -WORLD_FT), new THREE.Vector3(WORLD_FT, 0, 0));
-  const parts = {
-    objects, byName: new Map(), placed: [], morphing: [], chunks: [], backdrops: backdrops && !build.stadium ? backdrops : null,
-    copies: tiles.map((group) => ({
-      group, shown: true,
-      x0: ground.min.x + group.position.x, x1: ground.max.x + group.position.x, z0: ground.min.z + group.position.z, z1: ground.max.z + group.position.z,
-    })),
-  };
-  for (const mesh of objects.children) {
-    if (!parts.byName.has(mesh.name)) parts.byName.set(mesh.name, []);
-    parts.byName.get(mesh.name).push(mesh);
-  }
-  world.traverse((object) => {
-    if (object.name === "placedObject") parts.placed.push(object);
-    if (object.userData.frameCount && object.morphTargetInfluences) parts.morphing.push(object);
-    if (object.name === "terrain") {
-      const { center, radius } = object.geometry.boundingSphere;
-      const copy = object.parent.parent;
-      parts.chunks.push({ mesh: object, x: center.x + copy.position.x, z: center.z + copy.position.z, radius });
-    }
-  });
-  PARTS.set(world, parts);
   return world;
+}
+
+/** The sky stays level with the ground until the camera is this high, feet, then rises with it. */
+export const SKY_EYE_FT = 200;
+
+/**
+ * Keep the sky around the camera, and out of its reach: the dome goes with the camera across the world, and up with it
+ * once the camera is SKY_EYE_FT high, so however high a truck is thrown or a camera flown the sky is never met. A sky
+ * fixed in the world (a Terminal Velocity or Hellbender level's ceiling, `userData.fixed`) keeps its height: that one
+ * can be reached.
+ */
+export function placeSky(sky, camera) {
+  if (!sky) return;
+  sky.position.set(camera.position.x, sky.userData.fixed ? 0 : Math.max(0, camera.position.y - SKY_EYE_FT), camera.position.z);
 }
 
 /** Dispose of a group's geometry, materials and textures. */
@@ -1120,6 +932,5 @@ export function disposeObject(root) {
   root.traverse((o) => {
     o.geometry?.dispose?.();
     for (const m of [o.material].flat()) { m?.map?.dispose?.(); m?.dispose?.(); }
-    o.customDepthMaterial?.dispose?.();
   });
 }

@@ -4,10 +4,14 @@
   soonest, and the inelastic force law with the lighter truck's mass; after each pass, the
   wheels against the wheels (a rim point of one tire against the other's cylinder). As for
   boxes, each contact replaces the pair's forces and only the last one is applied.
+
+  The wheel contact's response is the one part Monster Truck Madness 1 does differently
+  (`rules`, constants.ts): its `0x467fd0` against MTM2's `0x491e20`.
 */
-import { INV_G } from "../constants.js";
+import { INV_G, MTM2_RULES } from "../constants.js";
 import { truckWeight } from "../truck/dynamics.js";
 import { truckRadius } from "../truck/recovery.js";
+import { withNearest } from "../world/wrap.js";
 const toWorld = (m, x, y, z) => [m[0] * x + m[1] * y + m[2] * z, m[3] * x + m[4] * y + m[5] * z, m[6] * x + m[7] * y + m[8] * z];
 const toBody = (m, x, y, z) => [m[0] * x + m[3] * y + m[6] * z, m[1] * x + m[4] * y + m[7] * z, m[2] * x + m[5] * y + m[8] * z];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -26,26 +30,31 @@ function insideHullBox(hull, r) {
 }
 /**
  * The pair test of two trucks (§14.20). `a` is the pair's first truck. Pair forces go to each
- * truck's `extForce` / `extMoment`; the faster truck is moved out of the slower one.
+ * truck's `extForce` / `extMoment`; the faster truck is moved out of the slower one. Returns what
+ * met (for a host's sounds and effects).
  */
-export function collideTrucks(a, b, dt) {
+export function collideTrucks(a, b, dt, rules = MTM2_RULES) {
+    // Across the world's seam the two are a world apart by their numbers: `b` is tested as the copy nearest `a`.
+    return withNearest(b.s, a.s.pos[0], a.s.pos[2], () => collideNear(a, b, dt, rules));
+}
+function collideNear(a, b, dt, rules) {
     if (a.s.heliTimer > 0 || b.s.heliTimer > 0)
-        return;
+        return { hull: false, wheels: false };
     const ra = truckRadius(a.p), rb = truckRadius(b.p);
     const d = Math.hypot(a.s.pos[0] - b.s.pos[0], a.s.pos[1] - b.s.pos[1], a.s.pos[2] - b.s.pos[2]);
     if (d >= ra + rb)
-        return;
+        return { hull: false, wheels: false };
     const speed = (t) => {
         const v = toWorld(t.s.matrix, t.s.bvel[0], t.s.bvel[1], t.s.bvel[2]);
         return Math.hypot(v[0], v[1], v[2]);
     };
     const [slow, fast] = speed(b) < speed(a) ? [b, a] : [a, b];
     const mEff = Math.min(truckWeight(a.p), truckWeight(b.p)) * INV_G;
-    const out = { a: null, b: null };
+    const out = { a: null, b: null, hull: false, wheels: false };
     pass(fast, slow, slow, mEff, dt, a, out);
-    wheels(fast, slow, slow, mEff, dt, a, out);
+    wheels(fast, slow, slow, mEff, dt, a, out, rules);
     pass(slow, fast, slow, mEff, dt, a, out);
-    wheels(slow, fast, slow, mEff, dt, a, out);
+    wheels(slow, fast, slow, mEff, dt, a, out, rules);
     for (const [t, f] of [[a, out.a], [b, out.b]]) {
         if (!f)
             continue;
@@ -54,6 +63,7 @@ export function collideTrucks(a, b, dt) {
             t.s.extMoment[k] += f.m[k];
         }
     }
+    return { hull: out.hull, wheels: out.wheels };
 }
 /** The points of `T` against the hull box of `O`. */
 function pass(O, T, slow, mEff, dt, first, out) {
@@ -122,6 +132,7 @@ function respond(O, T, slow, P, r, hull, mEff, dt, first, out) {
     const fo = [-F * e[0], -F * e[1], -F * e[2]];
     const fw = toWorld(mo, F * e[0], F * e[1], F * e[2]);
     const ft = toBody(mt, fw[0], fw[1], fw[2]);
+    out.hull = true;
     const forO = { f: fo, m: cross(r, fo) }, forT = { f: ft, m: cross(P, ft) };
     if (O === first) {
         out.a = forO;
@@ -148,7 +159,7 @@ function halfAxis(t, wheel) {
     return [Math.cos(a) * Math.cos(d) * k, Math.sin(a) * Math.cos(d) * k, Math.sin(d) * k];
 }
 /** The wheels of `B` against the wheels of `A` (`0x491950`, §14.20). */
-function wheels(A, B, slow, mEff, dt, first, out) {
+function wheels(A, B, slow, mEff, dt, first, out, rules) {
     const rho = (t) => Math.hypot(t.p.tireWidthFt * 0.5, t.p.tireRadiusFt);
     const RA = truckRadius(A.p);
     const hubWorld = (t, k) => add(t.s.pos, toWorld(t.s.matrix, ...t.s.tires[k].hub));
@@ -156,10 +167,10 @@ function wheels(A, B, slow, mEff, dt, first, out) {
         if (!(len(sub(hubWorld(B, bw), A.s.pos)) < rho(B) + RA))
             continue;
         for (const aw of [0, 1, 2, 3])
-            wheelPair(A, aw, B, bw, slow, mEff, dt, first, out, hubWorld, rho);
+            wheelPair(A, aw, B, bw, slow, mEff, dt, first, out, hubWorld, rho, rules);
     }
 }
-function wheelPair(A, aw, B, bw, slow, mEff, dt, first, out, hubWorld, rho) {
+function wheelPair(A, aw, B, bw, slow, mEff, dt, first, out, hubWorld, rho, rules) {
     const mA = A.s.matrix, mB = B.s.matrix;
     const hA = hubWorld(A, aw), hB = hubWorld(B, bw);
     if (!(len(sub(hA, hB)) < rho(A) + rho(B)))
@@ -184,13 +195,29 @@ function wheelPair(A, aw, B, bw, slow, mEff, dt, first, out, hubWorld, rho) {
     const rel = sub(RA, cA);
     if (!(Math.sqrt(Math.max(0, dot(rel, rel) - dist * dist)) <= A.p.tireWidthFt * 0.5))
         return;
-    respondWheels(A, aw, B, bw, slow, mEff, dt, first, out, RA, RB, E, unit(axis));
+    respondWheels(A, aw, B, bw, slow, mEff, dt, first, out, RA, RB, E, unit(axis), rules);
+}
+/**
+ * The velocity a wheel contact's force is made from, in A's axes. MTM2: half the relative
+ * velocity. MTM1: axis by axis, the larger in magnitude of the two points' velocities (B's on a
+ * tie), replaced by the relative velocity when that is smaller in magnitude.
+ */
+export function impactVelocity(vA, vB, rel, rules) {
+    if (rules.wheelImpact === "half")
+        return scale(rel, 0.5);
+    const out = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+        const big = Math.abs(vB[k]) < Math.abs(vA[k]) ? vA[k] : vB[k];
+        out[k] = Math.abs(rel[k]) < Math.abs(big) ? rel[k] : big;
+    }
+    return out;
 }
 /** The wheel contact's response (`0x491e20`, §14.20), in A's axes. */
-function respondWheels(A, aw, B, bw, slow, mEff, dt, first, out, RA, RB, EB, D) {
+function respondWheels(A, aw, B, bw, slow, mEff, dt, first, out, RA, RB, EB, D, rules) {
     const mA = A.s.matrix, mB = B.s.matrix;
     const vBw = toWorld(mB, ...pointVelocity(B.s, RB));
-    const v = sub(toBody(mA, ...vBw), pointVelocity(A.s, RA));
+    const vB = toBody(mA, ...vBw), vA = pointVelocity(A.s, RA);
+    const v = sub(vB, vA);
     const nv = scale(v, -1);
     const n = unit(nv);
     const cA = A.s.tires[aw].hub;
@@ -239,23 +266,24 @@ function respondWheels(A, aw, B, bw, slow, mEff, dt, first, out, RA, RB, EB, D) 
     else
         for (let i = 0; i < 3; i++)
             A.s.pos[i] -= push[i];
-    const F = (Math.abs(dot(scale(v, 0.5), N)) / dt) * mEff;
+    const F = (Math.abs(dot(impactVelocity(vA, vB, v, rules), N)) / dt) * mEff;
     const f = scale(N, F);
     if (radial) {
         // Spinning tyres climb.
         let sp = 0;
         const ta_ = A.s.tires[aw], tb = B.s.tires[bw];
-        if (ta_.onGround)
+        if (ta_.onGround || !rules.wheelSpinNeedsGround)
             sp = rA * ta_.spin;
-        if (tb.onGround)
+        if (tb.onGround || !rules.wheelSpinNeedsGround)
             sp += rB * tb.spin;
-        const G = (sp / dt) * mEff * 0.05;
+        const G = (sp / dt) * mEff * rules.wheelSpinClimb;
         f[1] += -G * N[2];
         f[2] += G * N[1];
     }
     const fA = scale(f, -1);
     const fw = toWorld(mA, ...f);
     const fB = toBody(mB, ...fw);
+    out.wheels = true;
     const forA = { f: fA, m: cross(RA, fA) }, forB = { f: fB, m: cross(RB, fB) };
     if (A === first) {
         out.a = forA;

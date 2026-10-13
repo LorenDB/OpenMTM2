@@ -1,16 +1,23 @@
 /*
   The Names key (N) cycles what is written beside the trucks, on the course map and above each truck in
-  the world: nothing, the trucks' names, the drivers' names. A port addition for the world labels; the
-  course map's driver names are the game's.
+  the world: nothing, the trucks' names, the drivers' names, then both (the driver, and under it the truck). A port
+  addition for the world labels; the course map's driver names are the game's.
 */
-export const NAMES_OFF = 0, NAMES_TRUCKS = 1, NAMES_DRIVERS = 2;
+export const NAMES_OFF = 0, NAMES_TRUCKS = 1, NAMES_DRIVERS = 2, NAMES_BOTH = 3;
 
-export const nextNamesMode = (mode) => (mode + 1) % 3;
+export const nextNamesMode = (mode) => (mode + 1) % 4;
 
-/** The label for entrant `i` in `mode`: `{ file, name }` per entrant, `truckName(file)` the catalog's name. */
+/**
+ * The label for an entrant in `mode`: `{ file, name }` per entrant, `truckName(file)` the catalog's name. A string, or
+ * for both names `[driver, truck]`, two lines; null for none.
+ */
 export function nameLabel(mode, entrant, truckName) {
   if (!entrant) return null;
   if (mode === NAMES_TRUCKS) return truckName(entrant.file);
   if (mode === NAMES_DRIVERS) return entrant.name || null;
+  if (mode === NAMES_BOTH) return entrant.name ? [entrant.name, truckName(entrant.file)] : truckName(entrant.file);
   return null;
 }
+
+/** A label as one line, for where there is room for one (the course map): the first of two. */
+export const nameLine = (label) => (Array.isArray(label) ? label[0] : label);

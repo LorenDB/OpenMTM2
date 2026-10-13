@@ -15,7 +15,7 @@
   key); an archive not in it yet comes after the listed ones.
 */
 import { readFile, readTextFile, removePath, writeBytesToFile } from "../shared/opfs.js";
-import { detectSitOrigin, isEvoSit, parseEvoSit, podPathTitle } from "../vendor/openphotex/index.js";
+import { detectSitOrigin, isEvoSit, parseEvoSit, parseTruckManifest, parseTvLvl, podPathTitle } from "../vendor/openphotex/index.js";
 import { copyFile, installMounts } from "./install-store.js";
 import { indexPodFile, readPodEntryBytes } from "./pod-index.js";
 import { createVfs, gameFamily } from "./vfs.js";
@@ -56,12 +56,39 @@ export function sitGame(bytes, title) {
   }
 }
 
-/** The game of an archive, from its first track script, or null when it holds none. */
-async function archiveGame(file, archive) {
+/**
+ * The game of an archive, or null when it cannot be told, from what it holds (`read(entry)` gives an entry's bytes):
+ *  - its first track script (`sitGame`);
+ *  - else Terminal Velocity, Fury3 or Hellbender levels (`LEVELS\*.LVL`, OpenPhotex `parseTvLvl`): "TV" (the first two
+ *    cannot be told apart) or "HB";
+ *  - else its vehicles: a CART Precision Racing car (`VEHICLE\*.CAR`) makes it "CPR"; a truck (`TRUCK\*.TRK`) makes it
+ *    "EVO1" or "EVO2", or for an MTM truck "MTM1" or "MTM2" by the manifest's own dialect. So an archive of trucks
+ *    alone (an add-on truck, an Evolution TRUCK.POD, CPR's RACECAR.POD) is known for what it is.
+ */
+export async function detectArchiveGame(archive, read) {
   const entry = archive.entries.find(isTrackScript);
-  if (!entry) return null;
-  return sitGame(await readPodEntryBytes(file, entry), podPathTitle(entry.normalizedName));
+  if (entry) return sitGame(await read(entry), podPathTitle(entry.normalizedName));
+  const inFolder = (folder, extension) => archive.entries.filter((e) => new RegExp(`^${folder}[\\\\/][^\\\\/]+\\.${extension}$`).test(e.normalizedName));
+  for (const lvl of inFolder("LEVELS", "LVL").slice(0, 4)) {
+    try {
+      const level = parseTvLvl(await read(lvl));
+      if (level.complete) return level.origin === "HB" ? "HB" : "TV";
+    } catch { /* not a level of those games */ }
+  }
+  for (const car of inFolder("VEHICLE", "CAR").slice(0, 4)) {
+    try { if (parseTruckManifest(await read(car), podPathTitle(car.normalizedName)).kind === "cpr-car") return "CPR"; } catch { /* not a car */ }
+  }
+  for (const trk of inFolder("TRUCK", "TRK").slice(0, 4)) {
+    try {
+      const parsed = parseTruckManifest(await read(trk), podPathTitle(trk.normalizedName));
+      if (parsed.kind === "evo") return `EVO${parsed.manifest.game}`;
+      if (parsed.kind === "mtm") return parsed.manifest.dialect === "MTM1" ? "MTM1" : "MTM2";
+    } catch { /* not a truck */ }
+  }
+  return null;
 }
+
+const archiveGame = (file, archive) => detectArchiveGame(archive, (entry) => readPodEntryBytes(file, entry));
 
 /** Copy one archive to `path` and describe it; throws when it is not a POD. */
 async function store(file, path, name, onChunk) {
@@ -158,16 +185,23 @@ export function orderMounts(mounts, order) {
 export async function mountAll(installManifest) {
   const addons = await readAddons();
   const mounts = await installMounts(installManifest);
+  let learned = false;
   for (const a of addons.archives) {
     try {
       const file = await readFile(a.path);
       const archive = await indexPodFile(file);
+      // An archive stored before its kind could be told (trucks alone, another game's levels) is looked at again.
+      if (!a.game) {
+        a.game = await archiveGame(file, archive).catch(() => null);
+        learned ||= !!a.game;
+      }
       mounts.push({
         key: a.key, name: a.name, archive, readEntry: (entry) => readPodEntryBytes(file, entry),
         family: gameFamily(a.game), game: a.game, source: a.source === "folder" ? `${a.label} folder` : "Added by hand", size: a.size, removable: true,
       });
     } catch { /* an archive that no longer opens is left out */ }
   }
+  if (learned) await writeAddons(addons).catch(() => {});
   return createVfs(orderMounts(mounts, addons.order));
 }
 

@@ -8,10 +8,11 @@
   rotor, turning fast, each with a faint disc for the blur.
 */
 import * as THREE from "three";
+import { keyframeWeights } from "../shared/keyframe-spline.js";
 import { createModelLibrary, disposeObject } from "./track-scene.js";
 
-/** The wings run through their four frames this many times a second (a full flap cycle is four frames). */
-const FLAP_FRAMES_PER_SECOND = 8;
+/** A wing frame's time when the control file gives none: the stock TERYL.BIN's, four frames to the second-long flap. */
+const DEFAULT_FLAP_FRAME_SECONDS = 0.25;
 const MAIN_ROTOR = { pos: [0, 4.9, 0.4], radius: 11, chord: 0.7, rate: 36 };
 const TAIL_ROTOR = { pos: [0.55, 2.9, -9.7], radius: 2.2, chord: 0.35, rate: 60 };
 
@@ -84,16 +85,14 @@ export function createHelicopters(build, look, scene) {
           for (const r of s.rotors) r.spin.rotation.y = (clock * r.rate) % (Math.PI * 2);
           return;
         }
-        // Blend each frame into the next, and the last back into the first.
-        const frames = build.teryl.keyframes?.length ?? 0;
+                const frames = build.teryl.keyframes?.length ?? 0;
         if (frames < 2) return;
-        const p = (clock * FLAP_FRAMES_PER_SECOND) % frames, from = Math.floor(p), to = (from + 1) % frames, k = p - from;
+        // As every animated model (shared/keyframe-spline.js): TERYL.BIN's own frame time, a quarter of a second.
+        const weights = keyframeWeights(clock, frames, build.teryl.frameSeconds || DEFAULT_FLAP_FRAME_SECONDS);
         for (const mesh of s.teryl.meshes) {
           const influences = mesh.morphTargetInfluences;
           if (!influences) continue;
-          influences.fill(0);
-          if (from > 0) influences[from - 1] += 1 - k;
-          if (to > 0) influences[to - 1] += k;
+          for (let f = 1; f < frames; f++) influences[f - 1] = weights[f];
         }
       });
     },

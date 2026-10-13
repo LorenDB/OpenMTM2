@@ -8,15 +8,16 @@ import { mergeBindings } from "./bindings.js";
 export function createKeyboardInput(target = window, saved = {}) {
   const bindings = mergeBindings(saved);
   const BINDINGS = { accelerate: bindings.accelerate, brake: bindings.brake, left: bindings.left, right: bindings.right };
-  const SHIFT_UP = bindings.shiftUp, SHIFT_DOWN = bindings.shiftDown, HELICOPTER = bindings.helicopter;
+  const SHIFT_UP = bindings.shiftUp, SHIFT_DOWN = bindings.shiftDown, HELICOPTER = bindings.helicopter, AUTO_STAGE = bindings.autoStage;
   const down = new Set();
-  let shiftUp = false, shiftDown = false, helicopter = false;
+  let shiftUp = false, shiftDown = false, helicopter = false, autoStage = false;
   const onDown = (e) => {
     if (e.repeat) return;
     down.add(e.code);
     if (SHIFT_UP.includes(e.code)) shiftUp = true;
     if (SHIFT_DOWN.includes(e.code)) shiftDown = true;
     if (HELICOPTER.includes(e.code)) helicopter = true;
+    if (AUTO_STAGE.includes(e.code)) autoStage = true;
     if (Object.values(BINDINGS).some((codes) => codes.includes(e.code))) e.preventDefault();
   };
   const onUp = (e) => down.delete(e.code);
@@ -25,12 +26,12 @@ export function createKeyboardInput(target = window, saved = {}) {
   target.addEventListener("keyup", onUp);
   target.addEventListener("blur", onBlur);
   return {
-    /** The held keys, plus shift and helicopter presses since the last call. */
+    /** The held keys, plus shift, helicopter and Auto Stage presses since the last call. */
     sample() {
       const held = {};
       for (const [action, codes] of Object.entries(BINDINGS)) held[action] = codes.some((c) => down.has(c));
-      held.shiftUp = shiftUp; held.shiftDown = shiftDown; held.helicopter = helicopter;
-      shiftUp = shiftDown = helicopter = false;
+      held.shiftUp = shiftUp; held.shiftDown = shiftDown; held.helicopter = helicopter; held.autoStage = autoStage;
+      shiftUp = shiftDown = helicopter = autoStage = false;
       return held;
     },
     dispose() {

@@ -1,7 +1,8 @@
 """Shared paths and loaders for the MONSTER.EXE reverse-engineering helpers.
 
-The decompiled output lives in <repo>/re/ (git-ignored, never published). The game folder
-defaults to ~/games/mtm2 and can be changed with the MTM2_DIR environment variable.
+The decompiled output lives in <repo>/re/ (git-ignored, never published). RE_TARGET picks the
+executable: mtm2 (the default; output in re/out, game folder ~/games/mtm2 or MTM2_DIR) or mtm1
+(output in re/mtm1/out, game folder ~/games/mtm1 or MTM1_DIR).
 """
 import bisect
 import json
@@ -11,9 +12,11 @@ import struct
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 RE_DIR = os.path.join(REPO, "re")
-OUT = os.path.join(RE_DIR, "out")
-MTM2_DIR = os.path.expanduser(os.environ.get("MTM2_DIR", "~/games/mtm2"))
-EXE = os.path.join(MTM2_DIR, "MONSTER.EXE")
+TARGET = os.environ.get("RE_TARGET", "mtm2")
+OUT = os.path.join(RE_DIR, "out") if TARGET == "mtm2" else os.path.join(RE_DIR, TARGET, "out")
+GAME_DIR = os.path.expanduser(os.environ.get(TARGET.upper() + "_DIR", "~/games/" + TARGET))
+MTM2_DIR = GAME_DIR
+EXE = os.path.join(GAME_DIR, "MONSTER.EXE")
 IMAGE_BASE = 0x400000
 
 _pe = None
@@ -31,6 +34,23 @@ def pe():
 def image():
     """The memory-mapped image; index with (va - IMAGE_BASE)."""
     return pe().get_memory_mapped_image()
+
+
+def section(name):
+    """(start VA, end VA) of a section, by name."""
+    for s in pe().sections:
+        if s.Name.rstrip(b"\0").decode() == name:
+            start = IMAGE_BASE + s.VirtualAddress
+            return start, start + max(s.Misc_VirtualSize, s.SizeOfRawData)
+    raise KeyError(name)
+
+
+def thunk_end():
+    """End VA of the incremental-link jump table at the start of .text (its start if none)."""
+    img, va = image(), section(".text")[0]
+    while img[va - IMAGE_BASE] in (0xE9, 0xCC):
+        va += 5 if img[va - IMAGE_BASE] == 0xE9 else 1
+    return va
 
 
 def read_bytes(va, n):

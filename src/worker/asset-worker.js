@@ -15,7 +15,7 @@ import { buildTruckPreview } from "./preview-build.js";
 import { loadingScreen } from "./screen-art.js";
 import { loadCockpit, cockpitArt } from "./cockpit-art.js";
 import { loadEffectsArt } from "./effects-art.js";
-import { decodeActPalette, decodeRawTexture, parseKlp, parseLoc, parseMod, parseMtmAmbientSounds, parseMtmSun, renderMod } from "../vendor/openphotex/index.js";
+import { decodeActPalette, decodeRawTexture, parseKlp, parseLoc, parseMod, parseMtmAmbientSounds, parseMtmSun, parseTrn, renderMod } from "../vendor/openphotex/index.js";
 import { decodeModel } from "./models.js";
 import { FONT_SHEETS, parseBitmapFont } from "./bitmap-font.js";
 import { readUserData, removeUserData, writeUserData } from "./user-data.js";
@@ -140,6 +140,32 @@ const handlers = {
     if (!/^[A-Za-z0-9_-]+$/.test(String(name))) throw new Error(`Bad image name "${name}"`);
     const bytes = await (await mounted()).read(`UI\\${name.toUpperCase()}.BMP`);
     return bytes ? withTransfer(bytes.slice(), []) : null;
+  },
+
+  /** The mounted tournaments (`TOURNEY\\*.TRN`): `[{ path, trn, description }]`, the description from the text file the TRN names. */
+  async tournaments() {
+    const vfs = await mounted(), out = [], seen = new Set();
+    for (const { path } of vfs.list(".TRN")) {
+      const key = path.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const trn = parseTrn(await vfs.read(path));
+      if (!trn) continue;
+      const text = trn.descriptionFile ? await vfs.read(`TOURNEY\\${trn.descriptionFile.toUpperCase()}`) : null;
+      const said = text ? new TextDecoder("latin1").decode(text) : "";
+      out.push({ path, trn, description: (said.includes("\x1a") ? said.slice(0, said.indexOf("\x1a")) : said).replace(/\r\n?/g, "\n").trim() });
+    }
+    return out;
+  },
+
+  /** A track's description (`WORLD\\<name>`, the SIT's "Track Description .TXT file") as text, or null. */
+  async trackText({ name }) {
+    if (!/^[A-Za-z0-9_.-]+$/.test(String(name))) throw new Error(`Bad text name "${name}"`);
+    const bytes = await (await mounted()).read(`WORLD\\${name.toUpperCase()}`);
+    if (!bytes) return null;
+    // A DOS text file: a Ctrl+Z ends it.
+    const text = new TextDecoder("latin1").decode(bytes);
+    return (text.includes("\x1a") ? text.slice(0, text.indexOf("\x1a")) : text).replace(/\r\n?/g, "\n").trim();
   },
 
   /** The cockpit art and the finder (worker/cockpit-art.js), or null. */
