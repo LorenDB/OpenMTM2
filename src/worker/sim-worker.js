@@ -13,6 +13,7 @@ import { mtm2Sim as S } from "../vendor/openphotex/index.js";
 import { createCrossingLog, raceGap, recordCrossings } from "../game/timing.js";
 import { buildRumbleField, createRumbleDriver, driveToPoint, rumbleControls } from "../game/rumble-ai.js";
 import { REVERSE_SPEED, TREE_S, createDrag, dragCollision, dragLamps, dragOver, dragPlaces, dragTick, mirrorCourse, stageSpeed, stagingDistance, stillStaging } from "../game/drag-race.js";
+import { ESCAPE_S, NUDGE_AFTER_S, NUDGE_FT_S, TURN_FLOOR, createHockey, hockeyAim, hockeyHeld, hockeyPlaces, hockeyRoles, hockeySpot, hockeyStep, outsideRink, rinkGround } from "../game/hockey.js";
 import { TAG_SPEED, coverOf, createTag, createTagDriver, roamRect, tagDrivePoint, tagHeld, tagPlaces, tagRanks, tagSafe, tagStep } from "../game/tag.js";
 import { createFlight, departVisual, flightVisual, nearestCourseSpot, stepFlight, timerVisual } from "../game/heli-flight.js";
 
@@ -208,10 +209,12 @@ export function createSession(init) {
   const meshGround = init.meshGround ? S.createRoadGround(terrainGround, init.meshGround) : null;
   for (const g of [ground, meshGround]) if (g) g.rules = rules;
   /**
-   * A party mode (game/tag.js; docs/PLAN.md, "Party modes"): `{ mode: "tag", minutes, it }`, played over the
-   * race's countdown and clock (`race` with no checkpoints).
+   * A party mode (game/hockey.js, game/tag.js; docs/PLAN.md, "Party modes"): `{ mode: "hockey", rink, teams, goals }`
+   * or `{ mode: "tag", minutes, it }`, played over the race's countdown and clock (`race` with no checkpoints).
    */
   const party = init.party && init.race ? init.party : null;
+  // Hockey's trucks take the frozen lake as gravel: on the game's ice a truck at rest can never move off.
+  const rink = party?.mode === "hockey" ? rinkGround(ground) : null;
   // Static scenery (CPR's walls, 4x4 Evolution's objects and trees): immovable upright boxes, found by a grid of 64 ft
   // cells (a box is in every cell it reaches).
   const WALL_CELL_FT = 64;
@@ -288,7 +291,7 @@ export function createSession(init) {
       racing: true, player: i === 0 && !autopilot, autopilot, difficulty, summit: false, segment: null, previous: null, proLift: true,
     };
     // A foot under the body's origin: a step up to about a wheel's height is climbed, a taller face is not ground.
-    const ownGround = meshGround ? meshGround.below(() => state.pos[1] - 1) : ground;
+    const ownGround = meshGround ? meshGround.below(() => state.pos[1] - 1) : rink ?? ground;
     const ctx = { ground: ownGround, human: i === 0 && !autopilot, difficulty, sonicTrack, recovery };
     return { state, params, autopilot, recovery, ctx, radius: S.truckRadius(params), nearBoxes: [], dmg: new Map(), snd: { impact: 0, hit: null, splash: false, surface: 1 }, safe: copyState(state), sinceSafe: 0 };
   });
@@ -364,10 +367,12 @@ export function createSession(init) {
   let started = false;
   const keys = { accelerate: false, brake: false, left: false, right: false };
 
-  // The party mode's game, and the hull touches between trucks since its last tick.
+  // The party mode's game, its puck, and the hull touches between trucks since its last tick.
+  const hockey = party?.mode === "hockey" ? createHockey(party.rink, party.teams, party.goals) : null;
   const tag = party?.mode === "tag" ? createTag(trucks.length) : null;
   if (tag && Number.isInteger(party.it) && party.it >= 0 && party.it < trucks.length) tag.it = party.it;
   if (tag) race.roundSeconds = Math.max(1, Number(party.minutes) || 5) * 60;
+  const puck = hockey ? levelBoxes.find((b) => b.sitIndex === party.rink.puck.sitIndex) ?? null : null;
   const touches = [];
   // Tag: computer trucks wander the ground around the course, and use its objects (game/tag.js). They do not drive the lap.
   const home = [specs.reduce((a, spec) => a + spec.start.pos[0], 0) / specs.length, specs.reduce((a, spec) => a + spec.start.pos[2], 0) / specs.length];
@@ -383,14 +388,45 @@ export function createSession(init) {
     }
   }
   const tagRect = tag ? roamRect(roamPoints(course), home) : null;
+  /** Hockey: each truck's part in its team, from the last tick (game/hockey.js `hockeyRoles`). */
+  let roles = null;
   if (party) {
     for (const [i, t] of trucks.entries()) {
       // Every truck gets a driver, so the player's full autopilot plays too.
       t.party = createRumbleDriver(0.5 + ((i * 0.37) % 0.3));
       if (tag) t.tagDriver = createTagDriver();
     }
+    if (hockey) for (const t of trucks) driveByPoint(t);
+    if (puck) setPuck();
   }
 
+  /** The puck at the rink's centre, still, on the ice; its pose goes to the screen with the next reply. */
+  function setPuck() {
+    const { start, psi } = party.rink.puck;
+    puck.pos[0] = start[0]; puck.pos[1] = start[1]; puck.pos[2] = start[2];
+    puck.vel.fill(0);
+    puck.bvel.fill(0);
+    puck.rates.fill(0);
+    puck.force.fill(0);
+    puck.moment.fill(0);
+    puck.euler.set([0, 0, psi]);
+    S.eulerToMatrix(0, 0, psi, puck.matrix);
+    puck.depths.fill(-9999);
+    dirty.add(puck);
+  }
+  /** A truck put down at `spot` (`{ pos, heading }`) in Park, at rest, as a new one would be. */
+  function placeTruck(t, spot) {
+    const fresh = S.createTruckState(spot.pos, spot.heading, S.GEAR.PARK, t.params);
+    for (const [key, value] of Object.entries(fresh)) {
+      if (ArrayBuffer.isView(value)) t.state[key].set(value);
+      else t.state[key] = value;
+    }
+    t.state.heliVisual = null;
+    t.flight = null;
+    t.exit = null;
+    t.headway = null;
+    t.party = createRumbleDriver(t.party.aggression);
+  }
   /** A truck that drives at a point is recovered as the player's is: set upright, never lifted for being slow. */
   function driveByPoint(t) {
     t.recovery.player = true;
@@ -398,11 +434,24 @@ export function createSession(init) {
   }
   /** Seconds since the countdown ended. */
   const sinceStart = () => race.clock - race.startTime;
-  /** Whether truck i is held where it stands this step: Tag's It at the start. */
-  const partyHeld = (i) => (tag ? tagHeld(tag, i, sinceStart()) : false);
-  /** The party game after the race tick: tags, the end, and the places. */
+  /** Whether truck i is held where it stands this step: Hockey's face-off, Tag's It at the start. */
+  const partyHeld = (i) => (hockey ? hockeyHeld(hockey) : tag ? tagHeld(tag, i, sinceStart()) : false);
+  /** The party game after the race tick: goals and face-offs, tags, the end, and the places. */
   function partyTick() {
-    if (tag) {
+    if (hockey) {
+      const action = hockeyStep(hockey, puck ? puck.pos : [...party.rink.puck.start], STEP);
+      if (action === "reset") {
+        trucks.forEach((t, i) => placeTruck(t, hockeySpot(party.rink, hockey.teams, i)));
+        if (puck) setPuck();
+      } else if (action === "over") endParty();
+      if (puck) roles = hockeyRoles(hockey, trucks.map((t) => t.state.pos), trucks.map((t) => t.autopilot), puck.pos);
+      // A truck that got over the boards is put back at its face-off spot.
+      trucks.forEach((t, i) => {
+        t.outside = t.flight || !outsideRink(party.rink, t.state.pos) ? 0 : (t.outside ?? 0) + STEP;
+        if (t.outside >= ESCAPE_S) { placeTruck(t, hockeySpot(party.rink, hockey.teams, i)); t.outside = 0; }
+      });
+      hockeyPlaces(hockey).forEach((place, i) => { race.trucks[i].place = place; });
+    } else if (tag) {
       tagStep(tag, sinceStart(), STEP, touches);
       if (sinceStart() >= race.roundSeconds) endParty();
       tagPlaces(tag).forEach((place, i) => { race.trucks[i].place = place; });
@@ -413,9 +462,26 @@ export function createSession(init) {
     race.over = true;
     for (const rt of race.trucks) rt.finished = true;
   }
+  /**
+   * On the rink, a truck pressed against a board or a truck stands still whatever its throttle: with three hull
+   * points touching, the simulation stops anything under 0.5 ft/s a step. Held there under throttle, it is nudged
+   * the way its gear drives.
+   */
+  function nudge(t) {
+    const s = t.state, c = s.controls;
+    const driving = c.throttle > 0.5 && c.gear !== S.GEAR.PARK && c.gear !== S.GEAR.NEUTRAL;
+    t.still = driving && Math.hypot(s.bvel[0], s.bvel[1], s.bvel[2]) < 0.05 ? (t.still ?? 0) + STEP : 0;
+    if (t.still >= NUDGE_AFTER_S) s.bvel[2] += c.gear === S.GEAR.REVERSE ? -NUDGE_FT_S : NUDGE_FT_S;
+  }
   /** A party computer truck's driving for this step (the player's too, on full autopilot). */
   function partyDrive(t, i) {
     const s = t.state;
+    if (hockey) {
+      const role = roles?.[i] ?? { role: "attack", side: 1 };
+      const aim = puck ? hockeyAim(party.rink, hockey.teams[i], role.role, { pos: s.pos, heading: s.euler[2] }, puck.pos, role.side, t.party) : { point: s.pos, speed: 0 };
+      driveToPoint(s, t.party, aim.point, aim.speed, 0, S.GEAR, STEP, { back: false, turnFloor: TURN_FLOOR });
+      return;
+    }
     const since = sinceStart();
     const role = t === trucks[tag.it] ? "it" : "free";
     const standings = tagRanks(tag);
@@ -482,7 +548,7 @@ export function createSession(init) {
       }
     }
     const grounds = [];
-    for (const t of trucks) {
+    for (const [ti, t] of trucks.entries()) {
       t.nearBoxes.length = 0;
       if (t.state.heliTimer > 0) continue;
       if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxSmoothFt, groundBoxStepFt);
@@ -491,7 +557,13 @@ export function createSession(init) {
       // what stands across the world's seam is met as what stands beside the truck is.
       const near = (thing, test) => S.withNearest(t.state, thing.pos[0], thing.pos[2], test);
       for (const box of t.nearBoxes) near(box, () => S.collideTruckImmovableBox(t.state, t.params, box, STEP));
-      for (const box of listed) near(box, () => S.collideTruckBox(t.state, t.params, box, STEP));
+      for (const box of listed) {
+        if (box !== puck) { near(box, () => S.collideTruckBox(t.state, t.params, box, STEP)); continue; }
+        // Hockey: the truck that pushed the puck last is the one a goal is credited to.
+        const [f0, f1, f2] = box.force;
+        near(box, () => S.collideTruckBox(t.state, t.params, box, STEP));
+        if (box.force[0] !== f0 || box.force[1] !== f1 || box.force[2] !== f2) hockey.lastTouch = ti;
+      }
       for (const car of crushCars) near(car, () => S.collideTruckTopCrush(car, t.state, t.params, crushCtx));
       // Ramp sides and front ends are walls (14.19), for ramps within reach of the truck.
       for (const ramp of ground.ramps) {
@@ -501,6 +573,12 @@ export function createSession(init) {
       grounds.push(...t.nearBoxes);
     }
     const all = listed.length ? [...listed, ...grounds] : listed;
+    // Hockey's boards stop the puck, wherever the trucks are.
+    if (puck && listed.includes(puck)) {
+      const boards = [];
+      wallsAround(puck.pos[0], puck.pos[2], puck.radius, boards);
+      for (const wall of boards) if (!all.includes(wall)) all.push(wall);
+    }
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) S.collideBoxes(all[i], all[j], STEP);
     }
@@ -757,6 +835,7 @@ export function createSession(init) {
     for (const t of trucks) {
       // The player's helicopter holds the truck still and carries it itself (game/heli-flight.js).
       if (t.flight) { flyTruck(t); continue; }
+      if (rink) nudge(t);
       S.stepTruck(t.state, t.params, t.ctx, STEP);
       t.snd.impact = Math.max(t.snd.impact, t.state.impactForce);
       t.snd.splash = t.snd.splash || t.state.splash;
@@ -900,8 +979,11 @@ export function createSession(init) {
       over: race.over,
       /** The HUD's Lead or Back gap for the player's truck (game/timing.js). */
       gap: race.summit || party ? null : raceGap(race.trucks, crossings, 0),
-      /** A party mode's game (game/tag.js), else null. */
-      party: tag ? {
+      /** A party mode's game (game/hockey.js, game/tag.js), else null. */
+      party: hockey ? {
+        mode: "hockey", score: [...hockey.score], target: hockey.target, teams: hockey.teams, phase: hockey.phase,
+        timer: Math.max(0, hockey.timer), event: hockey.event, events: hockey.events,
+      } : tag ? {
         mode: "tag", it: tag.it, itTime: [...tag.itTime], points: [...tag.points], safe: tagSafe(tag, tag.safe, Math.max(0, since)) ? tag.safe : -1, hold: Math.max(0, tag.holdUntil - Math.max(0, since)),
         left: Math.max(0, race.roundSeconds - Math.max(0, since)), event: tag.event, events: tag.events,
       } : null,
@@ -913,7 +995,7 @@ export function createSession(init) {
         dq: laneOf(i)?.dq ?? null,
         rerun: !!laneOf(i)?.rerun,
         reaction: laneOf(i)?.reaction ?? null,
-        score: race.summit ? race.summit.trucks[race.trucks.indexOf(rt)].score : tag ? tag.points[i] : 0,
+        score: race.summit ? race.summit.trucks[race.trucks.indexOf(rt)].score : hockey ? hockey.goals[i] : tag ? tag.points[i] : 0,
         laps: rt.laps,
         lap: Math.min(rt.laps + 1, race.laps),
         lapTime: rt.finished ? (rt.lapTimes[rt.lapTimes.length - 1] ?? 0) : Math.max(0, since - rt.raceTime),
@@ -959,7 +1041,7 @@ export function createSession(init) {
   }
 
   return {
-    state: player.state, params: player.params, trucks, race, ground, levelBoxes, course, rumbleField, crushCars, tag,
+    state: player.state, params: player.params, trucks, race, ground, levelBoxes, course, rumbleField, crushCars, hockey, tag, puck,
     step, advance, raceView, finishRace, command, gold, now: () => time, snapshot: () => snapshot(player.state),
   };
 }

@@ -243,6 +243,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 
 .name-tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .name-tag { position: absolute; left: 0; top: 0; white-space: nowrap; font: 600 13px/1 Arial, sans-serif; color: #fff; text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000; }
+/* Hockey's team colour over a truck: larger, in that colour. */
+.name-tag.name-tag-mark { font-size: 16px; font-weight: 700; }
 
 /* Winner's Circle and Hall of Fame: the game's yellow italic text beside the truck previews. */
 .stage-panel-lit { pointer-events: none; }

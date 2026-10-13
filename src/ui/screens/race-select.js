@@ -1,7 +1,8 @@
 /*
   One all-types track table, track preview, exact CPU field and allowed weather selection, and the Mode
   list: the track's own race, driving alone (Free Roam), a camera-only visit (Fly-by) or a party game
-  (docs/PLAN.md, "Party modes"). Tag plays on any track in any weather it allows.
+  (docs/PLAN.md, "Party modes"). Hockey locks the track to Breakneck Ridge and the weather to Snow;
+  Tag plays on any track in any weather it allows.
 */
 import { startDragWeekend } from "../../app/drag-weekend.js";
 import { MAX_FIELD, MIN_FIELD } from "../../game/events/drag-event.js";
@@ -11,6 +12,7 @@ import { saveSettings } from "../../app/settings.js";
 import { setRaceConfig } from "../../app/flow.js";
 import { GAME_MODES, raceLengthLabel, raceTypeName, trackPreviewBmp } from "../../game/menu-data.js";
 import { WEATHER_NAMES, allowedWeathers, resolveWeather } from "../../game/weather.js";
+import { DEFAULT_GOALS, HOCKEY_WEATHER, isHockeyTrack } from "../../game/hockey.js";
 import { DEFAULT_TAG_MINUTES } from "../../game/tag.js";
 import { playMenuSound } from "../../audio/menu-sounds.js";
 import { frame, uiImageUrl } from "../frame.js";
@@ -28,14 +30,19 @@ export default async function mount(container, context) {
     container.append(el("section", { class: "screen" }, el("p", { class: "error" }, "The install has no tracks.")));
     return;
   }
-  let gameMode = GAME_MODES.some((m) => m.id === settings.gameMode) ? settings.gameMode : "default";
+  // The party modes: Hockey only where the install has Breakneck Ridge (MTM2's own, not another game's).
+  const hockeyTrack = tracks.find((item) => isHockeyTrack(item)) ?? null;
+  let gameMode = GAME_MODES.some((m) => m.id === settings.gameMode) && (settings.gameMode !== "hockey" || hockeyTrack) ? settings.gameMode : "default";
   // Free Roam used to be its own box: a save with it ticked opens in the Free Roam mode now.
   if (gameMode === "default" && settings.freeRoam) gameMode = "freeroam";
   const isFlyBy = () => gameMode === "flyby";
+  /** The track chosen before Hockey took Breakneck Ridge, to go back to. */
+  let trackBeforeHockey = null;
+  if (gameMode === "hockey") { trackBeforeHockey = track; track = hockeyTrack; }
   // A track with no checkpoints has no race on it: it is driven in Free Roam.
   if (track.freeRoamOnly && gameMode === "default") gameMode = "freeroam";
-  /** The length box's value in a mode: a party game's own minutes, else the track's laps. */
-  const lengthFor = (mode, item) => (mode === "tag" ? settings.tagMinutes ?? DEFAULT_TAG_MINUTES : item.defaultLaps);
+  /** The length box's value in a mode: a party game's own (goals or minutes), else the track's laps. */
+  const lengthFor = (mode, item) => (mode === "hockey" ? settings.hockeyGoals ?? DEFAULT_GOALS : mode === "tag" ? settings.tagMinutes ?? DEFAULT_TAG_MINUTES : item.defaultLaps);
 
   const validOpponentFiles = new Set(trucks.filter((item) => item.file !== driver.lastTruck).map((item) => item.file));
   // The player's own list (which may be empty: no opponents), or without one the default number (Options, Game).
@@ -64,8 +71,9 @@ export default async function mount(container, context) {
   };
 
   const laps = el("input", { type: "number", min: 1, max: 99, value: lengthFor(gameMode, track), class: "race-length", "aria-label": "Laps or minutes" });
+  const modes = GAME_MODES.filter((m) => m.id !== "hockey" || hockeyTrack);
   const modeSelect = el("select", { "aria-label": "Mode", class: "race-mode" },
-    ...GAME_MODES.map((m) => el("option", { value: m.id, selected: m.id === gameMode }, context.t(m.name))));
+    ...modes.map((m) => el("option", { value: m.id, selected: m.id === gameMode }, context.t(m.name))));
   const modeLabel = el("span", { class: "race-length-label race-mode-label" }, context.t("Mode"));
   const lengthLabel = el("span", { class: "race-length-label" });
   const weather = el("select", { "aria-label": "Weather", class: "race-weather" });
@@ -108,6 +116,11 @@ export default async function mount(container, context) {
   let previewRequest = 0;
 
   const fillWeather = () => {
+    weather.disabled = gameMode === "hockey";
+    if (gameMode === "hockey") {
+      weather.replaceChildren(el("option", { value: HOCKEY_WEATHER, selected: true }, context.t(WEATHER_NAMES[HOCKEY_WEATHER])));
+      return;
+    }
     const allowed = allowedWeathers(track.weatherMask);
     const chosen = resolveWeather(settings.weather, track.weatherMask);
     weather.replaceChildren(
@@ -159,10 +172,13 @@ export default async function mount(container, context) {
       spectator: spectator && !isFreeRoam() && !isFlyBy(),
     };
     Object.assign(settings, {
-      gameMode, spectator, lastTrack: track.file, weather: chosen.weather, opponentTrucks: [...selectedOpponents], opponents: selectedOpponents.length,
+      gameMode, spectator, opponentTrucks: [...selectedOpponents], opponents: selectedOpponents.length,
     });
+    // Hockey's locked track and weather are not the player's choice: the ones chosen before stay remembered.
+    if (gameMode !== "hockey") Object.assign(settings, { lastTrack: track.file, weather: chosen.weather });
     // Free Roam used to be a separate box; the mode holds it now.
     delete settings.freeRoam;
+    if (gameMode === "hockey") settings.hockeyGoals = value;
     if (gameMode === "tag") settings.tagMinutes = value;
     saveSettings(settings);
     setRaceConfig(context, chosen);
@@ -173,10 +189,13 @@ export default async function mount(container, context) {
   const updateModeOptions = () => {
     for (const option of modeSelect.options) {
       if (option.value === "default") option.disabled = !!track.freeRoamOnly;
+      else if (option.value === "hockey") option.disabled = !hockeyTrack;
       else option.disabled = false;
     }
   };
   const chooseTrack = (item) => {
+    // Hockey's track is Breakneck Ridge, whatever is clicked.
+    if (gameMode === "hockey" && item !== hockeyTrack) return;
     if (item !== track) playMenuSound(context.menuAudio, settings, "TRACK", 0.7);
     track = item;
     // A track with no race on it is driven in Free Roam: the list follows.
@@ -215,7 +234,10 @@ export default async function mount(container, context) {
   // Typing in the box is not driving the menus.
   filter.addEventListener("keydown", (event) => event.stopPropagation());
   const show = () => {
-    tableBody.replaceChildren(...listed().map((item) => el("tr", {
+    const locked = gameMode === "hockey";
+    filter.disabled = locked;
+    table.setAttribute("aria-disabled", String(locked));
+    tableBody.replaceChildren(...(locked ? [track] : listed()).map((item) => el("tr", {
       class: item === track ? "selected" : null, role: "option", "aria-selected": item === track,
       onclick: () => chooseTrack(item),
       ondblclick: () => {
@@ -238,6 +260,10 @@ export default async function mount(container, context) {
   modeSelect.addEventListener("change", () => {
     let next = modeSelect.value;
     if (next === gameMode) return;
+    // Hockey is hidden without Breakneck Ridge, and never selected then.
+    if (next === "hockey" && !hockeyTrack) return;
+    // Into Hockey the track goes to Breakneck Ridge; out of it, back to the one chosen before.
+    if (next === "hockey") { trackBeforeHockey = track; track = hockeyTrack; } else if (gameMode === "hockey") { track = trackBeforeHockey ?? track; trackBeforeHockey = null; }
     // A track with no race on it has no Race mode: the list falls back to Free Roam.
     if (track.freeRoamOnly && next === "default") next = "freeroam";
     gameMode = next;

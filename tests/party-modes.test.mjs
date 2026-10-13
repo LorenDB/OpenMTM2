@@ -1,9 +1,13 @@
 /*
-  Tag (docs/PLAN.md, "Party modes"): its rules and computer trucks (src/game/tag.js),
-  played in the simulation worker's session.
+  The party modes (docs/PLAN.md, "Party modes"): Hockey's rink, rules and computer trucks
+  (src/game/hockey.js), Tag's (src/game/tag.js), and both played in the simulation worker's session.
 */
 import test from "node:test";
 import assert from "node:assert/strict";
+import {
+  BOARD_HEIGHT_FT, CELEBRATE_S, FACEOFF_HOLD_S, FROZEN_SURFACE, RINK_SURFACE, createHockey, hockeyAim, hockeyHeld,
+  hockeyPlaces, hockeyRink, hockeyRoles, hockeySpot, hockeyStep, hockeyTeams, isHockeyTrack, outsideRink, rinkBoxes, rinkGround, toLocal, toWorld,
+} from "../src/game/hockey.js";
 import {
   AIM_MIN_S, AIM_MAX_S, CALM_COVER_SHARE, COVER_REACH_FT, FLANK_FT, HIDE_STANDOFF_FT, IT_ARROW, IT_START_HOLD_S,
   PRESS_FT, PRESSED_COVER_SHARE, ROAM_FT, ROAM_MARGIN_FT, TAG_BACK_S, WANDER_SHARE, chasePoint, clampToRect,
@@ -17,6 +21,138 @@ import { createSession } from "../src/worker/sim-worker.js";
 import { buildTrackRender } from "../src/worker/track-build.js";
 import { mtm2Sim as S } from "../src/vendor/openphotex/index.js";
 import { skipWithoutStock, stockVfs } from "./helpers/stock.mjs";
+
+const ICE = 28.5;
+/** A lake 460 x 340 ft about (4000, 5000), under the water level, in ground that rises round it. */
+const lake = (x, z) => (Math.abs(x - 4000) < 230 && Math.abs(z - 5000) < 170 ? 18 : 60);
+const post = (x, z) => ({ modelName: "", type: 0, positionFt: [x, 28, z], sizeFt: [4, 4, 20] });
+const BOXES = [
+  { modelName: "HPUCK.BIN", type: 0, sitIndex: 9, positionFt: [4000, 22, 5000], psi: 0.2, bounds: { min: [-12, -4, -12], max: [12, 4, 12] } },
+  { modelName: "HPOST3.BIN", type: 7, sitIndex: 3, positionFt: [3840, 38, 5000], bounds: { min: [-37.5, -20, -0.8], max: [37.5, 20, 0.8] } },
+  { modelName: "HPOST3.BIN", type: 7, sitIndex: 4, positionFt: [4160, 38, 5000], bounds: { min: [-37.5, -20, -0.8], max: [37.5, 20, 0.8] } },
+  post(3840, 4971), post(3840, 5029), post(4160, 4971), post(4160, 5029),
+];
+const rink = hockeyRink(BOXES, lake, ICE);
+
+test("the rink is read from the level: the goals, their posts' mouths, the ice and the puck", () => {
+  assert.ok(rink);
+  // Red (team 0) defends the low-x goal, its outside toward -a.
+  assert.deepEqual(rink.goals.map((g) => [g.team, g.sitIndex, Math.round(g.along), g.out]), [[0, 3, -160, -1], [1, 4, 160, 1]]);
+  // The mouth: between the posts' inner faces (posts 58 ft apart, 4 ft thick).
+  for (const g of rink.goals) assert.deepEqual(g.mouth.map(Math.round), [-27, 27]);
+  assert.equal(rink.goals[0].top, 58);
+  // The puck starts at the centre, its bottom 0.3 ft over the ice, not under it where the level has it.
+  assert.deepEqual(rink.puck.start.map((v) => Math.round(v * 10) / 10), [4000, ICE + 4.3, 5000]);
+  assert.equal(rink.puck.radius, 12);
+  assert.equal(rink.puck.sitIndex, 9);
+  assert.equal(hockeyRink(BOXES.slice(0, 2), lake, ICE), null, "no rink without two goals");
+  assert.equal(hockeyRink(BOXES, lake, null), null, "no rink without water");
+});
+
+test("the boards stand 8 ft inside the shore, cut at the corners, on the ice", () => {
+  // The lake reaches 230 ft along and 170 ft across from the centre (found in 2 ft steps).
+  assert.deepEqual([rink.extent.minA, rink.extent.maxA, rink.extent.minB, rink.extent.maxB].map(Math.round), [-222, 222, -162, 162]);
+  assert.equal(rink.boards.length, 8);
+  for (const b of rink.boards) {
+    assert.equal(b.pos[1], ICE + BOARD_HEIGHT_FT / 2);
+    assert.equal(b.size[1], BOARD_HEIGHT_FT);
+    // Each board's inner face lies on the outline, the box behind it.
+    const mid = toLocal(rink.frame, (b.from[0] + b.to[0]) / 2, (b.from[1] + b.to[1]) / 2);
+    const at = toLocal(rink.frame, b.pos[0], b.pos[2]);
+    assert.ok(Math.hypot(at.a, at.b) > Math.hypot(mid.a, mid.b), "outside the line");
+  }
+  assert.ok(outsideRink(rink, [4000 + 240, 30, 5000]));
+  assert.ok(!outsideRink(rink, [4000 + 200, 30, 5000]));
+  const [x, z] = toWorld(rink.frame, 10, -20);
+  assert.deepEqual(Object.values(toLocal(rink.frame, x, z)).map(Math.round), [10, -20]);
+});
+
+test("the teams alternate from the player's, and face off on their own half facing the other goal", () => {
+  assert.deepEqual(hockeyTeams(5, () => 0.2), [0, 1, 0, 1, 0]);
+  assert.deepEqual(hockeyTeams(4, () => 0.8), [1, 0, 1, 0]);
+  const teams = [0, 1, 0, 1];
+  const red = hockeySpot(rink, teams, 0), blue = hockeySpot(rink, teams, 1), red2 = hockeySpot(rink, teams, 2);
+  assert.ok(red.pos[0] < 4000 && blue.pos[0] > 4000);
+  assert.equal(red.pos[1], ICE + 6);
+  assert.ok(Math.abs(red.heading - Math.PI / 2) < 1e-9, "red faces +x");
+  assert.ok(Math.abs(Math.abs(blue.heading) - Math.PI / 2) < 1e-9 && Math.sin(blue.heading) < 0, "blue faces -x");
+  assert.notDeepEqual(red.pos, red2.pos);
+});
+
+/** Steps of play with the puck at each of `path` (world [x, y, z]) in turn. */
+function play(h, path) {
+  const actions = [];
+  for (const p of path) actions.push(hockeyStep(h, p, 1 / 60));
+  return actions;
+}
+
+test("a goal is the whole puck over the line, between the posts, going out; credited to its team's last toucher", () => {
+  const h = createHockey(rink, [0, 1, 0, 1], 2);
+  h.lastTouch = 2;
+  // Into the blue goal (x 4160): red scores. The centre must be 12 ft past the line.
+  play(h, [[4150, 33, 5000], [4168, 33, 5000]]);
+  assert.deepEqual(h.score, [0, 0], "not the whole puck yet");
+  play(h, [[4173, 33, 5000]]);
+  assert.deepEqual(h.score, [1, 0]);
+  assert.deepEqual(h.goals, [0, 0, 1, 0]);
+  assert.deepEqual(h.event, { kind: "goal", team: 0, scorer: 2, own: -1 });
+  assert.equal(h.phase, "goal");
+  // Play goes on with no goal counted, then the face-off holds the trucks.
+  const steps = Math.ceil(CELEBRATE_S * 60) + 1;
+  const actions = play(h, Array.from({ length: steps }, () => [4100, 33, 5000]));
+  assert.equal(actions.at(-1), "reset");
+  assert.ok(hockeyHeld(h));
+  play(h, Array.from({ length: Math.ceil(FACEOFF_HOLD_S * 60) + 1 }, () => [4000, 33, 5000]));
+  assert.equal(h.phase, "play");
+  // An own goal: blue's truck 1 pushes the puck into blue's own goal.
+  h.lastTouch = 1;
+  play(h, [[4150, 33, 5000], [4175, 33, 5000]]);
+  assert.deepEqual(h.score, [2, 0]);
+  assert.deepEqual(h.event, { kind: "goal", team: 0, scorer: -1, own: 1 });
+  assert.deepEqual(h.goals, [0, 0, 1, 0], "an own goal counts for the team only");
+  // The target reached: the game ends after the pause.
+  const end = play(h, Array.from({ length: steps }, () => [4100, 33, 5000]));
+  assert.equal(end.at(-1), "over");
+  assert.deepEqual(hockeyPlaces(h), [2, 3, 1, 4]);
+});
+
+test("no goal wide of the posts, over the frame, or coming in from behind; a puck out of the rink is faced off", () => {
+  const h = createHockey(rink, [0, 1], 3);
+  play(h, [[4150, 33, 5040], [4175, 33, 5040]]);
+  play(h, [[4150, 70, 5000], [4175, 70, 5000]]);
+  play(h, [[4185, 33, 5000], [4165, 33, 5000], [4150, 33, 5000]]);
+  assert.deepEqual(h.score, [0, 0]);
+  assert.equal(play(h, [[4000, ICE - 10, 5000]])[0], "reset");
+  assert.deepEqual(h.event, { kind: "out" });
+});
+
+test("computer trucks: the attack comes on behind the puck and carries it at the goal; wings and the defender wait", () => {
+  const h = createHockey(rink, [0, 0, 0, 1], 3);
+  const puck = [4000, 33, 5000];
+  const roles = hockeyRoles(h, [[3990, 34, 5000], [3900, 34, 4950], [3850, 34, 5000], [4100, 34, 5000]], [false, true, true, true], puck);
+  // The player is nearest: it attacks, the computer teammates wing and defend.
+  assert.deepEqual(roles.map((r) => r.role), ["attack", "wing", "defend", "attack"]);
+  // Red attacks the +x goal: from behind and lined up, at the goal's mouth.
+  const memo = {};
+  const carry = hockeyAim(rink, 0, "attack", { pos: [3960, 34, 5000], heading: Math.PI / 2 }, puck, 1, memo);
+  assert.ok(carry.point[0] > 4100 && Math.abs(carry.point[2] - 5000) < 5 && memo.through);
+  // From the wrong side: round the puck, behind it, wide.
+  const round = hockeyAim(rink, 0, "attack", { pos: [4060, 34, 5010], heading: -Math.PI / 2 }, puck);
+  assert.ok(round.point[0] < 4000 && round.point[2] > 5010);
+  // The defender holds in front of its goal while the puck is in the other half.
+  const back = hockeyAim(rink, 0, "defend", { pos: [3850, 34, 5000], heading: 0 }, [4100, 33, 5000]);
+  assert.ok(Math.abs(back.point[0] - 3900) < 1);
+});
+
+test("on the rink the trucks take the frozen water as gravel; the rest of the ground is as it was", () => {
+  const ground = { height: () => 1, normal: () => null, ramps: [], waterLevelFt: ICE, weather: 5, surface: (x) => (x < 0 ? FROZEN_SURFACE : 201) };
+  const g = rinkGround(ground);
+  assert.equal(g.surface(-1, 0, 0), RINK_SURFACE);
+  assert.equal(g.surface(1, 0, 0), 201);
+  ground.weather = 0;
+  assert.equal(g.weather, 0, "the weather is read through");
+  assert.equal(g.ramps, ground.ramps);
+});
 
 test("Tag: It is held 5 s at the start without draining, a touch hands it on with no post-tag hold, and may not tag back for 10 s", () => {
   const tag = createTag(3, () => 0.5);
@@ -240,13 +376,116 @@ test("the It marker is an arrow pointing down, wound so its +Z face is the front
 });
 
 test("the Races screen's modes and their length box", () => {
-  assert.deepEqual(GAME_MODES.map((m) => m.id), ["default", "freeroam", "flyby", "tag"]);
+  assert.deepEqual(GAME_MODES.map((m) => m.id), ["default", "freeroam", "flyby", "hockey", "tag"]);
+  assert.equal(raceLengthLabel("circuit", "hockey"), "Goals");
   assert.equal(raceLengthLabel("rally", "tag"), "Minutes");
   assert.equal(raceLengthLabel("rally"), "Laps");
   assert.equal(raceLengthLabel("circuit", "freeroam"), "Laps");
   assert.equal(raceLengthLabel("summit", "flyby"), "Minutes");
   // The results: the score, and the game's length for the time.
   assert.deepEqual(winnerCells({ place: 1, name: "A", truckName: "B", score: 41.6, raceTime: 300, best: 12 }, { party: true }).slice(4), ["42", "05:00.00", ""]);
+});
+
+test("Hockey runs only on Breakneck Ridge: without it the mode does not trigger", async () => {
+  const { resolveGameMode } = await import("../src/app/flow.js");
+  const breakneck = { file: "ROCKQRY.SIT", game: "MTM2" };
+  assert.equal(isHockeyTrack(breakneck), true);
+  assert.equal(isHockeyTrack({ file: "rockqry.sit" }), true, "the file match ignores case and a missing game");
+  assert.equal(isHockeyTrack({ file: "TPARK.SIT", game: "MTM2" }), false);
+  assert.equal(isHockeyTrack({ file: "ROCKQRY.SIT", game: "MTM1" }), false, "another game's track of the same name is not it");
+  assert.equal(isHockeyTrack(null), false);
+  assert.equal(isHockeyTrack({}), false);
+  assert.equal(resolveGameMode("hockey", breakneck), "hockey");
+  assert.equal(resolveGameMode("hockey", { file: "TPARK.SIT", game: "MTM2" }), null);
+  assert.equal(resolveGameMode("hockey", null), null, "Breakneck Ridge unavailable: no Hockey");
+  assert.equal(resolveGameMode("tag", { file: "TPARK.SIT" }), "tag", "Tag runs anywhere");
+  assert.equal(resolveGameMode("default", breakneck), null);
+  assert.equal(resolveGameMode("flyby", breakneck), null);
+});
+
+/** A session on Breakneck Ridge's rink in Snow, `n` trucks, as the race screen sets one up. */
+async function hockeySession(n, { autopilot = true, goals = 3 } = {}) {
+  const build = await buildTrackRender(stockVfs(), "WORLD\\ROCKQRY.SIT", { weather: 5 });
+  const terrain = S.createTerrain(build.heights, build.waterLevelFt);
+  const breakneck = hockeyRink(rinkBoxes(build), (x, z) => S.groundHeightAt(terrain, x, z), build.waterLevelFt);
+  const files = Object.keys(build.truckModels).slice(0, n);
+  const teams = hockeyTeams(n, () => 0.2);
+  const session = createSession({
+    heights: build.heights.buffer, clr: build.sim.clr.buffer, textureValues: build.sim.textureValues.buffer,
+    ra0: build.sim.ra0?.buffer, ra1: build.sim.ra1?.buffer, boxes: build.sim.boxes, ramps: build.sim.ramps,
+    waterLevelFt: build.waterLevelFt, weather: 5, difficulty: 1, course: [], walls: breakneck.boards,
+    trucks: files.map((f, i) => ({
+      truck: { anchors: build.truckModels[f].anchors, scrapePoints: build.truckModels[f].scrapePoints },
+      start: hockeySpot(breakneck, teams, i), autopilot: autopilot && i > 0,
+    })),
+    race: { checkpoints: [], laps: 1, mode: "circuit" }, party: { mode: "hockey", rink: breakneck, teams, goals },
+  });
+  return { session, rink: breakneck, build };
+}
+
+test("Breakneck Ridge's rink: its two goals, the puck brought up onto the ice, and its pose sent at once", { skip: skipWithoutStock("POD.INI") }, async () => {
+  const { session, rink: breakneck } = await hockeySession(2);
+  assert.equal(breakneck.goals.length, 2);
+  assert.ok(Math.abs(breakneck.goals[1].along - breakneck.goals[0].along - 319) < 2, "the goals 319 ft apart");
+  for (const g of breakneck.goals) assert.ok(g.mouth[1] - g.mouth[0] > 50 && g.mouth[1] - g.mouth[0] < 58);
+  assert.equal(breakneck.boards.length, 8);
+  // HPUCK.BIN lies at 22 ft in the level, under the 28.5 ft ice.
+  assert.ok(Math.abs(breakneck.puck.start[1] - (28.5 + 4.3)) < 1e-6);
+  const r = session.advance(0.25, {});
+  const puck = r.boxes.find((b) => b.sitIndex === breakneck.puck.sitIndex);
+  assert.ok(puck, "the puck's pose is in the first reply");
+  assert.ok(puck.pos[1] > 28.5, "on the ice");
+  assert.equal(r.race.party.mode, "hockey");
+});
+
+test("a truck standing on the rink drives off it; on the game's own ice it never moves", { skip: skipWithoutStock("POD.INI") }, async () => {
+  const { session, build } = await hockeySession(1, { autopilot: false });
+  let r;
+  for (let t = 0; t < 4; t += 0.25) r = session.advance(t, {});
+  for (let t = 4; t < 8; t += 1 / 60) r = session.advance(t, { accelerate: true });
+  assert.ok(r.current.speed > 15, `${r.current.speed} ft/s after 4 s`);
+  // The same truck on the frozen lake without the rink grip.
+  const truck = build.truckModels[Object.keys(build.truckModels)[0]];
+  const plain = createSession({
+    heights: build.heights.buffer, clr: build.sim.clr.buffer, textureValues: build.sim.textureValues.buffer,
+    waterLevelFt: build.waterLevelFt, weather: 5, difficulty: 1,
+    truck: { anchors: truck.anchors, scrapePoints: truck.scrapePoints }, start: { pos: [3990, 34.5, 5185], heading: Math.PI / 2 },
+  });
+  for (let t = 0; t < 3; t += 0.25) r = plain.advance(t, {});
+  for (let t = 3; t < 7; t += 1 / 60) r = plain.advance(t, { accelerate: true });
+  assert.equal(r.current.speed, 0);
+});
+
+test("a puck sent over a goal line scores, and the face-off brings the puck and the trucks back", { skip: skipWithoutStock("POD.INI") }, async () => {
+  const { session, rink: breakneck } = await hockeySession(2, { autopilot: false });
+  let r;
+  for (let t = 0; t < 4; t += 0.25) r = session.advance(t, {});
+  // The puck slid at the blue goal (the +a end) from just in front of it.
+  const blue = breakneck.goals[1];
+  const [x, z] = toWorld(breakneck.frame, blue.along - 20, (blue.mouth[0] + blue.mouth[1]) / 2);
+  session.puck.pos[0] = x;
+  session.puck.pos[2] = z;
+  const dir = breakneck.frame.u;
+  session.puck.vel.splice(0, 3, dir[0] * 40, 0, dir[1] * 40);
+  // World velocity into body axes (the puck lies flat): x and z by its yaw.
+  const m = session.puck.matrix;
+  session.puck.bvel.set([m[0] * dir[0] * 40 + m[6] * dir[1] * 40, 0, m[2] * dir[0] * 40 + m[8] * dir[1] * 40]);
+  for (let t = 4; t < 6; t += 0.25) r = session.advance(t, {});
+  assert.deepEqual(r.race.party.score, [1, 0]);
+  assert.equal(r.race.party.event.kind, "goal");
+  for (let t = 6; t < 9; t += 0.25) r = session.advance(t, {});
+  assert.equal(r.race.party.phase, "faceoff");
+  assert.ok(Math.hypot(session.puck.pos[0] - breakneck.puck.start[0], session.puck.pos[2] - breakneck.puck.start[2]) < 1, "the puck back at the centre");
+  const spot = hockeySpot(breakneck, [0, 1], 1);
+  assert.ok(Math.hypot(r.poses[1].current.pos[0] - spot.pos[0], r.poses[1].current.pos[2] - spot.pos[2]) < 2, "the truck back at its spot");
+  assert.equal(r.poses[1].current.gear, S.GEAR.PARK, "held in Park");
+});
+
+test("computer trucks go for the puck", { skip: skipWithoutStock("POD.INI") }, async () => {
+  const { session, rink: breakneck } = await hockeySession(4);
+  for (let t = 0; t < 25; t += 0.25) session.advance(t, {});
+  const moved = Math.hypot(session.puck.pos[0] - breakneck.puck.start[0], session.puck.pos[2] - breakneck.puck.start[2]);
+  assert.ok(moved > 20, `the puck moved ${moved} ft`);
 });
 
 test("Tag on Farm Road 29: It sits in Park through its hold, and a touch makes the other truck It", { skip: skipWithoutStock("POD.INI") }, async () => {

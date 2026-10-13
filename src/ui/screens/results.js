@@ -16,8 +16,8 @@ import { takeRace } from "../../app/tournament.js";
 
 const DIFFICULTIES = ["Rookie", "Intermediate", "Professional"];
 
-/** The party modes (docs/PLAN.md, "Party modes"): the score is Tag's points, the time the game's length. */
-export const PARTY_MODES = Object.freeze(["tag"]);
+/** The party modes (docs/PLAN.md, "Party modes"): the score is Hockey's goals or Tag's points, the time the game's length. */
+export const PARTY_MODES = Object.freeze(["hockey", "tag"]);
 
 /**
  * The seven cells under the headings already painted into RESULTS.BMP. A party game (`party`) shows its score

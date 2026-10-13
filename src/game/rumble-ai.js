@@ -301,9 +301,9 @@ export function rumbleControls(s, driver, zone, rivals, gears, dt, field = null)
  * The pedals, steering and gear toward `point` at up to `speed` ft/s (0 stops there), with the
  * Rumble driver's backing up to a near target behind, and its backing out when pinned. `left` is
  * the path left to the goal for the headway watch; 0 turns that watch off. `back: false` never backs up
- * to a target; `turnFloor` is the least share of the
+ * to a target (Hockey's, which moves and is best come round to); `turnFloor` is the least share of the
  * speed kept in a sharp turn (lower on ice, where a fast truck slides wide). Also the party modes'
- * driving (game/tag.js); `driver` is a `createRumbleDriver` memory.
+ * driving (game/hockey.js, game/tag.js); `driver` is a `createRumbleDriver` memory.
  */
 export function driveToPoint(s, driver, point, speed, left, gears, dt, { back = true, turnFloor = 0.35 } = {}) {
   const c = s.controls;
