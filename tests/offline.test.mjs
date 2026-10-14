@@ -372,12 +372,12 @@ test("switched off while a copy is being made: the copy does not stay", async ()
   assert.deepEqual([await caches.keys(), offline.status.copy], [[], null]);
 });
 
-test("the Options switch is part of the draft: put to use by Apply, Save or Close, and taken back with it", () => {
+test("the Options switch is part of the draft: put to use by Save, and not before", () => {
   const panel = readFileSync(new URL("../src/ui/options-panel.js", import.meta.url), "utf8");
   assert.match(panel, /onchange: \(event\) => \{ settings\.offline = event\.target\.checked; save\(\); \}/);
   assert.doesNotMatch(panel, /setEnabled/, "the switch itself changes nothing until the draft is used");
-  // use() is what Apply, Save and Close (keeping or discarding) all go through.
-  const use = panel.slice(panel.indexOf("const use = (next) =>"), panel.indexOf("const apply = ()"));
+  // use() is what Save goes through.
+  const use = panel.slice(panel.indexOf("const use = (next) =>"), panel.indexOf("const store = ()"));
   assert.match(use, /if \(\(before\.offline !== false\) !== \(live\.offline !== false\)\) context\.offline\?\.start\(\);/);
 });
 

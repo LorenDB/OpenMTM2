@@ -11,17 +11,17 @@ import { GRAPHICS_FLAGS, GRAPHICS_MANY_POINTS, GRAPHICS_NOTES, GRAPHICS_PRESETS,
 
 const KEYS = VISUAL_OPTIONS.map((option) => option.key);
 
-test("the presets are Auto, Off, Low, High, Max and Custom, and the defaults stay every part on", () => {
+test("the presets are Auto, Off, Low, High, Max and Custom, and the default is Off with every part off", () => {
   assert.deepEqual(GRAPHICS_PRESETS.map((preset) => preset.id), ["auto", "off", "low", "high", "max", "custom"]);
   for (const preset of GRAPHICS_PRESETS) {
     assert.ok(preset.label);
     assert.ok(GRAPHICS_NOTES[preset.id]);
   }
-  assert.equal(graphicsChoice("nope"), "auto");
+  assert.equal(graphicsChoice("nope"), "off");
   assert.equal(graphicsChoice("high"), "high");
   assert.equal(graphicsLabel("low"), "Low");
-  assert.equal(DEFAULT_SETTINGS.graphics, "auto");
-  for (const key of KEYS) assert.equal(DEFAULT_SETTINGS[key], true, key);
+  assert.equal(DEFAULT_SETTINGS.graphics, "off");
+  for (const key of KEYS) assert.equal(DEFAULT_SETTINGS[key], false, key);
   assert.equal(GRAPHICS_MANY_POINTS, 5e6);
   assert.ok(2560 * 1440 < GRAPHICS_MANY_POINTS);
   assert.ok(3840 * 2160 > GRAPHICS_MANY_POINTS);
@@ -74,8 +74,8 @@ test("a preset writes its switches, Custom keeps a mix, and Auto leaves the choi
   assert.equal(integrated.terrainSmoothing, false);
   assert.equal(integrated.richParticles, true);
   // The frozen defaults are not a place to write a preset.
-  assert.equal(DEFAULT_SETTINGS.lensEffects, true);
-  assert.equal(DEFAULT_SETTINGS.graphics, "auto");
+  assert.equal(DEFAULT_SETTINGS.lensEffects, false);
+  assert.equal(DEFAULT_SETTINGS.graphics, "off");
 });
 
 test("Auto picks Low, High or Max from the chip and the picture, and never Off", () => {

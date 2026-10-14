@@ -37,9 +37,12 @@ export function decodeTerrainTextures(sources) {
 
 /**
  * Pack one tile per texture slot, so a slot index maps straight to a tile. Tiles get a
- * clamped 2-pixel skirt so linear filtering never reads a neighbour.
+ * clamped 2-pixel skirt so linear filtering never reads a neighbour. Every slot is as wide as the
+ * widest tile: a smaller tile is scaled up to it, texel by texel, or with `smooth` (the smooth
+ * textures of the enhanced look) blended between its texels, as linear filtering would draw it at
+ * its own size. A level that mixes 64 and 256 texel tiles otherwise shows its 64s in blocks.
  */
-export function buildTerrainAtlas(decoded, forcedSide = 0) {
+export function buildTerrainAtlas(decoded, forcedSide = 0, { smooth = false } = {}) {
   // `forcedSide` lays a second atlas (the tiles' normal maps) out exactly as the first.
   let side = forcedSide || 64;
   if (!forcedSide) for (const image of decoded) if (image && image.width > side) side = image.width;
@@ -64,7 +67,9 @@ export function buildTerrainAtlas(decoded, forcedSide = 0) {
         const sx = Math.max(0, Math.min(side - 1, x - ATLAS_PADDING));
         const sy = Math.max(0, Math.min(side - 1, y - ATLAS_PADDING));
         const d = ((oy + y) * width + ox + x) * 4;
-        if (image) {
+        if (image && smooth && image.width < side) {
+          sampleBilinear(image, ((sx + 0.5) * image.width) / side - 0.5, ((sy + 0.5) * image.height) / side - 0.5, rgba, d);
+        } else if (image) {
           const ix = Math.min(image.width - 1, Math.floor(sx * image.width / side));
           const iy = Math.min(image.height - 1, Math.floor(sy * image.height / side));
           const o = (iy * image.width + ix) * 4;
@@ -79,6 +84,19 @@ export function buildTerrainAtlas(decoded, forcedSide = 0) {
     }
   }
   return { rgba, width, height, rects, tileSide: side, padding: ATLAS_PADDING };
+}
+
+/** An image's colour at texel coordinates (x, y), blended from the four texels about it, clamped at its edges, into `out` at `at`. */
+function sampleBilinear(image, x, y, out, at) {
+  const { width, height, rgba } = image;
+  const cx = Math.max(0, Math.min(width - 1, x)), cy = Math.max(0, Math.min(height - 1, y));
+  const x0 = Math.floor(cx), y0 = Math.floor(cy), x1 = Math.min(width - 1, x0 + 1), y1 = Math.min(height - 1, y0 + 1);
+  const fx = cx - x0, fy = cy - y0;
+  for (let c = 0; c < 3; c++) {
+    const top = rgba[(y0 * width + x0) * 4 + c] * (1 - fx) + rgba[(y0 * width + x1) * 4 + c] * fx;
+    const bottom = rgba[(y1 * width + x0) * 4 + c] * (1 - fx) + rgba[(y1 * width + x1) * 4 + c] * fx;
+    out[at + c] = Math.round(top * (1 - fy) + bottom * fy);
+  }
 }
 
 /**

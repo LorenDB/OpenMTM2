@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  SPARK_HIT_SPEED, SPARK_MIN_SPEED, TRACK_FADE_PIECES, TRACK_FADE_SHARE, TRACK_LEDGE_FT, TRACK_LONGEST_FT, TRACK_ORDER, TRACK_POOL, TRACK_PRESS_SAME, TRACK_STEP_FT, TRACK_TRUE_FT,
-  dustPuffs, edgeHolds, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, trackLevel, trackShown,
+  CLASSIC_SPARK_MIN_SPEED, CLASSIC_TRACK_POOL, SPARK_HIT_SPEED, SPARK_MIN_SPEED, TRACK_FADE_PIECES, TRACK_FADE_S, TRACK_LIFE_S, TRACK_FADE_SHARE, TRACK_LEDGE_FT, TRACK_LONGEST_FT, TRACK_ORDER, TRACK_POOL, TRACK_PRESS_SAME, TRACK_STEP_FT, TRACK_TRUE_FT,
+  dustPuffs, edgeHolds, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, trackLevel, trackOpacity, trackShown,
 } from "../src/game/tire-effects.js";
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) < e, `${a} is not ${b}`);
@@ -131,4 +131,20 @@ test("steel strikes sparks only at a fair speed: leaning on a wall or creeping a
   assert.ok(sparksForHit(3000, 10) < sparksForHit(3000, 20) && sparksForHit(3000, 20) < sparksForHit(3000, 30));
   assert.equal(sparksForHit(3000, 30), sparksForHit(3000));
   assert.equal(sparksForHit(1e6), 28);
+});
+
+test("with Rich particles off, tracks and sparks are as the port first had them", () => {
+  // A ring of 30000 pieces, each kept 70 s and fading over the last 25.
+  assert.equal(CLASSIC_TRACK_POOL, 30000);
+  assert.equal(TRACK_LIFE_S, 70);
+  assert.equal(TRACK_FADE_S, 25);
+  assert.equal(trackOpacity(0), 1);
+  assert.equal(trackOpacity(45), 1);
+  near(trackOpacity(57.5), 0.5);
+  assert.equal(trackOpacity(70), 0);
+  // A scrape throws sparks from 6 ft/s of slide.
+  assert.equal(CLASSIC_SPARK_MIN_SPEED, 6);
+  const always = () => 0;
+  assert.ok(scrapeSparks(0.1, 0.5, 7, always, 1, CLASSIC_SPARK_MIN_SPEED).sparks > 0);
+  assert.equal(scrapeSparks(0.1, 0.5, 5, always, 1, CLASSIC_SPARK_MIN_SPEED).sparks, 0);
 });

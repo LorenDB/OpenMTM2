@@ -9,25 +9,38 @@
 
 /** The default CPU driver names (0x551f90). */
 export const CPU_NAMES = Object.freeze(["Mark", "Greg", "Rich", "Brett", "Gaither", "Chuck", "Terry", "Joe"]);
+/** The longest name Options lets a computer driver have. */
+export const CPU_NAME_MAX = 16;
+/**
+ * The computer drivers' names with the player's own (Options, Advanced): `custom[i]`, trimmed, where it is a name, else
+ * the game's.
+ */
+export function cpuNames(custom) {
+  return CPU_NAMES.map((name, i) => {
+    const own = typeof custom?.[i] === "string" ? custom[i].trim().slice(0, CPU_NAME_MAX) : "";
+    return own || name;
+  });
+}
 /** The built-in `defaultOpponents` (MONSTER.INI). */
 export const DEFAULT_OPPONENTS = 3;
 
 /**
  * The race's entrants, the player first: `[{ name, file, player, slot }]`, `slot` the start-grid
- * slot. `trucks` are catalogue trucks (`{ file, hidden }`), `slots` the grid's size.
+ * slot. `trucks` are catalogue trucks (`{ file, hidden }`), `slots` the grid's size; `names` the computer drivers'
+ * (`cpuNames`).
  */
-export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random, spectator = false }) {
+export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random, spectator = false, names = CPU_NAMES }) {
   const catalogue = trucks.filter((t) => !t.hidden);
   // Spectator mode (the port's): nobody drives. `playerTruck` is then the first of the computer's trucks, under the
   // last of the computer's names, which no other entrant can have.
-  const drivers = [spectator ? { name: CPU_NAMES[CPU_NAMES.length - 1], file: playerTruck, player: false } : { name: playerName, file: playerTruck, player: true }];
+  const drivers = [spectator ? { name: names[names.length - 1], file: playerTruck, player: false } : { name: playerName, file: playerTruck, player: true }];
   if (Array.isArray(opponents)) {
     const byFile = new Map(catalogue.map((t) => [t.file.toUpperCase(), t]));
     const selected = [...new Set(opponents.map((file) => String(file).toUpperCase()))];
     for (const file of selected) {
       const truck = byFile.get(file);
       if (truck && (spectator || truck.file !== playerTruck) && drivers.length < Math.min(8, slots)) {
-        drivers.push({ name: CPU_NAMES[drivers.length - 1], file: truck.file, player: false });
+        drivers.push({ name: names[drivers.length - 1], file: truck.file, player: false });
       }
     }
   } else {
@@ -41,7 +54,7 @@ export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_O
     }
     catalogue.forEach((t, i) => {
       if (flagged.has(i) && t.file !== playerTruck && drivers.length < Math.min(8, slots)) {
-        drivers.push({ name: CPU_NAMES[drivers.length - 1], file: t.file, player: false });
+        drivers.push({ name: names[drivers.length - 1], file: t.file, player: false });
       }
     });
   }

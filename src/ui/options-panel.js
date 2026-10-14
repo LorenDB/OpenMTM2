@@ -2,7 +2,7 @@
 import { FLY_SCHEMES, FLY_SCHEME_NAMES } from "../game/fly-camera.js";
 import { buildKind, defaultSkin } from "../install/exe-version.js";
 import { el } from "./dom.js";
-import { PHYSICS_MODELS, clearSettings, physicsModel, saveSettings } from "../app/settings.js";
+import { PHYSICS_MODELS, clearSettings, optionsFile, physicsModel, readOptionsFile, saveSettings } from "../app/settings.js";
 import { offlineStatusText } from "../app/offline.js";
 import { loadStrings } from "../app/strings-store.js";
 import { locName } from "../game/strings.js";
@@ -13,10 +13,12 @@ import { AA_HINT, AA_MODES, aaChoice } from "../game/aa.js";
 import { GRAPHICS_HINT, GRAPHICS_NOTES, GRAPHICS_PRESETS, applyGraphics, detectGraphics, graphicsChoice, graphicsLabel } from "../game/graphics.js";
 import { graphicsHardware } from "../app/graphics-hardware.js";
 import { VISUAL_OPTIONS } from "../game/visuals.js";
+import { CPU_NAMES, CPU_NAME_MAX, cpuNames } from "../game/race-setup.js";
+import { SHORT_VIEW_CHOICES, shortViews } from "../game/cameras.js";
 
 /*
-  The controls edit a draft. Apply puts it to use at once (this session), Save also stores it, and Close asks whether to
-  save or discard when the draft differs from what is stored.
+  The controls edit a draft. Save puts it to use and stores it; Close warns first when the draft differs from what is
+  stored, and then leaves without it.
 */
 export async function mountOptionsPanel(container, context, { close: closeNow = () => {} } = {}) {
   const live = context.settings;
@@ -24,9 +26,10 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
   /** What is stored, and the draft the controls change. */
   let stored = JSON.stringify(live);
   const settings = copy(live);
-  const footerNote = el("span", { class: "options-status muted" });
   const unsaved = () => JSON.stringify(settings) !== stored;
-  const save = () => { footerNote.textContent = unsaved() ? "Changes not saved" : ""; };
+  const saveButton = el("button", { onclick: () => store(), title: "Use the changes and store them" }, "Save");
+  /** A control changed the draft: the Save button shows whether there is anything to save. */
+  const save = () => { saveButton.classList.toggle("unsaved", unsaved()); };
   /** Put a settings object to use: the live settings keep their identity, since every screen holds them. */
   const use = (next) => {
     const before = copy(live);
@@ -43,15 +46,12 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       context.router.go(current.name, current.params, { replace: true });
     }
   };
-  const apply = () => { use(settings); footerNote.textContent = unsaved() ? "Applied, not saved" : ""; };
-  const store = () => { use(settings); saveSettings(live); stored = JSON.stringify(live); footerNote.textContent = "Saved"; };
-  /** Close, asking first when there are changes: save them, or go back to what was stored. */
+  const store = () => { use(settings); saveSettings(live); stored = JSON.stringify(live); save(); };
+  /** Close, warning first when there are changes: they are lost unless the player stays to save them. Returns whether it closed. */
   const close = () => {
-    if (unsaved() || JSON.stringify(live) !== stored) {
-      if (window.confirm("Save the changes to the options?\n\nOK saves them. Cancel discards them.")) store();
-      else use(JSON.parse(stored));
-    }
+    if (unsaved() && !window.confirm("The changes to the options are not saved.\n\nOK closes without them. Cancel goes back to save them.")) return false;
     closeNow();
+    return true;
   };
   const bindings = mergeBindings(settings.bindings);
   const note = el("p", { class: "muted" }, "Pick an action, then press the key to use for it. Escape cancels.");
@@ -178,17 +178,98 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     `MONSTER.EXE ${context.exeVersion ?? "(not found)"}, ${kind}.`);
   const button = (label, onclick, cls = null) => el("button", { class: cls, "data-menu-sound": "STARTOFF", onclick }, label);
 
+  /**
+   * A small dialog over the options: `body` its controls, `ok()` what OK does with them. Escape or Cancel leaves the
+   * draft as it was.
+   */
+  const subDialog = (title, body, ok) => {
+    const dialog = el("dialog", { class: "options-sub", "aria-label": title });
+    const done = (keep) => { if (keep) ok(); dialog.close(); };
+    dialog.append(el("h2", {}, title), body, el("div", { class: "options-sub-actions" },
+      el("button", { onclick: () => done(false) }, "Cancel"),
+      el("button", { class: "primary", onclick: () => done(true) }, "OK")));
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    // Its keys are its own: the Keys page listens for a key to bind only while it asks for one.
+    dialog.addEventListener("keydown", (event) => event.stopPropagation());
+    (container.closest("dialog") ?? document.body).append(dialog);
+    dialog.showModal();
+  };
+  /** The computer drivers' names (`aiNames`): each blank one is the game's own. */
+  const editDriverNames = () => {
+    const names = cpuNames(settings.aiNames);
+    const inputs = CPU_NAMES.map((name, i) => el("input", {
+      type: "text", maxlength: CPU_NAME_MAX, value: names[i] === name ? "" : names[i], placeholder: name, "aria-label": `Computer driver ${i + 1}`,
+    }));
+    subDialog("Computer drivers", el("div", { class: "options-sub-list" },
+      el("p", { class: "muted" }, "The computer drivers by the order they are given out. A blank name is the game's own."),
+      ...inputs.map((input, i) => el("label", { class: "opt-row" }, el("span", { class: "opt-label" }, `Driver ${i + 1}`), el("span", { class: "opt-control" }, input))),
+      el("div", { class: "opt-actions" }, button("Game's names", () => { for (const input of inputs) input.value = ""; }))), () => {
+      const own = inputs.map((input) => input.value.trim());
+      settings.aiNames = own.some(Boolean) ? own : [];
+      save();
+    });
+  };
+  /** The views of the short camera cycle (`shortViews`): at least one. */
+  const editShortViews = () => {
+    const chosen = new Set(shortViews(settings.shortViews));
+    const boxes = SHORT_VIEW_CHOICES.map((view) => el("input", { type: "checkbox", class: "opt-switch", checked: chosen.has(view.id), "aria-label": view.name }));
+    const warn = el("p", { class: "muted" }, "The Camera key steps through the views ticked here, in this order.");
+    subDialog("Short camera cycle", el("div", { class: "options-sub-list" }, warn,
+      ...SHORT_VIEW_CHOICES.map((view, i) => el("label", { class: "opt-row" }, el("span", { class: "opt-label" }, context.t(view.name)), el("span", { class: "opt-control" }, boxes[i])))), () => {
+      const ids = SHORT_VIEW_CHOICES.filter((_, i) => boxes[i].checked).map((view) => view.id);
+      // None ticked keeps the list as it was.
+      if (ids.length) { settings.shortViews = ids; save(); }
+    });
+  };
+  /** The stored options as a JSON file, with the format's version, for keeping or for another browser. */
+  const exportOptions = () => {
+    const data = optionsFile(JSON.parse(stored));
+    const link = el("a", { href: URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: "application/json" })), download: "openmtm2-options.json" });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+  /**
+   * Options from an exported file, any version up to this one: they replace the stored options at once, and the dialog
+   * closes, since its controls show the options it was opened with.
+   */
+  const importOptions = () => {
+    const input = el("input", { type: "file", accept: ".json,application/json" });
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const read = readOptionsFile(await file.text());
+      if (read.error) { window.alert(read.error); return; }
+      if (!window.confirm(`Replace the options with those in ${file.name}?${unsaved() ? "\n\nThe changes not saved here are lost." : ""}`)) return;
+      use(read.settings);
+      saveSettings(live);
+      stored = JSON.stringify(live);
+      window.alert("Options imported.");
+      closeNow();
+    });
+    input.click();
+  };
+
+  // Leaving the options for another screen: the same warning as Close first.
+  const leaveFor = (go) => async () => { if (close()) await go(); };
+  const nav = (label, onclick) => el("button", { class: "nav", "data-menu-sound": "STARTOFF", onclick }, label);
+  const navButtons = el("div", { class: "options-nav" },
+    nav("Hall of Fame", leaveFor(() => context.router.go("hall"))),
+    nav("Instant Replay", async () => {
+      const { pickReplayFile } = await import("./screens/replay.js");
+      const replay = await pickReplayFile();
+      if (!replay) { window.alert("That file is not a Monster Truck Madness 2 replay."); return; }
+      await leaveFor(() => context.router.go("replay", { replay }))();
+    }),
+    nav("Start screen", leaveFor(() => context.router.go("start", {}, { replace: true }))));
+
   const sections = [
     ["Game", [
       row("Physics", el("select", { "aria-label": "Physics", onchange: (event) => { settings.physics = event.target.value; save(); } },
         ...PHYSICS_MODELS.map((m) => el("option", { value: m.id, selected: m.id === physicsModel(settings.physics).id, title: m.note }, m.label))),
       "The rules the trucks are driven by, from the next race on. Monster Truck Madness is the 1996 game: tires that touch throw trucks twice as hard, water stops a truck, weather does not change the grip, no crash damage, and its drag rules"),
-      toggle("Automatic gears", "autoShift"), toggle("Crash damage (dents)", "crashDamage"),
-      toggle("Full Autopilot", "fullAutopilot", "The truck drives itself"),
-      toggle("Auto stage", "autoStage", "Drag races: the truck drives itself to the staging beams. Off, you stage it yourself; the Auto Stage key (T) then does it for one pass"),
-      toggle("Short camera cycle", "shortViewCycle", "The Camera key (V) steps through the cockpit, Chase Near and Chase Far only"),
-      toggle("Z-mode cameras", "zModeCameras", "Zoom with - and +, orbit with Insert and Delete, and the Inertia view, in any race without GOLD mode"), toggle("Show hidden tracks", "showHiddenTracks"),
-      toggle("Kooky horn", "kookyHorn", "Three horns instead of one"), choose("Speed", "units", ["MPH", "KPH"], ["mph", "kph"]),
+      toggle("Automatic gears", "autoShift"), toggle("Crash damage", "crashDamage", "Trucks dent where they are hit"),
+      toggle("Drag auto stage", "autoStage", "Drag races: the truck drives itself to the staging beams. Off, you stage it yourself; the Auto Stage key (T) then does it for one pass"),
+      choose("Speed", "units", ["MPH", "KPH"], ["mph", "kph"]),
       row("Computer opponents", el("select", { "aria-label": "Computer opponents", onchange: (event) => {
         // A new default replaces the list picked on the Races screen.
         settings.defaultOpponents = Number(event.target.value);
@@ -196,24 +277,13 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         save();
       } }, ...[0, 1, 2, 3, 4, 5, 6, 7].map((n) => el("option", { value: n, selected: n === (settings.defaultOpponents ?? 3) }, String(n)))),
       "How many computer trucks race by default; the Races screen picks which"),
-      row("Opponent frame rate", el("select", { "aria-label": "Opponent frame rate", onchange: (event) => { settings.opponentFps = Number(event.target.value); save(); } },
-        ...[15, 20, 24, 30, 45, 60].map((n) => el("option", { value: n, selected: n === (settings.opponentFps ?? 30) }, `${n} FPS`))),
-      "The frame rate the computer trucks drive as if the game ran at: they steer by the frame, so it changes how they handle. 30 is the standard"),
-      toggle("Sonic trucks", "sonicTrucks", "Professional only: the computer trucks drive as on a Sonic track, on every track"),
-      row("Announcer voice", el("input", { type: "checkbox", class: "opt-switch", checked: false, disabled: !VOICE_COMMENTARY_ENABLED }), "Voice commentary is temporarily disabled."),
-      el("div", { class: "opt-actions" },
-        button("Hall of Fame", async () => { close(); await context.router.go("hall"); }),
-        button("Instant Replay", async () => {
-          const { pickReplayFile } = await import("./screens/replay.js");
-          const replay = await pickReplayFile();
-          if (!replay) { window.alert("That file is not a Monster Truck Madness 2 replay."); return; }
-          close();
-          await context.router.go("replay", { replay });
-        }),
-        button("Start screen", async () => { close(); await context.router.go("start", {}, { replace: true }); })),
     ]],
     ["Display", [
-      choose("Look", "look", ["Classic", "Enhanced"], ["classic", "enhanced"]), choose("Detail", "detailLevel", ["Low", "Medium", "High"]),
+      row("Smooth textures", el("input", {
+        type: "checkbox", class: "opt-switch", checked: settings.look === "enhanced", "aria-label": "Smooth textures",
+        onchange: (event) => { settings.look = event.target.checked ? "enhanced" : "classic"; save(); },
+      }), "Textures filtered smooth and the world lit by the sun (the enhanced look). Off: the game's own sharp texels and baked light"),
+      choose("Detail", "detailLevel", ["Low", "Medium", "High"]),
       row("Anti-aliasing", el("select", {
         "aria-label": "Anti-aliasing", title: AA_HINT,
         onchange: (event) => { settings.aa = event.target.value; save(); },
@@ -228,15 +298,12 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       "Hold the race to this many frames a second"),
       toggle("FPS counter", "fpsCounter", "Show the frames per second in the corner of a race or replay (the FPS counter key switches it)"),
       toggle("Backdrops", "backdrops"),
-      toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1 tracks: the track's own flat sky (EARTHSKY) in place of MTM2's"),
-      toggle("MTM1 terrain overlap", "mtm1TerrainOverlap", "Monster Truck Madness 1 tracks: overlap the ground tiles by two pixels, as MTM2 does"),
-      toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
-      toggle("CP3 Reflections", "reflections", "Community Patch 3 materials: the sky reflected in glass and paint (Enhanced look)"),
-      menus, wording, offlineRow,
-    ]],
-    // The port's own scenery (docs/VISUALS.md): one preset, and on Custom each part on its own switch.
-    ["Scenery", [
-      row("Enhanced graphics", el("select", {
+      menus,
+      el("h3", {}, "Effects"),
+      toggle("Dust", "dustEffects"), toggle("Tire tracks", "tireTracks"), toggle("Sparks", "sparks"), toggle("Water splashes", "waterSplash"),
+      // The port's own scenery (docs/VISUALS.md): one preset, and on Custom each part on its own switch.
+      el("h3", {}, "Enhanced graphics"),
+      row("Preset", el("select", {
         "aria-label": "Enhanced graphics", title: GRAPHICS_HINT,
         onchange: (event) => {
           settings.graphics = graphicsChoice(event.target.value);
@@ -249,9 +316,6 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       sceneryNote,
     ]],
     ["Headset", [headset]],
-    ["Effects", [
-      toggle("Dust", "dustEffects"), toggle("Tire tracks", "tireTracks"), toggle("Sparks", "sparks"), toggle("Water splashes", "waterSplash"),
-    ]],
     ["Sound", [
       sound("Master", "master"), sound("Effects", "effects"), sound("Music", "music"),
       row("Mute", el("input", { type: "checkbox", class: "opt-switch", checked: !!settings.sound.muted, onchange: (event) => {
@@ -259,10 +323,37 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         save();
       } })),
       toggle("Menu music", "menuMusic"),
+      row("Announcer voice", el("input", { type: "checkbox", class: "opt-switch", checked: false, disabled: !VOICE_COMMENTARY_ENABLED }), "Voice commentary is temporarily disabled."),
     ]],
     ["Keys", [choose("Fly-by controls", "flyControls", FLY_SCHEMES.map((id) => FLY_SCHEME_NAMES[id]), [...FLY_SCHEMES]), note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
       Object.assign(bindings, mergeBindings({})); settings.bindings = {}; save(); note.textContent = "Keys reset."; showKeys();
     }))]],
+    // What a newcomer can leave alone: other games' tracks, the patch's materials, the computer trucks and the cameras.
+    ["Advanced", [
+      el("h3", {}, "Display"),
+      toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1 tracks: the track's own flat sky (EARTHSKY) in place of MTM2's"),
+      toggle("MTM1 terrain overlap", "mtm1TerrainOverlap", "Monster Truck Madness 1 tracks: overlap the ground tiles by two pixels, as MTM2 does"),
+      toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
+      toggle("CP3 Reflections", "reflections", "Community Patch 3 materials: the sky reflected in glass and paint (Enhanced look)"),
+      el("h3", {}, "Game"),
+      row("Opponent frame rate", el("select", { "aria-label": "Opponent frame rate", onchange: (event) => { settings.opponentFps = Number(event.target.value); save(); } },
+        ...[15, 20, 24, 30, 45, 60].map((n) => el("option", { value: n, selected: n === (settings.opponentFps ?? 30) }, `${n} FPS`))),
+      "The frame rate the computer trucks drive as if the game ran at: they steer by the frame, so it changes how they handle. 30 is the standard"),
+      toggle("Sonic trucks", "sonicTrucks", "Professional only: the computer trucks drive as on a Sonic track, on every track"),
+      row("Computer drivers", button("Names...", () => editDriverNames()), "The names of the computer drivers"),
+      toggle("Full Autopilot", "fullAutopilot", "The truck drives itself"),
+      toggle("Show hidden tracks", "showHiddenTracks"),
+      toggle("Kooky horn", "kookyHorn", "Three horns instead of one"),
+      el("h3", {}, "Cameras"),
+      row("Short camera cycle", el("span", { class: "opt-slider" },
+        el("input", { type: "checkbox", class: "opt-switch", checked: !!settings.shortViewCycle, "aria-label": "Short camera cycle", onchange: (event) => { settings.shortViewCycle = event.target.checked; save(); } }),
+        button("Views...", () => editShortViews())),
+      "The Camera key (V) steps through the views in the list only: the cockpit, Chase Near and Chase Far unless changed"),
+      toggle("Camera clearance", "cameraClearance", "The chase camera keeps a few feet over the ground, easing back down after a crest. Off, it may touch the ground, as in the game"),
+      toggle("Z-mode cameras", "zModeCameras", "Zoom with Shift and - or +, orbit with Insert and Delete, and the Inertia view, in any race without GOLD mode"),
+      el("h3", {}, "App"),
+      wording, offlineRow,
+    ]],
     ["Data", [
       el("p", { class: "muted" },
         "OpenMTM2 reads Monster Truck Madness 2, CART Precision Racing and 4x4 Evolution 1 and 2 tracks, and their vehicles in the future. "
@@ -296,6 +387,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         }
       }),
       button("POD manager", async () => { (await import("./pod-manager.js")).openPodManager(context); }),
+      button("Export options", () => exportOptions()),
+      button("Import options", () => importOptions()),
       button("Reload POD.INI", async (event) => {
         // The browser keeps no handle on the folder, so it is picked again; only new or changed archives are copied.
         const target = event.currentTarget;
@@ -325,7 +418,7 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
           off();
         }
       }),
-      button("Use a different install", async () => { close(); await context.assets.call("uninstall"); await context.router.go("install", {}, { replace: true }); }),
+      button("Use a different install", async () => { if (!close()) return; await context.assets.call("uninstall"); await context.router.go("install", {}, { replace: true }); }),
       el("button", { class: "danger", onclick: async (event) => {
         if (!window.confirm(
           "Clear all OpenMTM2 data from this browser? This permanently removes the copied install, "
@@ -365,9 +458,7 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
   container.append(
     el("div", { class: "opt-tabs" }, ...tabs),
     el("div", { class: "opt-pages" }, ...pages),
-    el("div", { class: "options-footer" }, footerNote,
-      el("button", { onclick: apply, title: "Use the changes now, without storing them" }, "Apply"),
-      el("button", { onclick: store, title: "Use the changes and store them" }, "Save"),
+    el("div", { class: "options-footer" }, navButtons, saveButton,
       el("button", { class: "primary", onclick: close }, "Close")),
   );
 

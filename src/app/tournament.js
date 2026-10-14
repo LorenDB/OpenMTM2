@@ -8,7 +8,7 @@
   like; both games ship them), the player's own are kept with the player's data (`tournaments`).
 */
 import { parseTrn, writeTrn } from "../vendor/openphotex/index.js";
-import { CPU_NAMES } from "../game/race-setup.js";
+import { cpuNames } from "../game/race-setup.js";
 import {
   MAX_TOURNAMENTS, currentEvent, dragEventPoints, gotoEvent, recordEvent, standings, startTournament, tournamentFromTrn, trnOf,
 } from "../game/events/tournament.js";
@@ -51,7 +51,8 @@ export async function beginTournament(context, tournament, { tracks, trucks, siz
   const others = trucks.filter((t) => t.file !== mine);
   for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
   const field = [{ name: driver.name, truck: mine, player: true }];
-  for (let i = 0; i < size - 1; i++) field.push({ name: CPU_NAMES[i % CPU_NAMES.length], truck: (others[i % Math.max(1, others.length)] ?? trucks[0]).file, player: false });
+  const names = cpuNames(context.settings?.aiNames);
+  for (let i = 0; i < size - 1; i++) field.push({ name: names[i % names.length], truck: (others[i % Math.max(1, others.length)] ?? trucks[0]).file, player: false });
   context.tournament = { run: startTournament(tournament, field), difficulty, weather, description: tournament.description ?? "", tracks, trucks };
   await keep(context);
   return context.tournament;

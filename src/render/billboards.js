@@ -3,10 +3,10 @@
   instanced draw: each instance has a position, a size in feet, a cell and a brightness. Black in
   the sheet is background, so the sprites are added to the picture. `flat` lays them on the ground
   (ripples) instead of facing the camera. What is added to the picture cannot be veiled in the
-  fog's colour: each sprite is dimmed by the fog between it and the eye instead.
+  fog's colour: with "Volumetric weather" each sprite is dimmed by the fog between it and the eye instead.
 */
 import * as THREE from "three";
-import { VEIL_GLSL, veilUniforms } from "./atmosphere.js";
+import { VEIL_GLSL, lightsDimInFog, veilUniforms } from "./atmosphere.js";
 
 /** A sheet as a texture from `{ width, height, rgba }` (rows from the top). */
 export function sheetTexture({ width, height, rgba }) {
@@ -52,7 +52,8 @@ export function createBillboards({ sheet, grid, capacity, flat = false, tint = [
     fragmentShader: `
       uniform sampler2D map; uniform vec3 tint; varying vec2 vUv; varying float vLight;
       void main() { gl_FragColor = vec4(texture2D(map, vUv).rgb * tint * vLight, 1.0); }`,
-    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: true,
+    // Without fog the veil hides nothing: the sprites show through the fog as they first did (render/atmosphere.js `setLightsInFog`).
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: lightsDimInFog(),
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;

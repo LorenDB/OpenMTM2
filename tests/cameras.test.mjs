@@ -104,3 +104,54 @@ test("Ctrl or Alt with a digit picks a view: 1 the cockpit, 0 the tenth", async 
   assert.equal(modeForShortcut({ ctrlKey: true, code: "KeyA" }), null);
   assert.equal(modeForShortcut({ ctrlKey: true, metaKey: true, code: "Digit1" }), null);
 });
+
+test("the short cycle steps through the player's views in order, the cockpit, Chase Near and Chase Far unless changed", async () => {
+  const { DEFAULT_SHORT_VIEWS, INERTIA_MODE, nextInList, shortViews } = await import("../src/game/cameras.js");
+  assert.deepEqual(shortViews(undefined), [...DEFAULT_SHORT_VIEWS]);
+  assert.deepEqual(shortViews([]), [0, 1, 2], "an empty list is the default");
+  // Views once each, in the cycle's own order, with the Inertia view allowed and anything else dropped.
+  assert.deepEqual(shortViews([10, 2, 2, 42, 0]), [0, 2, INERTIA_MODE.id]);
+  const views = [1, 2, 10];
+  assert.equal(nextInList(1, views), 2);
+  assert.equal(nextInList(10, views), 1);
+  assert.equal(nextInList(1, views, true), 10);
+  assert.equal(nextInList(4, views), 1, "from a view not in the list, its first");
+  assert.equal(nextInList(4, views, true), 10);
+});
+
+test("the chase camera tilts by the player's keys within the game's pitches, and with clearance keeps off the ground", async () => {
+  const { CAMERA_CLEAR_FT, CAMERA_PITCH_MAX, CAMERA_PITCH_RATE, turnedPitch } = await import("../src/game/cameras.js");
+  // A quarter of the frame time a frame: 90 degrees a second; 0 to 0x3fff.
+  assert.equal(CAMERA_PITCH_RATE, 0x4000);
+  assert.equal(turnedPitch(2, 0x400), 0xc00);
+  assert.equal(turnedPitch(2, -0x2000), 0);
+  assert.equal(turnedPitch(2, 0x8000), CAMERA_PITCH_MAX);
+  const flat = () => 0;
+  const level = createChaseCamera().update(2, [0, 5, 0], 0, flat, 0.016).position;
+  const up = createChaseCamera().update(2, [0, 5, 0], 0, flat, 0.016, { pitchBy: 0x800 }).position;
+  assert.ok(up[1] > level[1] + 5, "tilted up, the camera stands higher");
+  // A slope rising behind the truck: the game's camera may sit on it; with clearance it keeps clear of it.
+  const slope = (x, z) => -z * 0.6;
+  const touching = createChaseCamera().update(2, [0, 1, 0], 0, slope, 0.016).position;
+  const clear = createChaseCamera().update(2, [0, 1, 0], 0, slope, 0.016, { clearFt: CAMERA_CLEAR_FT }).position;
+  assert.ok(clear[1] - slope(clear[0], clear[2]) >= CAMERA_CLEAR_FT - 1e-6);
+  assert.ok(touching[1] - slope(touching[0], touching[2]) < CAMERA_CLEAR_FT);
+});
+
+test("the Inertia view is all the way out by about 55 mph", async () => {
+  const { INERTIA_SPEEDS_FT, inertiaView } = await import("../src/game/cameras.js");
+  assert.deepEqual(INERTIA_SPEEDS_FT, [10, 45, 80]);
+  const far = 0x2aaa / 256;
+  assert.ok(Math.abs(inertiaView(80).dist - far * 1.5) < 1e-9);
+  assert.ok(Math.abs(inertiaView(45).dist - far) < 1e-9);
+});
+
+test("where the clearance cannot be had, the camera stays as the game places it, behind the truck and never over it", async () => {
+  const { CAMERA_CLEAR_FT } = await import("../src/game/cameras.js");
+  // Ground climbing 3 in 1 all round the truck: clear by 6 ft only past 67.5 degrees, which the clearance does not go to.
+  const pit = (x, z) => 4.5 + 3 * Math.hypot(x, z);
+  const game = createChaseCamera().update(1, [0, 5, 0], 0, pit, 0.016).position;
+  const clear = createChaseCamera().update(1, [0, 5, 0], 0, pit, 0.016, { clearFt: CAMERA_CLEAR_FT }).position;
+  assert.deepEqual(clear, game);
+  assert.ok(clear[2] < 0, "behind the truck (heading 0 is +z)");
+});

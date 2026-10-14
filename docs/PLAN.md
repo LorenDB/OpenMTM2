@@ -217,7 +217,7 @@ Each item is read from the executable into `docs/MONSTER_EXE_ANALYSIS.md` first,
 | 5 | The blimp (`GOODY.BIN`): its flight along the course and its hum (`blimp2.wav`); the blimp commentary lines wait for the announcer | done (exe analysis 11) |
 | 6 | A proper **BlimpCam** (0x52c280) | done |
 | 7 | A proper **RaceCam** (0x52ba90) | done |
-| 8 | The View keys that turn and zoom the chase camera, and the cockpit's side and rear views | to do |
+| 8 | The View keys that turn and zoom the chase camera, and the cockpit's side and rear views | in progress: Camera up and down (held, + and -) tilt the chase camera at the panel's rate within its pitches; the heading keys, the zoom keys and the cockpit's views are to do |
 | 9 | The dust puffs the game spawns behind wheels on soft ground (`0x4de010`); the splash is done (M12); the sparks and tire tracks are Additions | done (exe analysis, Dust) |
 
 Then the sound system fixes, and one UI for every MTM2 version (retail 2.00.42, Community Patch 1 and 2, then CP3).
@@ -237,7 +237,7 @@ Things the port adds on purpose. They are marked here so the original game's spe
 - **Colour key** (done): a cutout texel is cut when its palette colour is black at five bits a channel (below 8 in red, green and blue), as the game's 16-bit textures hold it: AZTEC.POD's fences key on (7, 7, 7).
 - **Weather picture** (done): Foggy, Dense Fog, Snow and Pitch Black draw no sky, only the fog colour; Rain's fog is drawn at 0.6 of the code's colour; Pitch Black has almost no ambient light, so the headlights light the ground; in Snow the ice over water starts half formed and is full in 50 s.
 - **Pause menu** (done): Resume, Restart race, Instant replay (the last minute, played over the paused race, Back returns to it), Options (the dialog; the sound sliders apply at once) and End race.
-- **MTM1 tracks** (done, to be tested): a track read as MTM1 (OpenPhotex `detectSitOrigin`, JSTrackViewer's rule) says so in the Races list, draws its ground tiles without MTM2's two-pixel overlap, and gets its own flat sky (the level's sky art recoloured by its sky palette, a ceiling over the camera fading into the horizon colour, as JSTrackViewer's Classic sky). Options, Display switches both: MTM1 sky, MTM1 terrain overlap.
+- **MTM1 tracks** (done, to be tested): a track read as MTM1 (OpenPhotex `detectSitOrigin`, JSTrackViewer's rule) says so in the Races list, draws its ground tiles without MTM2's two-pixel overlap, and gets its own flat sky (the level's sky art recoloured by its sky palette, a ceiling over the camera fading into the horizon colour, as JSTrackViewer's Classic sky). Options, Advanced switches both: MTM1 sky, MTM1 terrain overlap.
 - **Races screen filter and after the race** (done, to be tested): a filter box above the track list; Winner's Circle's Continue goes to the Races screen; only computer trucks honk or whoop by themselves.
 - **Small fixes** (done): an add-on track's preview is `UI\<stem>S.BMP` (then `UI\<stem>.BMP`); the Helicopter key works while the truck lies on its roof; a one-shot sound whose sample was still loading is dropped instead of playing late, and the common ones are loaded at the start; the Garage's transfer gear slider runs the other way.
 - **Options and menus** (done): Options, Game has Sonic trucks (moved from Driver Check-in) and, at the bottom, Hall of Fame, Instant Replay (opens a `.rpl`) and Start screen; the draw distance is counted in terrain cells (32 ft each, 32 to 640, 128 the standard and the default); the start screen's title reads "OpenMTM2".
@@ -249,7 +249,7 @@ Things the port adds on purpose. They are marked here so the original game's spe
 - **Water drops** (done): drops thrown up and out where a wheel runs through water, more and higher with speed, and a burst on entering it; Options switches Water splashes. Wheel dust is drawn 2.2 times the game's size and a collision's dark grey smoke 3.2 times.
 - **Modern menus on the classic layout** (done): the modern skin lays every screen out as the classic one does on a plain 640 x 480 stage: the title, the labels the art would carry, the same panels, and the bottom bar drawn as real buttons (the current screen marked), plus a Back button on every screen but Start.
 - **Version-aware menus** (done): the picked folder's `MONSTER.EXE` version is read (its FileVersion resource) and kept in the install manifest; only 2.00.41 and 2.00.42 get the classic menu art, any other build (CP3 among them) the modern menus. An install made before this was recorded is taken as retail.
-- **Watermark** (done): "OpenMTM2 v0.5.0" in the game's font in the corner of every screen (`src/app/version.js`).
+- **Watermark** (done): "OpenMTM2 v0.5.1" in the game's font in the corner of every screen (`src/app/version.js`).
 - **Camera shortcuts** (done): Ctrl or Alt with 1 to 9 and 0 pick the ten views (1 cockpit, 2 Chase Near, ...).
 - **Helicopter rotors** (done): the model has none; a spinning main and tail rotor are added.
 - **Instant helicopter** (done): the Helicopter key works at any time and at once; see the helicopter section of the exe analysis for how the original behaved.

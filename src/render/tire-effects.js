@@ -4,7 +4,7 @@
   As the port first drew them, and still does with "Rich particles" off:
   - Puffs: a pool of camera-facing sprites that run through the twelve frames of PUFF2 or PUFF3.
   - Tracks: a ring of ribbons laid on the ground behind each tire on soft ground, textured with TREAD.RAW. A piece
-    lasts until the ring comes round to it, fading as it nears (game/tire-effects.js `trackShown`).
+    lasts `TRACK_LIFE_S`, fading over the end of it (game/tire-effects.js `trackOpacity`).
   - Sparks: a pool of bright points thrown from hull contacts, falling under gravity.
 
   With "Rich particles" (docs/VISUALS.md, "Particles"; game/particles.js) what a wheel throws follows what it stands on:
@@ -14,8 +14,8 @@
 */
 import * as THREE from "three";
 import {
-  CONTACT_GAP_S, DUST_RANGE_FT, DUST_TICK_S, TRACK_RANGE_FT, SMOKE_AFTER_S, SMOKE_EVERY_S, PUFF_FRAMES, PUFF_POOL, SPARK_POOL, TRACK_BREAK_FT, TRACK_POOL, TRACK_STEP_FT, TRACK_WIDTH_FT,
-  SPARK_BURST_GAP_S, TIRE_SPARK_SHARE, SPARK_HIT_SPEED, TRACK_FADE_PIECES, dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit, trackLevel,
+  CONTACT_GAP_S, DUST_RANGE_FT, DUST_TICK_S, TRACK_RANGE_FT, SMOKE_AFTER_S, SMOKE_EVERY_S, PUFF_FRAMES, PUFF_POOL, SPARK_POOL, TRACK_BREAK_FT, CLASSIC_TRACK_POOL, TRACK_STEP_FT, TRACK_WIDTH_FT,
+  SPARK_BURST_GAP_S, TIRE_SPARK_SHARE, SPARK_HIT_SPEED, SPARK_MIN_SPEED, CLASSIC_SPARK_MIN_SPEED, TRACK_LIFE_S, TRACK_FADE_S, dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit,
 } from "../game/tire-effects.js";
 import { iceHullContacts, standOnFt } from "../game/ice.js";
 import {
@@ -24,7 +24,7 @@ import {
   sprayDrops, sprayVelocity, tireThrows, trackKind,
 } from "../game/particles.js";
 import { bodyInSnow, scourShape, scourSteps } from "../game/snow-scour.js";
-import { fogDims } from "./atmosphere.js";
+import { classicFogDims } from "./atmosphere.js";
 import { createParticles } from "./particles.js";
 import { addShaderHook } from "./shader-hooks.js";
 import { createTireTracks } from "./tire-tracks.js";
@@ -77,7 +77,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   root.name = "tire-effects";
   scene.add(root);
   /** What something at game (x, y, z) stands over, feet: a bridge's deck it is over, else the ground. */
-  const floorUnder = floor ?? ((x, z) => ground(x, z));
+  // Decks are the port's own ("Rich particles"): without it everything follows the ground, as it first did.
+  const floorUnder = (rich && floor) || ((x, z) => ground(x, z));
   // The port's own particles and ruts, in place of everything drawn below.
   const particles = rich ? createParticles({ scene, ground: floorUnder, random, over: rich.over ?? null }) : null;
   /*
@@ -148,16 +149,18 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   }
 
   /*
-    Tracks: TRACK_POOL quads in one dynamic geometry, written round like a ring. How far round the ring a quad is, and so
-    how much of it is shown, is worked out by the graphics card from its place (four points to a quad): nothing is written
-    again as tracks fade. Only what has been laid is drawn, until the ring has been round once.
+    Tracks: CLASSIC_TRACK_POOL quads in one dynamic geometry, written round like a ring. Each point keeps when its quad
+    was laid, and the graphics card works out from the clock how much of it is shown (game/tire-effects.js
+    `trackOpacity`): nothing is written again as tracks fade. Only what has been laid is drawn, until the ring has been
+    round once.
   */
-  const TRACKS = pool(TRACK_POOL);
-  const trackPositions = new Float32Array(TRACKS * 12), trackUvs = new Float32Array(TRACKS * 8), trackIndex = new Uint32Array(TRACKS * 6);
+  const TRACKS = pool(CLASSIC_TRACK_POOL);
+  const trackPositions = new Float32Array(TRACKS * 12), trackUvs = new Float32Array(TRACKS * 8), trackBorn = new Float32Array(TRACKS * 4), trackIndex = new Uint32Array(TRACKS * 6);
   for (let q = 0; q < TRACKS; q++) trackIndex.set([q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3], q * 6);
   const trackGeometry = new THREE.BufferGeometry();
   trackGeometry.setAttribute("position", new THREE.BufferAttribute(trackPositions, 3).setUsage(THREE.DynamicDrawUsage));
   trackGeometry.setAttribute("uv", new THREE.BufferAttribute(trackUvs, 2).setUsage(THREE.DynamicDrawUsage));
+  trackGeometry.setAttribute("born", new THREE.BufferAttribute(trackBorn, 1).setUsage(THREE.DynamicDrawUsage));
   trackGeometry.setIndex(new THREE.BufferAttribute(trackIndex, 1));
   trackGeometry.setDrawRange(0, 0);
   const trackMaterial = new THREE.MeshBasicMaterial({
@@ -165,14 +168,14 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     // A ribbon on the ground faces one way all along: one pass, not three.js's two for what is see-through on both sides.
     side: THREE.DoubleSide, forceSinglePass: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  // The ring's next place.
-  const trackRing = { value: 0 };
+  // The clock the tracks are laid and aged by, seconds.
+  const trackClock = { value: 0 };
   addShaderHook(trackMaterial, "classic-tracks", 10, (shader) => {
-    shader.uniforms.uTrackHead = trackRing;
+    shader.uniforms.uTrackClock = trackClock;
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nuniform float uTrackHead;\nvarying float vTrackShown;")
+      .replace("#include <common>", "#include <common>\nuniform float uTrackClock;\nattribute float born;\nvarying float vTrackShown;")
       .replace("#include <project_vertex>", `#include <project_vertex>
-  vTrackShown = clamp( float( ${TRACK_POOL - 1} - ( int( uTrackHead + 0.5 ) - 1 - gl_VertexID / 4 + ${TRACK_POOL} ) % ${TRACK_POOL} ) / ${TRACK_FADE_PIECES.toFixed(1)}, 0.0, 1.0 );`);
+  vTrackShown = clamp( ( ${TRACK_LIFE_S.toFixed(1)} - ( uTrackClock - born ) ) / ${TRACK_FADE_S.toFixed(1)}, 0.0, 1.0 );`);
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\nvarying float vTrackShown;")
       .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.a *= vTrackShown;");
@@ -193,8 +196,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   const sparkGeometry = new THREE.BufferGeometry();
   sparkGeometry.setAttribute("position", new THREE.BufferAttribute(sparkPositions, 3).setUsage(THREE.DynamicDrawUsage));
   sparkGeometry.setAttribute("color", new THREE.BufferAttribute(sparkColors, 3).setUsage(THREE.DynamicDrawUsage));
-  // A spark is its own light, added to the picture: fog dims it (render/atmosphere.js `fogDims`).
-  const sparkPoints = new THREE.Points(sparkGeometry, fogDims(new THREE.PointsMaterial({
+  // A spark is its own light, added to the picture: with "Volumetric weather" fog dims it (render/atmosphere.js `classicFogDims`).
+  const sparkPoints = new THREE.Points(sparkGeometry, classicFogDims(new THREE.PointsMaterial({
     size: 0.22, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, sizeAttenuation: true,
   })));
   sparkPoints.frustumCulled = false;
@@ -557,17 +560,16 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     const dx = x - last[0], dz = z - last[1], length = Math.hypot(dx, dz);
     if (length < TRACK_STEP_FT || length > TRACK_BREAK_FT) { if (length > TRACK_BREAK_FT) state.last[tire] = [x, z]; else state.last[tire] = last; return; }
     const nx = (-dz / length) * (TRACK_WIDTH_FT / 2), nz = (dx / length) * (TRACK_WIDTH_FT / 2);
-    const corners = [[last[0] - nx, last[1] - nz], [last[0] + nx, last[1] + nz], [x + nx, z + nz], [x - nx, z - nz]].map(([cx, cz]) => [cx, floorUnder(cx, cz, y), cz]);
-    // Never off a bridge's deck or across a ledge.
-    if (!trackLevel(corners, floorUnder(x, z, y))) return;
+    const corners = [[last[0] - nx, last[1] - nz], [last[0] + nx, last[1] + nz], [x + nx, z + nz], [x - nx, z - nz]].map(([cx, cz]) => [cx, ground(cx, cz), cz]);
     const q = trackHead;
-    trackHead = (trackHead + 1) % TRACK_POOL;
+    trackHead = (trackHead + 1) % CLASSIC_TRACK_POOL;
     if (trackHead === 0) trackWrapped = true;
     trackFresh++;
     corners.forEach(([cx, cy, cz], k) => trackPositions.set([cx, cy + 0.07, -cz], (q * 4 + k) * 3));
     const v0 = state.strip[tire], v1 = v0 + length / 4;
     state.strip[tire] = v1;
     trackUvs.set([0, v0, 1, v0, 1, v1, 0, v1], q * 8);
+    trackBorn.fill(clock, q * 4, q * 4 + 4);
   }
 
   return {
@@ -668,16 +670,16 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       }
       // Only the quads laid since the last frame go to the graphics card, the newest before the ring's next place.
       if (trackFresh) {
-        const count = Math.min(trackFresh, TRACK_POOL), first = (trackHead - count + TRACK_POOL) % TRACK_POOL;
-        const ranges = first + count <= TRACK_POOL ? [[first, count]] : [[first, TRACK_POOL - first], [0, first + count - TRACK_POOL]];
-        for (const attribute of [trackGeometry.attributes.position, trackGeometry.attributes.uv]) {
+        const count = Math.min(trackFresh, CLASSIC_TRACK_POOL), first = (trackHead - count + CLASSIC_TRACK_POOL) % CLASSIC_TRACK_POOL;
+        const ranges = first + count <= CLASSIC_TRACK_POOL ? [[first, count]] : [[first, CLASSIC_TRACK_POOL - first], [0, first + count - CLASSIC_TRACK_POOL]];
+        for (const attribute of [trackGeometry.attributes.position, trackGeometry.attributes.uv, trackGeometry.attributes.born]) {
           for (const [from, n] of ranges) attribute.addUpdateRange(from * 4 * attribute.itemSize, n * 4 * attribute.itemSize);
           attribute.needsUpdate = true;
         }
         trackGeometry.setDrawRange(0, trackWrapped ? Infinity : trackHead * 6);
         trackFresh = 0;
       }
-      trackRing.value = trackHead;
+      trackClock.value = clock;
       // Drops fly and fall back into the water.
       let wet = false;
       drops.forEach((d, n) => {
@@ -733,7 +735,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         const kind = rich
           ? scrapeThrows({ onGround, underWater, onIce, family: lastSurface[i]?.family, type: lastSurface[i]?.type, weather: weatherNow, snowFt: rich.snowLying?.(where[0], where[2], where[1]) ?? 0 })
           : "spark";
-        const result = scrapeSparks(state.scrape.get(zone) ?? 0, steps / 60, speedFtS);
+        const result = scrapeSparks(state.scrape.get(zone) ?? 0, steps / 60, speedFtS, Math.random, 1, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED);
         state.scrape.set(zone, result.timer);
         const struck = sparksForHit(force, speedFtS);
         if (rich && kind === "spark") {
@@ -813,7 +815,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       if (flags.sparks) {
         // Tires alone throw far fewer than bodywork.
         const share = hull ? 1 : TIRE_SPARK_SHARE;
-        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, slide, Math.random, share);
+        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, slide, Math.random, share, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED);
         state.scrape.set(0, result.timer);
         const struck = sparksForHit(force, slide);
         if (rich && !underWater) {

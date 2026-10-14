@@ -5,7 +5,7 @@
   Being light added to the view, a beam is dimmed by the fog between it and the eye (render/atmosphere.js).
 */
 import * as THREE from "three";
-import { VEIL_GLSL, veilUniforms } from "./atmosphere.js";
+import { VEIL_GLSL, lightsDimInFog, veilUniforms } from "./atmosphere.js";
 
 export const BEAM_INTENSITY = 0.14, BEAM_SIDES = 24, BEAM_TEXTURE_FEET = 12, BEAM_TEXTURE_AROUND = 2;
 export const BEAM_AXIS = new THREE.Vector3(0, 0, 1);
@@ -66,7 +66,8 @@ export function beamMaterial(map, length, tint = [1, 1, 1]) {
       tint: { value: new THREE.Color(tint[0], tint[1], tint[2]) },
     },
     vertexShader: VERTEX, fragmentShader: FRAGMENT,
-    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: true,
+    // The game's cone shows through the fog unless the light is dimmed in it (render/atmosphere.js `setLightsInFog`).
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: lightsDimInFog(),
   });
 }
 

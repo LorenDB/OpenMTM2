@@ -29,8 +29,11 @@ export const CAMERA_MODES = Object.freeze([
  * distance follows the speed, Chase Near's when slow, Chase Far's at speed and half as far again flat out.
  */
 export const INERTIA_MODE = Object.freeze({ id: 10, name: "Inertia", dist: 0x1555, pitch: 0x800, offset: 0, zoom: 0xc000, inertia: true });
-/** Feet per second at which the Inertia view sits at Chase Near, at Chase Far, and at its farthest (1.5 x Chase Far). */
-export const INERTIA_SPEEDS_FT = Object.freeze([15, 75, 140]);
+/**
+ * Feet per second at which the Inertia view sits at Chase Near, at Chase Far, and at its farthest (1.5 x Chase Far):
+ * out by about 31 mph, and all the way out by about 55 mph.
+ */
+export const INERTIA_SPEEDS_FT = Object.freeze([10, 45, 80]);
 const smooth = (t) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c); };
 /** The Inertia view's distance in feet and its zoom factor at a speed (feet per second), before easing. */
 export function inertiaView(speedFt) {
@@ -45,6 +48,22 @@ export const cameraMode = (id) => CAMERA_MODES[id] ?? (id === INERTIA_MODE.id ? 
 
 /** The mode after `mode` going forward (View) or back (Shift + View), wrapping 0 to 9 (`count` 11 takes the Inertia view in). */
 export const nextMode = (mode, back = false, count = CAMERA_MODES.length) => (Math.min(mode, count - 1) + (back ? count - 1 : 1)) % count;
+
+/** The short camera cycle as the port first had it: the cockpit, Chase Near and Chase Far. */
+export const DEFAULT_SHORT_VIEWS = Object.freeze([0, 1, 2]);
+/** Every view the short cycle may hold, in order: the game's ten and the Inertia view. */
+export const SHORT_VIEW_CHOICES = Object.freeze([...CAMERA_MODES, INERTIA_MODE]);
+/** The views in the short cycle (Options, Advanced): those of `list` that are views, once each, in order; the default when none are. */
+export function shortViews(list) {
+  const ids = Array.isArray(list) ? SHORT_VIEW_CHOICES.map((m) => m.id).filter((id) => list.includes(id)) : [];
+  return ids.length ? ids : [...DEFAULT_SHORT_VIEWS];
+}
+/** The view after `mode` in `views`, or before it going back; from a view not in the list, its first (or last going back). */
+export function nextInList(mode, views, back = false) {
+  const i = views.indexOf(mode);
+  if (i < 0) return back ? views[views.length - 1] : views[0];
+  return views[(i + (back ? views.length - 1 : 1)) % views.length];
+}
 
 /**
  * The view a shortcut key picks: Ctrl (or Alt) with 1 to 9 and 0 picks the ten views in order, 1 the
@@ -67,6 +86,26 @@ export const fovFor = (mode, baseDegrees = 60) => {
   return (2 * Math.atan(Math.tan((baseDegrees * Math.PI) / 360) * zoom) * 180) / Math.PI;
 };
 
+/**
+ * The chase camera's pitch as the player turns it (the camera panel's up and down, `0x50d970`): a quarter of the frame
+ * time a frame, which is 0x4000 a second (90 degrees), and the pitch held to 0..0x3fff (`0x52b110` lifts one below 0).
+ * Choosing a view sets the mode's own pitch again (`0x52b780`).
+ */
+export const CAMERA_PITCH_RATE = 0x4000, CAMERA_PITCH_MAX = 0x3fff;
+/** The pitch a mode is turned to by `pitchBy` (game angle units), held as the game holds it. */
+export const turnedPitch = (mode, pitchBy) => Math.max(0, Math.min(CAMERA_PITCH_MAX, (cameraMode(mode)?.pitch ?? 0) + pitchBy));
+/**
+ * "Camera clearance" (the port's own): how far over the ground the chase camera keeps, feet, where the game lets it
+ * touch the ground; and how fast it settles back once it has been lifted, per second.
+ */
+export const CAMERA_CLEAR_FT = 6, CAMERA_SETTLE_PER_S = 2;
+/**
+ * The steepest the clearance tilts the camera, game angle units (67.5 degrees): where the ground cannot be cleared by
+ * then, the game's own rule places the camera. Tilted on past the vertical it would look straight down from over the
+ * truck, where a camera has no heading left to keep.
+ */
+export const CAMERA_CLEAR_MAX_PITCH = 0x3000;
+
 /** The shortest signed turn from `from` to `to`, radians. */
 const turnBetween = (from, to) => ((to - from + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 
@@ -77,20 +116,22 @@ const turnBetween = (from, to) => ((to - from + Math.PI * 3) % (Math.PI * 2)) - 
  * by moving in, as the game does.
  */
 export function createChaseCamera() {
-  let heading = null, lastMode = -1, settle = 0, inertia = null;
+  let heading = null, lastMode = -1, settle = 0, inertia = null, lifted = null;
   return {
-    reset() { heading = null; lastMode = -1; inertia = null; },
+    reset() { heading = null; lastMode = -1; inertia = null; lifted = null; },
     /**
      * `turn` (radians) swings the camera round the truck and `scale` stretches its distance: the replay's rotate and zoom,
      * and Z mode's orbit. `speedFt` is the truck's speed, which the Inertia view's distance follows; that view's result
-     * carries its `zoom` factor too.
+     * carries its `zoom` factor too. `pitchBy` (game angle units) turns the camera up or down from the mode's pitch
+     * (`turnedPitch`). `clearFt` keeps the camera that far over the ground ("Camera clearance"), easing it back down
+     * once the ground falls away; 0 is the game's rule, which lets it touch the ground.
      */
-    update(mode, pos, yaw, height, dt, { turn = 0, scale = 1, speedFt = 0 } = {}) {
+    update(mode, pos, yaw, height, dt, { turn = 0, scale = 1, speedFt = 0, pitchBy = 0, clearFt = 0 } = {}) {
       const m = cameraMode(mode);
       if (!m?.dist) throw new RangeError(`camera mode ${mode} is not a chase view`);
       // Choosing a view arms a two second timer (0x52b780); nothing else is blended: the distance, pitch
       // and zoom change at once and only the heading, which follows the truck's, takes time.
-      if (mode !== lastMode) { lastMode = mode; settle = 2; }
+      if (mode !== lastMode) { lastMode = mode; settle = 2; lifted = null; }
       const wanted = yaw + ANGLE(m.offset) + turn;
       if (heading === null) heading = wanted;
       else if (m.id === 5 || m.id === 9) {
@@ -115,16 +156,32 @@ export function createChaseCamera() {
         dist = inertia.dist * scale;
         zoom = inertia.zoom;
       }
-      const pitch = ANGLE(m.pitch);
+      const pitch = ANGLE(pitchBy ? turnedPitch(mode, pitchBy) : m.pitch);
       const at = (t, p) => [pos[0] - Math.sin(heading) * Math.cos(p) * t, pos[1] + Math.sin(p) * t, pos[2] - Math.cos(heading) * Math.cos(p) * t];
-      // Tilt up in 0x200 steps (at most 0x3fff) until the camera at full distance is over the ground.
-      let tilt = pitch;
-      for (let i = 0, extra = 0; i < 32; i++, extra += 0x200) {
-        tilt = pitch + ANGLE(extra);
-        const c = at(dist, tilt);
-        if (height(c[0], c[2]) <= c[1] || extra + 0x200 > 0x3fff) break;
+      // Tilt up in 0x200 steps (at most 0x3fff) until the camera at full distance is over the ground, or `clear` feet
+      // over it; `most` caps the pitch. Returns the tilt and whether it got there.
+      const raise = (clear, most = Infinity) => {
+        let tilt = pitch;
+        for (let i = 0, extra = 0; i < 32; i++, extra += 0x200) {
+          if (pitch + ANGLE(extra) > most) return { tilt, clear: false };
+          tilt = pitch + ANGLE(extra);
+          const c = at(dist, tilt);
+          if (height(c[0], c[2]) + clear <= c[1]) return { tilt, clear: true };
+          if (extra + 0x200 > 0x3fff) break;
+        }
+        return { tilt, clear: false };
+      };
+      let { tilt } = raise(0);
+      // With a clearance the camera tilts on to clear the ground by that much, no steeper than the cap, and rises at
+      // once and settles back slowly, so a crest does not jerk it about. Where it cannot, the game's tilt stands.
+      if (clearFt > 0) {
+        const lift = raise(clearFt, ANGLE(CAMERA_CLEAR_MAX_PITCH));
+        if (lift.clear && lift.tilt > tilt) tilt = lift.tilt;
+        lifted = lifted === null || tilt > lifted ? tilt : lifted + (tilt - lifted) * Math.min(1, CAMERA_SETTLE_PER_S * dt);
+        tilt = lifted;
       }
-      // Then the largest of 32 steps along the ray that is still over it.
+      // Then the largest of 32 steps along the ray that is still over it (the game's rule: the clearance only tilts the
+      // camera, since near the truck nothing is that far over the ground).
       let t = dist;
       for (let i = 1; i <= 32; i++) {
         const c = at((dist * i) / 32, tilt);

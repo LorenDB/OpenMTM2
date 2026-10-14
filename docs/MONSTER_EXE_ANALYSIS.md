@@ -495,6 +495,10 @@ Exactly (`0x41b330`, from the code):
   follow the course, and in the three stock Rumbles they stay outside the zone and only lose
   points. The human player is the only one who scores.
 - Places are by score, highest first.
+- **A level with fewer than two type 6 boxes** (add-on Rumbles such as The Sumo Pit have one):
+  mode 4 still skips the checkpoint tests, so the port scores it as a Rumble with the one box as
+  the zone and no summit (no box at all: neither). What the game reads for a missing box was not
+  traced; run as a Circuit instead, every pass through the box would count as a lap.
 - **Where the big losses come from** (the same code, checked again): the boxes have a height, and
   the test is on the truck's centre, so a truck thrown into the air above its box is "off the
   summit" as much as one pushed off the edge. SUMMIT1's summit box spans 119 to 161 ft over a deck
@@ -1194,6 +1198,11 @@ difference. The camera sits at the truck's position (x, y, z) minus `sin(h) cos(
 raised in 0x200 steps (at most 0x3fff) until the camera at full distance is above the terrain,
 then `d` is the largest of 32 equal steps that stays above it. The View keys turn the heading
 offset and pitch, and two more keys change the zoom in steps of 0x1000 (0x1000 to 0x20000);
+in the camera control panel (`0x50d970`, polled while its buttons are held, in a chase view only:
+mode not 0) the heading offset and the pitch each move by a quarter of the frame time a frame
+(`dt / 4`, so 0x4000 a second, 90 degrees), the heading offset wrapping at 0x10000 and the pitch
+held to -0x3fff..0x3fff, which the placement (`0x52b110`) then lifts to 0 when below it; choosing
+a view sets the mode's own pitch again (`0x52b780`);
 View Next steps the mode 0 to 9 (Shift reverses). BlimpCam (3, `0x52c280`) and RaceCam (4, `0x52ba90`) place the camera by their own rules and set its zoom from the
 horizontal distance `h` to the truck: `65536 / (h x 0.0625)` held to 0x1000..0x8000, a telephoto (about 4 to 10
 degrees of view at the base of 60 degrees):
@@ -1445,7 +1454,8 @@ stereo separation, `UseRedBook` and `UseModMusic`.
   changing the selected track, `SLIDERUP.WAV` and `SLIDERDN.WAV` when raising and lowering the
   Garage transfer gear, `GOOFF.WAV` for GO, and `CONOPTUP.WAV` for an ordinary click.
 - **Object sounds** (SIT, under "@sound effect entries", two names): the sound an object makes
-  when something hits it (`0x428bc0` plays it from the object's place; with none, by type: 1 post
+  when something hits it (`0x428bc0` plays it from the object's place, called on every contact by the
+  collision code, and only when the object's previous sound has finished, `0x464450`; with none, by type: 1 post
   `hitPost1`, 2 barricade `barricad`, 4 pylon `pylon`, 10 train `crash1`) and the sound it makes by
   itself, looping (TPARK's train `TRAIN22.WAV`, a crossing's `cross5.wav`, a stand's `CROWD.WAV`).
   Gains by name prefix: `strike` becomes `strike1` x3, `hickz` x2, `flush` x1.5, `hay` x0.6,

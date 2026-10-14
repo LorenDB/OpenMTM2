@@ -14,7 +14,7 @@ import { BRAKE_ON, beamShows, blinkOn, lampHeading, lampLevel, lampTone, lensGlo
 import { createModelLibrary, dataTexture } from "./track-scene.js";
 import { BEAM_AXIS, BEAM_INTENSITY, SHAFT_INTENSITY, aimShaft, beamGeometry, beamMaterial, shaftGeometry, shaftMaterial } from "./light-beam.js";
 import { GLOSS } from "./gloss.js";
-import { fogDims } from "./atmosphere.js";
+import { classicFogDims, fogDims } from "./atmosphere.js";
 
 function meshesOf(library, model) {
   const group = new THREE.Group();
@@ -458,8 +458,8 @@ function createLamps(truck, look, rich = false) {
     let lens = null, beam = null;
     const lensMap = texture(light.source);
     if (lensMap && light.radius > 0) {
-      // A lens's glow is light added to the view: fog dims it (render/atmosphere.js `fogDims`).
-      lens = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({
+      // A lens's glow is light added to the view: with "Volumetric weather" fog dims it (render/atmosphere.js `classicFogDims`).
+      lens = new THREE.Sprite(classicFogDims(new THREE.SpriteMaterial({
         map: lensMap, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false,
       })));
       lens.scale.setScalar(light.radius * 2);

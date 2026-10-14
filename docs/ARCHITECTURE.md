@@ -140,7 +140,7 @@ units.
   last bit. A drawn truck is moved onto it; the truck the simulation steps is not.
 - **Each part has a switch** (`src/game/visuals.js`), and a part switched off is not built: the
   track comes from the asset worker as it always did (`trackVisuals` says what to build), and
-  the screen draws it with the code it always had. The Scenery page sets the switches by a
+  the screen draws it with the code it always had. The Display page's Enhanced graphics section sets the switches by a
   preset, Auto, Off, Low, High or Max, or one by one on Custom (`src/game/graphics.js`). Auto
   picks among Low, High and Max from the graphics card (`src/app/graphics-hardware.js`).
 - **One assembly.** `src/render/scenery.js` makes the parts that are on for whichever screen

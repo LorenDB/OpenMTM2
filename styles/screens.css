@@ -302,11 +302,21 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .stage-back { position: absolute; z-index: 20; top: 10px; right: 96px; padding: 5px 12px; background: rgba(0, 0, 0, 0.72); }
 
 /* Options: tabs by category, and rows of one height. */
-.options-status { margin-right: auto; align-self: center; }
+.options-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-right: auto; }
+/* The ways out to other screens, in the light blue of the menus' own buttons (Driver Check-in). */
+.options-nav button.nav { border: 1px solid #6c7fb3; background: linear-gradient(#56637f, #2b3348); color: #fff; font-weight: 700; }
+.options-nav button.nav:hover:not(:disabled) { border-color: #9fb0e0; background: linear-gradient(#6a7aa0, #364163); }
+.options-footer button.unsaved { border-color: var(--accent); color: var(--accent); }
+.options-sub { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; }
+.options-sub h2 { margin: 0 0 10px; color: var(--accent); }
+.options-sub-list { display: grid; gap: 6px; }
+.options-sub-list input[type="text"] { width: 100%; }
+.options-sub-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
 .opt-tabs { display: flex; gap: 4px; margin: 0 0 12px; border-bottom: 1px solid var(--panel-edge); }
 .opt-tab { padding: 8px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted, #aab); }
 .opt-tab.selected { background: var(--panel, #1a2030); border-color: var(--panel-edge); color: var(--accent, #f2c14e); }
-.opt-pages { min-height: 300px; }
+/* Every page the same size, whatever it holds: a longer one scrolls. */
+.opt-pages { height: min(470px, calc(100vh - 230px)); overflow-y: auto; padding-right: 4px; }
 .opt-page[hidden] { display: none; }
 .opt-page { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; align-content: start; }
 .opt-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border: 1px solid var(--panel-edge); border-radius: 6px; background: rgba(255, 255, 255, 0.03); }
@@ -320,6 +330,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .opt-fixed { color: var(--muted, #aab); }
 .opt-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
 .opt-page > .muted, .opt-page > .bindings, .opt-page > .opt-switches { grid-column: 1 / -1; }
+.opt-page > h3 { grid-column: 1 / -1; margin: 10px 0 2px; font-size: 13px; color: var(--muted, #aab); text-transform: uppercase; letter-spacing: 0.05em; }
+.opt-page > h3:first-child { margin-top: 0; }
 .opt-page > .opt-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
 .opt-page > .opt-switches:empty { display: none; }
 .opt-page > .bindings { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }

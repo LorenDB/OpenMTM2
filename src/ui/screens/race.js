@@ -32,7 +32,7 @@ import { mergeBindings } from "../../game/input/bindings.js";
 import { SunFlare } from "../../render/sun-flare.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
 import { mtm2Sim } from "../../vendor/openphotex/index.js";
-import { COCKPIT_EYE, CAMERA_MODES, INERTIA_MODE, cameraMode, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextMode, raceCamera, zoomToFov } from "../../game/cameras.js";
+import { COCKPIT_EYE, CAMERA_CLEAR_FT, CAMERA_MODES, CAMERA_PITCH_MAX, CAMERA_PITCH_RATE, INERTIA_MODE, cameraMode, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextInList, nextMode, raceCamera, shortViews, zoomToFov } from "../../game/cameras.js";
 import { createBlimp, hasBlimp } from "../../game/blimp.js";
 import { soundRange, surfaceFamily } from "../../game/sound-model.js";
 import { createTireEffects } from "../../render/tire-effects.js";
@@ -64,7 +64,7 @@ import { createCrashDamage, crashDamageMessage } from "../../game/crash-damage.j
 import { createCaption } from "../../render/caption.js";
 import { courseLoop, createCourseMap } from "../../render/minimap.js";
 import { createCockpit, finderAngle } from "../../render/cockpit.js";
-import { formatRaceTime, raceEntrants, summitBoard } from "../../game/race-setup.js";
+import { cpuNames, formatRaceTime, raceEntrants, summitBoard } from "../../game/race-setup.js";
 import { createModelLibrary, createTrackWorld, disposeObject, moveObjects, setStartLights, skyColor, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
@@ -73,6 +73,7 @@ import { trackVisuals, visualSettings } from "../../game/visuals.js";
 import { applyGraphics } from "../../game/graphics.js";
 import { graphicsHardware } from "../../app/graphics-hardware.js";
 import { createScenery } from "../../render/scenery.js";
+import { setLightsInFog } from "../../render/atmosphere.js";
 import { createMenu, cycle } from "../../game/vr/menu.js";
 import { SEAT_STEP_FT } from "../../game/vr/seat.js";
 import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS } from "../../game/vr/settings.js";
@@ -233,11 +234,14 @@ async function mountRace(container, context, params) {
   const mtm1Options = { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap };
   // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
   applyGraphics(context.settings, graphicsHardware());
+  // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
+  setLightsInFog(visualSettings(context.settings).weather);
   const build = await context.assets.call("trackRender", {
     path: track.path, scope: track.scope, detailLevel: context.settings.detailLevel, raceType: track.raceType,
     truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap,
     // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
     visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
+    smoothTiles: context.settings.look === "enhanced",
   });
   if (disposed) return { unmount };
   if (build.problems?.length && !demo) {
@@ -256,7 +260,7 @@ async function mountRace(container, context, params) {
   const usable = catalogTrucks.filter((t) => build.truckModels[t.file]);
   const entrants = eventPass
     ? eventPass.entrants.filter((e) => build.truckModels[e.file] && e.slot < grid.length)
-    : raceEntrants({ playerTruck, trucks: usable, slots: grid.length, opponents, playerName: driver.name, spectator });
+    : raceEntrants({ playerTruck, trucks: usable, slots: grid.length, opponents, playerName: driver.name, spectator, names: cpuNames(context.settings.aiNames) });
   // A little smaller than the HUD's text, in whole pixels so the glyphs stay sharp.
   const nameTags = createNameTags(entrants.length, hudFont, Math.max(1, Math.round(scale * 0.75)));
   view.append(nameTags.element);
@@ -496,6 +500,15 @@ async function mountRace(container, context, params) {
     audio.setEffectsPaused?.(on);
     if (!on) await sim.call("resume");
   };
+  // Spectator mode: once the race is over, the way on to its results (`watchedOver`).
+  const resultsButton = el("button", { class: "primary", hidden: true, "data-menu-sound": "STARTOFF", onclick: async () => { if (finishing) return; await setPaused(false); finish(); } }, "Results");
+  let overShown = false;
+  const watchedOver = () => {
+    if (overShown) return;
+    overShown = true;
+    resultsButton.hidden = false;
+    caption.show("The race is over. Esc: the pause menu, and Results", 8);
+  };
   pauseMenu.append(
     el("p", { class: "race-pause-title" }, t("Pause")),
     el("button", { class: "primary", onclick: () => setPaused(false) }, "Resume"),
@@ -509,6 +522,7 @@ async function mountRace(container, context, params) {
       // The sound sliders take effect at once; the rest applies to the next race.
       context.optionsDialog?.addEventListener("close", () => audio.setVolumes(context.settings.sound), { once: true });
     } }, "Options"),
+    resultsButton,
     el("button", {
       "data-menu-sound": "STARTOFF",
       onclick: leave,
@@ -604,9 +618,11 @@ async function mountRace(container, context, params) {
   const nextView = (shortcut = null, back = false) => {
     if (host.presenting) flash(vr.nextView().name, performance.now(), 1.5);
     else {
-      // The short cycle (Options, Game): the cockpit, Chase Near and Chase Far, which are the first three views.
-      const views = context.settings.shortViewCycle ? 3 : zCameras() ? INERTIA_MODE.id + 1 : CAMERA_MODES.length;
-      viewMode = shortcut ?? nextMode(viewMode, back, views);
+      // The short cycle (Options, Advanced): the views the player listed, the cockpit, Chase Near and Chase Far unless changed.
+      const views = zCameras() ? INERTIA_MODE.id + 1 : CAMERA_MODES.length;
+      viewMode = shortcut ?? (context.settings.shortViewCycle
+        ? nextInList(viewMode, shortViews(context.settings.shortViews), back)
+        : nextMode(viewMode, back, views));
       context.settings.view = viewMode;
       saveSettings(context.settings);
       // "Chase Far of Bear Foot": the view's name and the truck being watched (0x52d180).
@@ -670,6 +686,14 @@ async function mountRace(container, context, params) {
   };
   window.addEventListener("keydown", onKey);
   cleanups.push(() => window.removeEventListener("keydown", onKey));
+  // The keys held down, for the Camera up and down keys, which tilt the chase camera while held.
+  const held = new Set();
+  const onHold = (e) => { if (e.type === "keydown") held.add(e.code); else held.delete(e.code); };
+  const letGo = () => held.clear();
+  window.addEventListener("keydown", onHold);
+  window.addEventListener("keyup", onHold);
+  window.addEventListener("blur", letGo);
+  cleanups.push(() => { window.removeEventListener("keydown", onHold); window.removeEventListener("keyup", onHold); window.removeEventListener("blur", letGo); });
   /** What the controllers' buttons do, once per press (game/vr/controls.js). */
   const actOnHands = ({ joystick, actions }) => {
     hands = host.presenting ? joystick : null;
@@ -832,15 +856,29 @@ async function mountRace(container, context, params) {
     return flyer.enabled;
   };
   let lastView = -1;
+  /** How far the player has tilted the chase camera from its view's own pitch (game angle units); a new view starts level. */
+  let pitchBy = 0;
+  /** Tilt the chase camera while Camera up or down is held, at the game's rate, held within the pitches it allows. */
+  const tiltCamera = (dt) => {
+    const base = cameraMode(viewMode)?.pitch;
+    if (base === undefined || dt <= 0 || replaying || context.optionsDialog?.isConnected) return;
+    // Z mode's - and + zoom; Shift with them zooms with the Z-mode cameras option.
+    if (gold?.zooming || held.has("ShiftLeft") || held.has("ShiftRight")) return;
+    const down = (codes) => codes.some((code) => held.has(code));
+    const way = (down(keyMap.cameraUp ?? []) ? 1 : 0) - (down(keyMap.cameraDown ?? []) ? 1 : 0);
+    if (way) pitchBy = Math.max(-base, Math.min(CAMERA_PITCH_MAX - base, pitchBy + way * CAMERA_PITCH_RATE * dt));
+  };
   const cockpitEye = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() }, scratchScale = new THREE.Vector3();
   // Switching views changes the camera at once, as the game does: only a chase camera's heading takes time to catch up (game/cameras.js).
   const placeCamera = (p, dt) => {
     if (viewMode !== lastView) {
       lastView = viewMode;
+      pitchBy = 0;
       if (!cameraMode(viewMode).dist) chase.reset();
       camera.fov = fovFor(viewMode);
       camera.updateProjectionMatrix();
     }
+    tiltCamera(dt);
     // The BlimpCam and RaceCam set their own zoom each frame, from their distance to the truck.
     const zoom = placeCameraNow(p, dt);
     if (zoom !== null) {
@@ -869,6 +907,7 @@ async function mountRace(container, context, params) {
     // Z mode's orbit swings the chase views; the Inertia view follows the watched truck's speed.
     const view = special ?? chase.update(mode, p.pos, yaw, ground, dt, {
       turn: gold?.cameraTurn ?? 0, speedFt: latest?.poses[cameraTarget]?.current.speed ?? latest?.poses[0]?.current.speed ?? 0,
+      pitchBy, clearFt: context.settings.cameraClearance ? CAMERA_CLEAR_FT : 0,
     });
     // Game feet to the scene: z is mirrored.
     camera.position.set(view.position[0], view.position[1], -view.position[2]);
@@ -984,11 +1023,11 @@ async function mountRace(container, context, params) {
     if (!host.presenting && context.settings.fpsLimit && now - drawnAt < 1000 / Math.max(10, context.settings.fpsLimitValue ?? 60) - 1) return;
     const dt = Math.min(0.1, Math.max(0, (now - drawnAt) / 1000));
     drawnAt = now;
-    // The FPS counter follows the Options at once (Apply in the pause menu's dialog).
+    // The FPS counter follows the Options at once (Save in the pause menu's dialog).
     if (fpsCounter.visible !== !!context.settings.fpsCounter) fpsCounter.setVisible(!!context.settings.fpsCounter);
     fpsCounter.update(dt);
     if (replaying) return;
-    // The draw distance follows the Options at once (Apply in the pause menu's dialog).
+    // The draw distance follows the Options at once (Save in the pause menu's dialog).
     const cells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
     if (cells !== drawnCells) {
       drawnCells = cells;
@@ -1021,7 +1060,10 @@ async function mountRace(container, context, params) {
             } else {
               if (!spectator) cameraTarget = end.target;
               if (end.justFinished) viewMode = 4;
-              if (end.done && !finishing) finish();
+              // A watched race stays on screen when it is over, to be looked round as long as the spectator likes: the
+              // pause menu's Results goes on to them.
+              if (end.done && !finishing && spectator) watchedOver();
+              else if (end.done && !finishing) finish();
             }
           }
         })
@@ -1036,7 +1078,10 @@ async function mountRace(container, context, params) {
       // last, so it, the camera and the marks it leaves never jump a world when the simulation wraps it. The world is
       // then placed around the camera (render/track-scene.js `placeBlocks`).
       const watchedPose = shown[cameraTarget] ?? shown[0];
-      watchedPose.pos = drawAnchor = nearestCopy(watchedPose.pos, drawAnchor ?? watchedPose.pos);
+      // The free camera (spectator mode) flies where it likes: the trucks are drawn at the copy nearest it, or they would
+      // stay behind on the world it left.
+      const flown = flyer?.enabled ? [camera.position.x, camera.position.y, -camera.position.z] : null;
+      watchedPose.pos = drawAnchor = nearestCopy(watchedPose.pos, flown ?? drawAnchor ?? watchedPose.pos);
       for (const p of shown) {
         if (p !== watchedPose) p.pos = nearestCopy(p.pos, watchedPose.pos);
         if (p.heli?.pos) p.heli.pos = nearestCopy(p.heli.pos, watchedPose.pos);
@@ -1429,7 +1474,7 @@ async function mountRace(container, context, params) {
         run: ([name]) => {
           const index = /^[0-3]$/.test(name ?? "") ? Number(name) : SKILLS.findIndex((n) => n.startsWith((name ?? "").toLowerCase()));
           if (!name || index < 0) return `Usage: skill <0-3|${SKILLS.join("|")}>`;
-          // Sonic is Professional with the computer trucks driving as on a Sonic track (Options, Game).
+          // Sonic is Professional with the computer trucks driving as on a Sonic track (Options, Advanced).
           if (index >= 2) { context.settings.sonicTrucks = index === 3; saveSettings(context.settings); }
           restart({ difficulty: Math.min(2, index) });
           return `Skill: ${SKILLS[index]}.`;

@@ -32,6 +32,7 @@ import { trackVisuals, visualSettings } from "../../game/visuals.js";
 import { applyGraphics } from "../../game/graphics.js";
 import { graphicsHardware } from "../../app/graphics-hardware.js";
 import { createScenery } from "../../render/scenery.js";
+import { setLightsInFog } from "../../render/atmosphere.js";
 import { createFpsCounter } from "../fps-counter.js";
 import { saveSettings } from "../../app/settings.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
@@ -60,11 +61,16 @@ export default async function mount(container, context, { replay }) {
   const truckFiles = replay.vehicles.map((v) => v.truck.toUpperCase());
   // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
   applyGraphics(context.settings, graphicsHardware());
+  // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
+  setLightsInFog(visualSettings(context.settings).weather);
+  // Dust, tracks, sparks and sun shadows read off the film ("Replay effects", docs/VISUALS.md); off, a replay is drawn as it first was.
+  const replayFx = visualSettings(context.settings).replay;
   const build = await context.assets.call("trackRender", {
     mtm1: { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap },
     path, scope: trackInfo.scope, detailLevel: replay.detailLevel ?? context.settings.detailLevel, raceType: trackInfo.raceType ?? "circuit", truckFiles, weather: replay.weather,
     // A replay's weather never changes, so the puddle map is built only for one recorded in Rain.
     visuals: trackVisuals(context.settings, { weather: replay.weather ?? 0, weatherMask: 0 }),
+    smoothTiles: context.settings.look === "enhanced",
   }).catch((err) => { loading.textContent = `The replay's track could not be built: ${err.message}`; return null; });
   if (disposed || !build) return { unmount };
   loading.hidden = true;
@@ -141,7 +147,7 @@ export default async function mount(container, context, { replay }) {
   weatherScene.set(replay.weather ?? 0);
   cleanups.push(() => weatherScene.dispose());
   // The enhanced look's sun shadows, as in the race.
-  if (look === "enhanced") {
+  if (look === "enhanced" && replayFx) {
     shadows = enableSunShadows({ renderer, scene, camera, world, sun, trucks: drawn.filter(Boolean).map((truck) => truck.object), natural: !!scenery.lightRig });
     shadows.follow(sun, scenery.lightRig?.rig?.shadow ?? 1);
     cleanups.push(() => shadows?.dispose?.());
@@ -158,8 +164,8 @@ export default async function mount(container, context, { replay }) {
     (game/replay-effects.js). What the ground is made of is the level's own.
   */
   // In the dark a shower of sparks lights what is about it.
-  const tireFx = createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: drawn.length, rich: scenery.particles, dark: !!WEATHER_LOOK[replay.weather ?? 0]?.headlights });
-  cleanups.push(() => tireFx.dispose());
+  const tireFx = replayFx ? createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: drawn.length, rich: scenery.particles, dark: !!WEATHER_LOOK[replay.weather ?? 0]?.headlights }) : null;
+  cleanups.push(() => tireFx?.dispose());
   window.__openmtm2Replay = { scene, camera, renderer, tireFx };
   cleanups.push(() => { delete window.__openmtm2Replay; });
   const surfaces = build.sim?.clr && build.sim?.textureValues ? mtm2Sim.createSurfaceMap(new Uint16Array(build.sim.clr), new Int32Array(build.sim.textureValues)) : null;
@@ -369,28 +375,30 @@ export default async function mount(container, context, { replay }) {
     const filmDt = filmClock !== null && playing && rate > 0 ? Math.min(0.25, Math.max(0, clock - filmClock)) : 0;
     filmClock = clock;
     const flags = effectFlags(), weatherNow = replay.weather ?? 0;
-    tireFx.setWater(waters[0] ? waters[0].userData.levelFt + waters[0].position.y : null);
-    tireFx.update({
-      dt: filmDt, listener: [camera.position.x, camera.position.y, -camera.position.z], flags, noDust: weatherNow === 4 || weatherNow === 5,
-      light: scenery.lightRig ? Math.min(1, weatherScene.lightLevel() * 1.15) : 1,
-      weather: weatherNow, camera, lights: { sun, ambient: ambientLight, hemisphere: scenery.lightRig?.hemisphere ?? null },
-      snowDown: scenery.groundSurface?.snowDown ?? 0, viewHeight: canvas.height,
-      trucks: state.trucks.map((pose, i) => {
-        if (!pose || !drawn[i]) return null;
-        // A wheel is on the ground when its tread is at it, at the deck of a bridge it is on, or at the ice.
-        const tires = pose.tires.map((tire, k) => { const hub = drawn[i].tireHub(k); return { ...tire, onGround: hub[1] - drawn[i].tireRadius - standOn(hub[0], hub[2], hub[1]) < ON_GROUND_FT }; });
-        const type = madeOf ? mtm2Sim.surfaceType(madeOf.surface(pose.pos[0], pose.pos[1] + 100, pose.pos[2])) : 0;
-        return { object: drawn[i], pose: { ...pose, tires, forward: pose.speed }, surface: { family: surfaceFamily(type), type }, tires: null, radius: drawn[i].tireRadius };
-      }),
-    });
-    // Where a hull point is down on the ground while the truck moves, it scrapes: sparks, clods or chips by what it scrapes on.
-    if (filmDt > 0) {
-      state.trucks.forEach((pose, i) => {
-        if (!pose || !drawn[i]) return;
-        for (const contact of replayContacts({ hull: (zone) => drawn[i].hullPoint(zone), ground: standOn, last: contacts[i], dt: filmDt })) {
-          tireFx.hit(i, drawn[i], contact.zone, contact.steps, contact.force, pose.speed ?? 0, flags);
-        }
+    if (tireFx) {
+      tireFx.setWater(waters[0] ? waters[0].userData.levelFt + waters[0].position.y : null);
+      tireFx.update({
+        dt: filmDt, listener: [camera.position.x, camera.position.y, -camera.position.z], flags, noDust: weatherNow === 4 || weatherNow === 5,
+        light: scenery.lightRig ? Math.min(1, weatherScene.lightLevel() * 1.15) : 1,
+        weather: weatherNow, camera, lights: { sun, ambient: ambientLight, hemisphere: scenery.lightRig?.hemisphere ?? null },
+        snowDown: scenery.groundSurface?.snowDown ?? 0, viewHeight: canvas.height,
+        trucks: state.trucks.map((pose, i) => {
+          if (!pose || !drawn[i]) return null;
+          // A wheel is on the ground when its tread is at it, at the deck of a bridge it is on, or at the ice.
+          const tires = pose.tires.map((tire, k) => { const hub = drawn[i].tireHub(k); return { ...tire, onGround: hub[1] - drawn[i].tireRadius - standOn(hub[0], hub[2], hub[1]) < ON_GROUND_FT }; });
+          const type = madeOf ? mtm2Sim.surfaceType(madeOf.surface(pose.pos[0], pose.pos[1] + 100, pose.pos[2])) : 0;
+          return { object: drawn[i], pose: { ...pose, tires, forward: pose.speed }, surface: { family: surfaceFamily(type), type }, tires: null, radius: drawn[i].tireRadius };
+        }),
       });
+      // Where a hull point is down on the ground while the truck moves, it scrapes: sparks, clods or chips by what it scrapes on.
+      if (filmDt > 0) {
+        state.trucks.forEach((pose, i) => {
+          if (!pose || !drawn[i]) return;
+          for (const contact of replayContacts({ hull: (zone) => drawn[i].hullPoint(zone), ground: standOn, last: contacts[i], dt: filmDt })) {
+            tireFx.hit(i, drawn[i], contact.zone, contact.steps, contact.force, pose.speed ?? 0, flags);
+          }
+        });
+      }
     }
     state.damage.forEach((code, i) => syncDamage(i, code));
     if (state.objects.length) moveObjects(world, state.objects.map((o) => ({ sitIndex: o.sitIndex, matrix: toSceneMatrix(o.matrix, o.pos) })));

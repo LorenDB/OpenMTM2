@@ -27,6 +27,8 @@ export function raceCheckpoints(cps) {
         psi: c.gate.angles[2],
     }));
 }
+/** A box no truck is ever inside: the zone or summit of a Rumble whose level has too few checkpoints. */
+const NO_BOX = () => createBox([0, -1e9, 0], [0, 0, 0]);
 export function createRace(trucks, checkpoints, course, laps, difficulty, mode = "circuit") {
     return {
         trucks: trucks.map((t, i) => ({
@@ -34,8 +36,12 @@ export function createRace(trucks, checkpoints, course, laps, difficulty, mode =
             fastestLap: 0, splits: [], finishLap: laps, finished: false, state: 0, progress: 0, place: i + 1,
         })),
         checkpoints, course, laps, clock: 0, startTime: COUNTDOWN_S, over: false, difficulty,
-        // A Rumble's zone and summit are the first two checkpoints' gates; its laps are minutes.
-        summit: mode === "summit" && checkpoints.length >= 2 ? createSummit(trucks.length, checkpoints[0].gate, checkpoints[1].gate) : null,
+        // A Rumble's zone and summit are the first two checkpoints' gates; its laps are minutes. Mode 4 never tests
+        // checkpoints (§6.3), so a Rumble always scores: a level with one box has a zone and no summit, and one with none
+        // neither (an empty box holds nothing).
+        summit: mode === "summit"
+            ? createSummit(trucks.length, checkpoints[0]?.gate ?? NO_BOX(), checkpoints[1]?.gate ?? NO_BOX())
+            : null,
         roundSeconds: mode === "summit" ? laps * 60 : 0,
     };
 }

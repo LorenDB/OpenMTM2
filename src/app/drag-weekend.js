@@ -3,7 +3,7 @@
   run with, the strip, the trucks, the difficulty and the weather. It hosts the event: it picks the field, sets up each
   pass for the race screen and hands the pass's results back to the event. It lives for the session only.
 */
-import { CPU_NAMES } from "../game/race-setup.js";
+import { cpuNames } from "../game/race-setup.js";
 import { PERSONALITIES, closeQualifying, createDragEvent, currentPairing, recordPass, stageDepth } from "../game/events/drag-event.js";
 import { currentDriver, getProfiles } from "./profile-store.js";
 
@@ -23,10 +23,11 @@ export function startDragWeekend(context, { track, trucks, playerTruck, playerNa
   const kinds = Object.keys(PERSONALITIES);
   // A tournament brings its own drivers (app/tournament.js): they keep their trucks and are given a personality each.
   const field = given ? given.map((d) => (d.player ? { ...d } : { ...d, personality: kinds[Math.floor(random() * kinds.length)] })) : [{ name: playerName, truck: playerTruck, player: true }];
+  const names = cpuNames(context.settings?.aiNames);
   for (let i = 0; !given && i < size - 1; i++) {
     field.push({
       // Past the game's eight names a second round of them is numbered.
-      name: `${CPU_NAMES[i % CPU_NAMES.length]}${i >= CPU_NAMES.length ? " II" : ""}`, truck: (others[i % Math.max(1, others.length)] ?? trucks[0]).file,
+      name: `${names[i % names.length]}${i >= names.length ? " II" : ""}`, truck: (others[i % Math.max(1, others.length)] ?? trucks[0]).file,
       player: false, personality: kinds[Math.floor(random() * kinds.length)],
     });
   }

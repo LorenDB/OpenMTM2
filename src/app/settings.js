@@ -11,6 +11,8 @@ import { GRAPHICS_PRESETS } from "../game/graphics.js";
 import { VISUAL_OPTIONS } from "../game/visuals.js";
 
 const KEY = "openmtm2.settings";
+/** The settings' format, stored with them and with an export (Options, Data). */
+export const SETTINGS_VERSION = 7;
 
 /**
  * The physics a race can run under, as Options (Game) and the console's `physics` list them. A model is one more entry
@@ -56,7 +58,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   opponentFps: 30,            // the frame rate the computer trucks drive as if the game ran at (the 1998 game's is about 30)
   timingHud: true,            // the times, laps and place in the corner (the Timing display key, O, switches them in every view)
   fpsCounter: false,          // the frames per second in the corner (the FPS counter key switches it)
-  shortViewCycle: false,      // the Camera key steps through the cockpit, Chase Near and Chase Far only
+  shortViewCycle: false,      // the Camera key steps through `shortViews` only
+  shortViews: Object.freeze([0, 1, 2]), // the short cycle's views (game/cameras.js `shortViews`): the cockpit, Chase Near and Chase Far
+  cameraClearance: false,     // the chase camera keeps a few feet over the ground, where the game lets it touch it (game/cameras.js)
+  aiNames: Object.freeze([]), // the computer drivers' own names, by place; an empty one is the game's (game/race-setup.js `cpuNames`)
   zModeCameras: false,        // Z mode's zoom and cameras in any race, without GOLD or slew mode, and the Inertia view
   fullAutopilot: false,       // the game's "Full Autopilot": the player's truck drives itself
   autoStage: true,            // drag races: the player's truck stages itself (off: stage it by hand, or press the Auto Stage key)
@@ -71,18 +76,19 @@ export const DEFAULT_SETTINGS = Object.freeze({
   terrainDetail: true,        // Community Patch 3: the terrain's detail normals where a track paints a mask, and HD tiles' normal maps
   reflections: true,          // Community Patch 3: the sky reflected in materials that ask for it (glass, paint)
   showHiddenTracks: true,     // the two hidden tracks are listed unless this is turned off
-  graphics: "auto",           // the scenery preset (game/graphics.js): auto, off, low, high, max or custom. Auto picks for this machine
-  terrainSmoothing: true,     // the ground's facets rounded and cliffs given relief (game/terrain-relief.js; docs/VISUALS.md)
-  enhancedWater: true,        // water with waves, reflections and a shore, and solid ice in Snow (render/water-surface.js)
-  volumetricWeather: true,    // fog in drifting layers, rain and snow falling through the air (render/atmosphere.js, precipitation.js)
-  rainPuddles: true,          // wet ground and standing water in Rain (game/ground-maps.js)
-  snowCover: true,            // snow settling on the ground in Snow (render/ground-surface.js)
-  groundDetail: true,         // grain over the ground's textures, which are filtered for the distance (render/ground-detail.js)
-  naturalLight: true,         // the sun's colour, sky and ground light, terrain shadows and the tone curve (render/light-rig.js)
-  glossyPaint: true,          // trucks mirror the sky and glint in the sun (render/gloss.js)
-  lensEffects: true,          // bright lights glow, on the flat screen (render/lens.js)
-  truckLamps: true,           // lamps that glow in their own colour, beams as light in the air, tail lamps that brake bright (render/truck-object.js, light-beam.js)
-  richParticles: true,        // dust, spray, snow and sparks that are lit and fogged, and tracks pressed into the ground (render/particles.js, tire-tracks.js)
+  graphics: "off",            // the scenery preset (game/graphics.js): auto, off, low, high, max or custom. Off is the game's own picture
+  terrainSmoothing: false,    // the ground's facets rounded and cliffs given relief (game/terrain-relief.js; docs/VISUALS.md)
+  enhancedWater: false,       // water with waves, reflections and a shore, and solid ice in Snow (render/water-surface.js)
+  volumetricWeather: false,   // fog in drifting layers, rain and snow falling through the air (render/atmosphere.js, precipitation.js)
+  rainPuddles: false,         // wet ground and standing water in Rain (game/ground-maps.js)
+  snowCover: false,           // snow settling on the ground in Snow (render/ground-surface.js)
+  groundDetail: false,        // grain over the ground's textures, which are filtered for the distance (render/ground-detail.js)
+  naturalLight: false,        // the sun's colour, sky and ground light, terrain shadows and the tone curve (render/light-rig.js)
+  glossyPaint: false,         // trucks mirror the sky and glint in the sun (render/gloss.js)
+  lensEffects: false,         // bright lights glow, on the flat screen (render/lens.js)
+  truckLamps: false,          // lamps that glow in their own colour, beams as light in the air, tail lamps that brake bright (render/truck-object.js, light-beam.js)
+  richParticles: false,       // dust, spray, snow and sparks that are lit and fogged, and tracks pressed into the ground (render/particles.js, tire-tracks.js)
+  replayEffects: false,       // dust, tracks, sparks and sun shadows in replays, read off the recorded film (game/replay-effects.js)
   vr: Object.freeze({}),      // the headset's preferences, see game/vr/settings.js (docs/VR.md)
   offline: true,              // keep a copy of the app in the browser, to start without a server (app/offline.js)
   physics: "mtm2",            // the physics model, one of PHYSICS_MODELS
@@ -91,30 +97,61 @@ export const DEFAULT_SETTINGS = Object.freeze({
 
 export function loadSettings() {
   try {
-    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    // Version 2 made the enhanced look the default and version 3 listed the hidden tracks; what was saved
-    // before them was never a choice.
-    if (!(stored.version >= 2)) stored.look = "enhanced";
-    if (!(stored.version >= 3)) stored.showHiddenTracks = true;
-    // Version 4 made the menus follow the build unless the player picks one.
-    if (!(stored.version >= 4)) stored.skin = "auto";
-    // Version 5 counts the draw distance in terrain cells, 128 the standard; the feet saved before are dropped.
-    if (!(stored.version >= 5)) delete stored.drawDistance;
-    // Version 7 sets the scenery from a preset. A save that had turned a part off keeps that
-    // mix as Custom. One that had not was the default, every part on, so it follows Auto.
-    if (!(stored.version >= 7) && !GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) {
-      if (VISUAL_OPTIONS.some((option) => stored[option.key] === false)) stored.graphics = "custom";
-      else delete stored.graphics;
-    }
-    stored.version = 7;
-    delete stored.showHiddenTrucks;
-    // A value that is not one of the choices draws the default.
-    if (!AA_MODES.some((mode) => mode.id === stored.aa)) delete stored.aa;
-    if (!GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) delete stored.graphics;
-    return { ...DEFAULT_SETTINGS, ...stored };
+    return migrateSettings(JSON.parse(localStorage.getItem(KEY) ?? "{}"));
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+/**
+ * Settings as stored by any version (or imported from a file, Options, Data) brought up to this one: the steps below
+ * for what was saved before them, then the defaults for whatever is missing. `stored` is changed.
+ */
+export function migrateSettings(stored) {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULT_SETTINGS };
+  // Version 2 made the enhanced look the default and version 3 listed the hidden tracks; what was saved
+  // before them was never a choice.
+  if (!(stored.version >= 2)) stored.look = "enhanced";
+  if (!(stored.version >= 3)) stored.showHiddenTracks = true;
+  // Version 4 made the menus follow the build unless the player picks one.
+  if (!(stored.version >= 4)) stored.skin = "auto";
+  // Version 5 counts the draw distance in terrain cells, 128 the standard; the feet saved before are dropped.
+  if (!(stored.version >= 5)) delete stored.drawDistance;
+  // Version 7 sets the scenery from a preset. A save that had turned a part off keeps that
+  // mix as Custom. One that had not takes the default, Off: every part is the player's to turn on.
+  if (!(stored.version >= 7) && !GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) {
+    if (VISUAL_OPTIONS.some((option) => stored[option.key] === false)) stored.graphics = "custom";
+    else delete stored.graphics;
+  }
+  stored.version = SETTINGS_VERSION;
+  delete stored.showHiddenTrucks;
+  // A value that is not one of the choices draws the default.
+  if (!AA_MODES.some((mode) => mode.id === stored.aa)) delete stored.aa;
+  if (!GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) delete stored.graphics;
+  return { ...DEFAULT_SETTINGS, ...stored };
+}
+
+/** The format name an exported options file carries (Options, Data). */
+export const OPTIONS_FILE_FORMAT = "openmtm2-options";
+
+/** An options file as Options, Data exports it: `{ format, version, exported, settings }`. */
+export function optionsFile(settings, now = new Date()) {
+  return { format: OPTIONS_FILE_FORMAT, version: SETTINGS_VERSION, exported: now.toISOString(), settings };
+}
+
+/**
+ * The settings in an exported options file (its text), brought up to this version: `{ settings }`, or `{ error }` for
+ * a file that is not one, or is from a newer version of the app than this one.
+ */
+export function readOptionsFile(text) {
+  let data;
+  try { data = JSON.parse(text); } catch { return { error: "That file is not an options file (it is not JSON)." }; }
+  if (data?.format !== OPTIONS_FILE_FORMAT || !data.settings || typeof data.settings !== "object" || Array.isArray(data.settings)) {
+    return { error: "That file is not an OpenMTM2 options file." };
+  }
+  const version = Number.isInteger(data.version) ? data.version : 0;
+  if (version > SETTINGS_VERSION) return { error: `Those options are from a newer OpenMTM2 (version ${version}; this one reads up to ${SETTINGS_VERSION}).` };
+  return { settings: migrateSettings({ ...data.settings, version }) };
 }
 
 export function saveSettings(settings) {

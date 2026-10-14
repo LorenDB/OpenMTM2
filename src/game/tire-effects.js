@@ -63,6 +63,13 @@ export function dustPuffs({ speedFtS, onGround, dusty, random }) {
 export const TRACK_STEP_FT = 3, TRACK_WIDTH_FT = 2.2, TRACK_POOL = 65536, TRACK_FADE_SHARE = 0.125;
 export const TRACK_FADE_PIECES = Math.round(TRACK_POOL * TRACK_FADE_SHARE);
 /**
+ * Tire tracks as the port first drew them, and still does with "Rich particles" off: a ring of `CLASSIC_TRACK_POOL`
+ * pieces, each kept `TRACK_LIFE_S` and fading over the last `TRACK_FADE_S` of it.
+ */
+export const CLASSIC_TRACK_POOL = 30000, TRACK_LIFE_S = 70, TRACK_FADE_S = 25;
+/** The opacity of a classic mark that is `age` seconds old: full, then fading to nothing at its end. */
+export const trackOpacity = (age) => (age >= TRACK_LIFE_S ? 0 : age <= TRACK_LIFE_S - TRACK_FADE_S ? 1 : (TRACK_LIFE_S - age) / TRACK_FADE_S);
+/**
  * Where tracks come among the see-through things a scene draws (three.js's render order): after the level's water
  * (0), whose ice a rut can lie on, so the rut is over it; before the shade under a truck (1) and what is thrown (3).
  */
@@ -125,6 +132,8 @@ export function edgeHolds(from, to, passed, trueFt = TRACK_TRUE_FT) {
  */
 export const SPARK_INTERVAL_S = 0.125, SPARK_CHANCE = 0.5, SPARK_MIN_SPEED = 12, SPARK_HIT_SPEED = 9, SPARK_POOL = 320, SPARK_HIT_FORCE = 800, SPARK_HIT_CHANCE = 0.7;
 export const TIRE_SPARK_SHARE = 0.2;
+/** With "Rich particles" off a scrape throws sparks from this slide, feet a second, as the port first had it. */
+export const CLASSIC_SPARK_MIN_SPEED = 6;
 /**
  * How many sparks a hit of `force` throws. With a function second argument it is thrown unevenly: up to ten sparks
  * (never a shower), each with `SPARK_HIT_CHANCE` times `share`. With a speed (or none) it is counted from the force
@@ -149,10 +158,10 @@ export const puffsForHit = (force) => (force < 600 ? 0 : Math.min(5, 1 + Math.fl
 
 /**
  * Advance a contact's scrape timer by `seconds` of contact; returns `{ timer, sparks }`: how many sparks to
- * throw now. Below the scrape speed the timer starts over. `share` scales the chance (a tire's contact).
+ * throw now. Below the scrape speed (`minSpeed`) the timer starts over. `share` scales the chance (a tire's contact).
  */
-export function scrapeSparks(timer, seconds, speedFtS, random = Math.random, share = 1) {
-  if (speedFtS < SPARK_MIN_SPEED) return { timer: 0, sparks: 0 };
+export function scrapeSparks(timer, seconds, speedFtS, random = Math.random, share = 1, minSpeed = SPARK_MIN_SPEED) {
+  if (speedFtS < minSpeed) return { timer: 0, sparks: 0 };
   let t = timer + seconds, sparks = 0;
   while (t >= SPARK_INTERVAL_S) { t -= SPARK_INTERVAL_S; if (random() < SPARK_CHANCE * share) sparks += 1; }
   return { timer: t, sparks };

@@ -11,7 +11,7 @@
 import * as THREE from "three";
 import { BEAM_AXIS, BEAM_INTENSITY, SHAFT_INTENSITY, aimShaft, beamGeometry, beamMaterial, shaftGeometry, shaftMaterial } from "./light-beam.js";
 import { blockShift } from "../shared/object-chunks.js";
-import { fogDims } from "./atmosphere.js";
+import { classicFogDims } from "./atmosphere.js";
 
 const POOL_LIGHTS = 8;
 /** A headlight's pool strength in this scene (render/weather-scene.js SPOT_INTENSITY); `bright` scales it. */
@@ -45,8 +45,8 @@ export function createTrackLights(scene, lights, ground, { shafts = false } = {}
     const color = new THREE.Color(l.color[0], l.color[1], l.color[2]);
     let glow = null, cone = null;
     if (l.glow >= 1) {
-      // A glow is light added to the view: fog dims it (render/atmosphere.js `fogDims`).
-      glow = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({ map: glowMap, color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false })));
+      // A glow is light added to the view: with "Volumetric weather" fog dims it (render/atmosphere.js `classicFogDims`).
+      glow = new THREE.Sprite(classicFogDims(new THREE.SpriteMaterial({ map: glowMap, color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false })));
       glow.scale.setScalar(l.glowRad * 2);
       glow.position.set(l.head[0], l.head[1], -l.head[2]);
       glow.renderOrder = 2;

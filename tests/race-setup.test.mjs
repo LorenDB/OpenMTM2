@@ -52,3 +52,14 @@ test("race times print as %02d:%05.2f", () => {
   assert.equal(ordinal(1), "1st");
   assert.equal(ordinal(8), "8th");
 });
+
+test("the computer drivers take the player's names where there are any, the game's elsewhere", async () => {
+  const { CPU_NAMES, CPU_NAME_MAX, cpuNames, raceEntrants } = await import("../src/game/race-setup.js");
+  assert.deepEqual(cpuNames(undefined), [...CPU_NAMES]);
+  const names = cpuNames(["  Zed ", "", 7, "x".repeat(40)]);
+  assert.deepEqual(names.slice(0, 4), ["Zed", "Greg", "Rich", "x".repeat(CPU_NAME_MAX)]);
+  assert.deepEqual(names.slice(4), CPU_NAMES.slice(4));
+  const trucks = [{ file: "A.TRK" }, { file: "B.TRK" }];
+  const field = raceEntrants({ playerTruck: "A.TRK", trucks, slots: 4, opponents: ["B.TRK"], names });
+  assert.equal(field.find((d) => !d.player).name, "Zed");
+});

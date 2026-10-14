@@ -33,15 +33,15 @@ test("the track backdrops stay off by default, and a saved choice sticks", async
   delete globalThis.localStorage;
 });
 
-test("a save from before the scenery presets follows Auto, and one that turned a part off stays Custom", async () => {
+test("a save from before the scenery presets takes Off, and one that turned a part off stays Custom", async () => {
   const store = new Map();
   globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
   const { loadSettings } = await import("../src/app/settings.js");
   store.set("openmtm2.settings", JSON.stringify({ version: 6, aa: "taa", look: "classic" }));
   const plain = loadSettings();
-  assert.equal(plain.graphics, "auto");
+  assert.equal(plain.graphics, "off");
   assert.equal(plain.version, 7);
-  assert.equal(plain.lensEffects, true);
+  assert.equal(plain.lensEffects, false);
   assert.equal(plain.aa, "taa");
   assert.equal(plain.look, "classic");
   store.set("openmtm2.settings", JSON.stringify({ version: 6, naturalLight: false, look: "classic" }));
@@ -49,13 +49,12 @@ test("a save from before the scenery presets follows Auto, and one that turned a
   assert.equal(custom.graphics, "custom");
   assert.equal(custom.naturalLight, false);
   assert.equal(custom.look, "classic");
-  assert.equal(custom.terrainSmoothing, true);
   store.set("openmtm2.settings", JSON.stringify({ version: 7, graphics: "low", lensEffects: true }));
   const kept = loadSettings();
   assert.equal(kept.graphics, "low");
   assert.equal(kept.lensEffects, true);
   store.set("openmtm2.settings", JSON.stringify({ version: 7, graphics: "dlss", aa: "msaa" }));
-  assert.equal(loadSettings().graphics, "auto");
+  assert.equal(loadSettings().graphics, "off");
   delete globalThis.localStorage;
 });
 
@@ -100,4 +99,23 @@ test("the water frames ping-pong over fourteen quarter-second steps, with the we
   assert.equal(w.waterFrameStep(0.3), 1);
   assert.equal(w.waterFrameStep(14 * 0.25 + 0.01), 0);
   assert.deepEqual([0, 4, 5, 6, 7, 8].map(w.waterOpacity), [0.75, 0.5, 0.9375, 0.25, 0.25, 0.0625]);
+});
+
+test("an exported options file reads back, older ones brought up to date, and anything else is refused", async () => {
+  const { OPTIONS_FILE_FORMAT, SETTINGS_VERSION, optionsFile, readOptionsFile } = await import("../src/app/settings.js");
+  const file = optionsFile({ look: "classic", aiNames: ["Zed"], aa: "fxaa" }, new Date("2026-10-14T00:00:00Z"));
+  assert.deepEqual(Object.keys(file), ["format", "version", "exported", "settings"]);
+  assert.equal(file.format, OPTIONS_FILE_FORMAT);
+  assert.equal(file.version, SETTINGS_VERSION);
+  const back = readOptionsFile(JSON.stringify(file)).settings;
+  assert.equal(back.look, "classic");
+  assert.deepEqual(back.aiNames, ["Zed"]);
+  assert.equal(back.aa, "fxaa");
+  assert.equal(back.version, SETTINGS_VERSION);
+  assert.equal(back.graphics, "off", "what the file does not hold takes the default");
+  // A version 4 file: the draw distance in feet is dropped, as for a stored one.
+  assert.equal(readOptionsFile(JSON.stringify({ format: OPTIONS_FILE_FORMAT, version: 4, settings: { drawDistance: 900 } })).settings.drawDistance, undefined);
+  assert.match(readOptionsFile("not json").error, /not JSON/);
+  assert.match(readOptionsFile(JSON.stringify({ look: "classic" })).error, /not an OpenMTM2 options file/);
+  assert.match(readOptionsFile(JSON.stringify({ format: OPTIONS_FILE_FORMAT, version: SETTINGS_VERSION + 1, settings: {} })).error, /newer/);
 });

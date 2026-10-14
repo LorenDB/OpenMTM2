@@ -17,7 +17,7 @@
 
   Browsers keep Ctrl+T, Ctrl+W and Ctrl+L, so Alt works in place of Ctrl for every key.
 
-  The Z-mode cameras option (Options, Game; not the game's) gives the zoom, the orbit and Ctrl+L in
+  The Z-mode cameras option (Options, Advanced; not the game's) gives the zoom, the orbit and Ctrl+L in
   any race, with no GOLD and no slew mode, without the overlay.
 */
 import * as THREE from "three";
@@ -100,8 +100,11 @@ export function createGoldMode(env) {
     }
     const chord = e.ctrlKey || e.altKey;
     if (zKeys()) {
-      if (!chord && (e.code === "Minus" || e.code === "NumpadSubtract")) { setZoom(state.zoom / 2); flash(`Zoom ${state.zoom}x`); return true; }
-      if (!chord && (e.code === "Equal" || e.code === "NumpadAdd")) { setZoom(state.zoom * 2); flash(`Zoom ${state.zoom}x`); return true; }
+      // In Z mode - and + zoom, as in the game. With only the Z-mode cameras option they zoom with Shift: alone they
+      // tilt the chase camera (the Camera up and down keys).
+      const zoomKey = !chord && (state.zMode || e.shiftKey);
+      if (zoomKey && (e.code === "Minus" || e.code === "NumpadSubtract")) { setZoom(state.zoom / 2); flash(`Zoom ${state.zoom}x`); return true; }
+      if (zoomKey && (e.code === "Equal" || e.code === "NumpadAdd")) { setZoom(state.zoom * 2); flash(`Zoom ${state.zoom}x`); return true; }
       if (chord && e.code === "KeyL" && env.loadSit) { e.preventDefault(); env.loadSit(); return true; }
     }
     if (!state.gold) return false;
@@ -178,6 +181,8 @@ export function createGoldMode(env) {
 
   return {
     state, slewInput, afterRender,
+    /** Whether - and + are Z mode's zoom just now, and not the camera's tilt. */
+    get zooming() { return state.zMode; },
     /** How far Z mode has swung the chase camera round the truck, radians. */
     get cameraTurn() { return zKeys() ? state.turn : 0; },
     /** The sim polling needs the slew keys only while slewing. */

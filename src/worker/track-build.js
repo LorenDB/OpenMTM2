@@ -193,7 +193,7 @@ export async function loadRex(mtm, truckPalettes) {
  *   and the weather, `puddles` the map of where rain stands, `snow` the depth of settled snow
  *   on every vertex of the terrain.
  */
-export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {} } = {}) {
+export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {}, smoothTiles = false } = {}) {
   // A Terminal Velocity, Fury3 or Hellbender level has no SIT: it is named by its LVL (worker/tv-track-build.js).
   if (/\.LVL$/i.test(sitPath)) return buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap });
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
@@ -215,7 +215,8 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     const hd = await loadArtTexture(vfs, n, null, { hdOnly: true, kind: "terrain" });
     return hd ? shrinkImage(hd, TERRAIN_HD_SIDE) : legacy[i];
   }));
-  const atlas = buildTerrainAtlas(decodedTerrain);
+  // `smoothTiles` (the enhanced look's smooth textures): a small tile scaled up to the widest is blended, not blocky.
+  const atlas = buildTerrainAtlas(decodedTerrain, 0, { smooth: smoothTiles });
   // HD ground tiles may carry a normal map (`<stem>_N`, AUTHORING_HD_ART.md): a second atlas laid out as the first, flat
   // where a tile has none. Legacy 64 px tiles cannot carry one.
   const tileNormals = await Promise.all(level.textureNames.map(async (n, i) => {
@@ -224,7 +225,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     return normal ? shrinkImage(normal, TERRAIN_HD_SIDE) : null;
   }));
   const FLAT_NORMAL = { width: 1, height: 1, rgba: new Uint8ClampedArray([128, 128, 255, 255]) };
-  const normalAtlas = tileNormals.some(Boolean) ? buildTerrainAtlas(tileNormals.map((t) => t ?? FLAT_NORMAL), atlas.tileSide) : null;
+  const normalAtlas = tileNormals.some(Boolean) ? buildTerrainAtlas(tileNormals.map((t) => t ?? FLAT_NORMAL), atlas.tileSide, { smooth: true }) : null;
   // The painted detail mask and the track's own detail normal (TERRAIN_DETAIL_MASK.md): `<level>_MASK`, `<level>_DTL`.
   // A track has detail only when it has a mask.
   const levelStem = artStem(sit.lvlName ?? sitPath);

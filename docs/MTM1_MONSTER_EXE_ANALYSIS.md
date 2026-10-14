@@ -920,3 +920,10 @@ Found while reading MTM1; the first two were checked in MTM2's code, the third w
 | `0x82f230` | checkpoint gate table |
 | `0x833cc4`, `0x547890`, `0x83a5f0`, `0x83a838` | `bothStaged`; phase timer; `raceStartTime`; race clock |
 | `0x90aa78`, `0x90bd14`, `0x90bd20`, `0x90bd24`, `0x90bd28` | event records; current event; event count; current index; tournament flag |
+
+### Object sounds
+
+A SIT box's second sound name (a grandstand's `CROWD.WAV`, say) is registered as a continuous sound
+at the box's place when the level loads (`0x436590` calls `0x40aa60` with volume 0x3f times the
+INI's sound volume, and no repeat interval, which makes it a loop), as MTM2 does. The first name is
+the hit sound (`SCREAMX.WAV` for Crazy Eight's stands).

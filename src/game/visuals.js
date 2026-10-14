@@ -1,7 +1,7 @@
 /*
   The switches of the port's own scenery (docs/VISUALS.md): the smoothed ground, the water, the
   volumetric weather, puddles in the rain, snow lying on the ground, the light and what the trucks throw up. Each is a setting of its
-  own (app/settings.js), on unless a preset (game/graphics.js) or the player turns it off in Options, and each off leaves that
+  own (app/settings.js), off unless a preset (game/graphics.js) or the player turns it on in Options, and each off leaves that
   part of the picture as it was drawn before.
 
   Pure, so it runs under Node.
@@ -21,24 +21,26 @@ export const VISUAL_OPTIONS = Object.freeze([
   Object.freeze({ key: "lensEffects", label: "Lens effects", hint: "Bright lights glow: the sun, its glints on water and paint, headlights, lightning. On the flat screen only; a headset draws without it." }),
   Object.freeze({ key: "truckLamps", label: "Truck lamps", hint: "Lamps that glow in their own colour, headlight beams as light in the air (plain in fog and at night, faint by day), tail lamps that run dim and brake bright, headlights that light the ground whenever they are on, and a start gantry of real lamps." }),
   Object.freeze({ key: "richParticles", label: "Rich particles", hint: "Dust that billows along behind a truck as thick as the ground there is dry and bare, and takes the light, powder and chips off snow and ice, sheets of spray out of water and puddles, sparks that glow and cool as they fly, and tracks pressed into the ground, ploughed through deep snow where ruts that cross make one snow, and gone under standing water. Which of them are thrown at all is under Effects." }),
+  Object.freeze({ key: "replayEffects", label: "Replay effects", hint: "Dust, tire tracks and sparks in replays, as in the race, read off the recorded film, and the enhanced look's sun shadows. Which of them are thrown at all is under Effects." }),
 ]);
 
 const RAIN = 4, SNOW = 5;
 
-/** Which of them are on, from the settings: anything but an explicit `false` is on. */
+/** Which of them are on, from the settings: only an explicit `true` is on, so a missing one is the game's own picture. */
 export function visualSettings(settings = {}) {
   return {
-    smoothing: settings.terrainSmoothing !== false,
-    water: settings.enhancedWater !== false,
-    weather: settings.volumetricWeather !== false,
-    puddles: settings.rainPuddles !== false,
-    snow: settings.snowCover !== false,
-    detail: settings.groundDetail !== false,
-    light: settings.naturalLight !== false,
-    gloss: settings.glossyPaint !== false,
-    lens: settings.lensEffects !== false,
-    lamps: settings.truckLamps !== false,
-    particles: settings.richParticles !== false,
+    smoothing: settings.terrainSmoothing === true,
+    water: settings.enhancedWater === true,
+    weather: settings.volumetricWeather === true,
+    puddles: settings.rainPuddles === true,
+    snow: settings.snowCover === true,
+    detail: settings.groundDetail === true,
+    light: settings.naturalLight === true,
+    gloss: settings.glossyPaint === true,
+    lens: settings.lensEffects === true,
+    lamps: settings.truckLamps === true,
+    particles: settings.richParticles === true,
+    replay: settings.replayEffects === true,
   };
 }
 

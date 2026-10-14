@@ -4,21 +4,21 @@ The game drew its world with what a 1998 software renderer could afford: ground 
 facets with textures of half a foot a texel, water as a flat animated texture, weather as a fog
 table and a field of sprites, one white light.
 `MONSTER_EXE_ANALYSIS.md` section 13 says exactly what it drew. This document specifies what the
-port draws instead when the player leaves the switches below on. None of it is the game's, and
+port draws instead when the player turns the switches below on. None of it is the game's, and
 none of it changes how a truck drives: the simulation is untouched.
 
 ## The switches
 
 Each part is a setting of its own (`src/app/settings.js`), listed by `src/game/visuals.js`.
-The Options screen's Scenery page sets them with one preset (`src/game/graphics.js`): Auto,
-Off, Low, High, Max or Custom. Auto is the default and picks Low, High or Max for this
-machine, again when the game starts and when a race or a replay starts. Off is the game's own
-picture. Low keeps the water, puddles, snow, paint, lamps and rich dust, and turns off the
+The Options screen's Display page sets them, under Enhanced graphics, with one preset (`src/game/graphics.js`): Auto,
+Off, Low, High, Max or Custom. Off is the default and is the game's own picture: every part is
+the player's to turn on. Auto picks Low, High or Max for this machine, again when the game
+starts and when a race or a replay starts. Low keeps the water, puddles, snow, paint, lamps and rich dust, and turns off the
 smoothed ground, volumetric weather, ground detail, natural light and the lens. High is every
 part but the lens. Max is every part. Custom shows each switch; the other presets hide them.
 A stored Off, Low, High, Max or Custom is kept, and a save that turned a part off before
-presets existed is kept as Custom. Each setting stays on unless a preset or a switch turns it
-off, and each off draws that part of the picture exactly as it was drawn before. A change
+presets existed is kept as Custom. Each setting stays off unless a preset or a switch turns it
+on, and each off draws that part of the picture exactly as it was drawn before. A change
 takes effect from the next race.
 
 | Setting | Options name | Off draws |
@@ -33,7 +33,12 @@ takes effect from the next race.
 | `glossyPaint` | Glossy paint | trucks lit as chalk is |
 | `lensEffects` | Lens effects | the picture drawn straight to the screen |
 | `truckLamps` | Truck lamps | each lamp's own bitmap as its lens and the game's fuzzy cone as its beam, tail lamps lit as the game lit them, and headlights that light the ground only in the weathers that light the lamps at the start; the start gantry's lamp bars filled with one flat colour |
-| `richParticles` | Rich particles | the game's puff sprites for dust and smoke, points for drops and sparks, and a tread printed flat on the ground |
+| `richParticles` | Rich particles | the game's puff sprites for dust and smoke, points for drops and sparks, and a tread printed flat on the ground that fades after 70 s; tracks and dust follow the ground, not a bridge's deck |
+| `replayEffects` | Replay effects | a replay with no dust, tracks or sparks, and no sun shadows |
+
+Volumetric weather also decides whether the light the port drew from the start (lamp lenses and
+cones, sparks, the game's sprites added to the picture) is dimmed by the fog. Off, it shows
+through the fog as it always did (`src/render/atmosphere.js` `setLightsInFog`).
 
 They work in both looks, classic and enhanced, but for Natural light, which is the enhanced
 look's: the classic look's ground is the game's baked brightness, which no light changes.

@@ -50,7 +50,7 @@ menus).
   (MPH or KPH), gear strip and the message bar.
 - **Weather and water:** Clear, Cloudy, Fog, Rain, Snow, Dusk, Night and Pitch Black, animated
   water, underwater fog, wheel spray and ripples.
-- **Scenery of the port's own, each part with a switch in Options:** the ground's 32 ft facets
+- **Scenery of the port's own, off by default, each part with a switch in Options (Scenery):** the ground's 32 ft facets
   rounded off and its cliffs given relief (trucks drive on the same ground as before); water
   with depth you see into, the sky in it, a shore and a view from under it, wakes and rings
   where the trucks stir it, and ice in Snow; fog that lies in the valleys as a sea of cloud
@@ -94,6 +94,7 @@ The defaults; every key can be rebound in Options.
 | Accelerate, brake, steer | Arrow keys or W, S, A, D |
 | Shift up, down | Q, Z (or Page Up, Page Down) |
 | Camera view (Shift goes back) | V |
+| Tilt the chase camera up, down (held) | + and - |
 | Course map, names on the map | Tab or M, N |
 | Dashboard gauges, finder ring | G, F |
 | Horn, YeeHaw, helicopter | Space, Y, H |

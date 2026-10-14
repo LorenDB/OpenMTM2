@@ -97,7 +97,8 @@ export function createWorldAudio(audio, { ambient, weather, music, random = Math
   // Objects with a sound of their own: a moving one (the train) rumbles while it is within
   // earshot, a crossing bell rings while a train is close to it, a crowd roars when you are near.
   const emitters = objects.map((o) => ({ ...o, voice: null, pos: [...o.positionFt] }));
-  const lastHit = new Map();
+  /** The objects whose hit sound is still playing: an object sounds again only once its last one has finished (0x428bc0). */
+  const sounding = new Set();
   let trainHornAt = -1e9, clock = 0;
   const near = (a, b, range) => Math.hypot(a[0] - b[0], a[2] - b[2]) < range;
   function updateEmitters(listener, moved) {
@@ -147,15 +148,21 @@ export function createWorldAudio(audio, { ambient, weather, music, random = Math
     thunder() {
       later(0.4 + random() * 2.2, () => { if (!disposed) audio.play(THUNDER[Math.floor(random() * THUNDER.length)], { gain: 0.9 }); });
     },
-    /** A truck hit an object: the object's own sound, from where it is. */
+    /**
+     * A truck hit an object: the object's own sound, from where it is. As in the game (0x428bc0 asks 0x464450 whether
+     * the object's last sound still plays), a truck that stays against it does not start it again over itself.
+     */
     hit(sitIndex, force, position) {
       const info = hitInfo.get(sitIndex);
-      if (!info || force < 600 || clock - (lastHit.get(sitIndex) ?? -1e9) < 0.6) return;
+      if (!info || force < 600 || sounding.has(sitIndex)) return;
       const sound = objectHitSound(info);
       if (!sound) return;
-      lastHit.set(sitIndex, clock);
+      sounding.add(sitIndex);
       if (/^cowpain/i.test(sound.name)) onEvent("cow");
-      audio.play(sound.name, { gain: Math.min(2.5, sound.gain), position });
+      const quiet = () => sounding.delete(sitIndex);
+      audio.play(sound.name, { gain: Math.min(2.5, sound.gain), position })
+        .then((voice) => { if (voice?.done) voice.done.finally(quiet); else quiet(); })
+        .catch(quiet);
     },
     checkpoint() { if (ambient?.checkpointWav) audio.play(ambient.checkpointWav, { gain: 0.9 }); },
     lapDone() { if (ambient?.finishLapWav) audio.play(ambient.finishLapWav, { gain: 0.9 }); },

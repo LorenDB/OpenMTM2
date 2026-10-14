@@ -61,7 +61,7 @@ export default async function mount(container, context, params) {
   try {
     build = await context.assets.call("trackRender", {
       path: track.path, scope: track.scope, detailLevel: context.settings.detailLevel, raceType: track.raceType,
-      truckFiles: [], weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap,
+      truckFiles: [], weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap, smoothTiles: context.settings.look === "enhanced",
     });
   } catch (error) {
     console.error(error);

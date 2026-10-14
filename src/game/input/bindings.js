@@ -18,6 +18,8 @@ export const ACTIONS = Object.freeze([
   { id: "dashboard", label: "Dashboard" },
   { id: "hud", label: "Timing display" },
   { id: "fps", label: "FPS counter" },
+  { id: "cameraUp", label: "Camera up" },
+  { id: "cameraDown", label: "Camera down" },
   { id: "map", label: "Map" },
   { id: "names", label: "Names" },
   { id: "finder", label: "Finder" },
@@ -44,6 +46,9 @@ export const DEFAULT_BINDINGS = Object.freeze({
   dashboard: Object.freeze(["KeyG"]),
   hud: Object.freeze(["KeyO"]),
   fps: Object.freeze(["KeyU"]),
+  // Held: the chase camera tilts up or down (game/cameras.js `CAMERA_PITCH_RATE`).
+  cameraUp: Object.freeze(["Equal", "NumpadAdd"]),
+  cameraDown: Object.freeze(["Minus", "NumpadSubtract"]),
   map: Object.freeze(["Tab", "KeyM"]),
   names: Object.freeze(["KeyN"]),
   finder: Object.freeze(["KeyF"]),

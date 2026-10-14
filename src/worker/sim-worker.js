@@ -235,7 +235,7 @@ export function createSession(init) {
     sonicTrack, gripK: sonicTrack && difficulty === S.DIFFICULTY.PROFESSIONAL ? 2 : 1.75,
   });
   // The computer trucks steer by the game's frame time, not the simulation's step (OpenPhotex AUTOPILOT_FRAME_DT, 1/30 s):
-  // `opponentFps` (Options, Game) is the frame rate they drive as if the game ran at.
+  // `opponentFps` (Options, Advanced) is the frame rate they drive as if the game ran at.
   const opponentFps = Number(init.opponentFps);
   const apCtx = { course, height: (x, z) => ground.height(x, z), dt: STEP, difficulty, sonicTrack };
   if (opponentFps >= 10 && opponentFps <= 240) apCtx.frameDt = 1 / opponentFps;

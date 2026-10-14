@@ -340,6 +340,22 @@ export function fogDims(material) {
   return material;
 }
 
+/**
+ * Whether the light the port drew from the start (lamp lenses and cones, sparks, sprites added to the picture) is
+ * dimmed by the fog. It is part of "Volumetric weather": off, that light shows through the fog as it first did. A
+ * screen that draws a track sets it before it makes its materials.
+ */
+let lightsInFog = false;
+export function setLightsInFog(on) { lightsInFog = !!on; }
+export const lightsDimInFog = () => lightsInFog;
+
+/** `fogDims` for light the port drew from the start: with `setLightsInFog` off it is not fogged at all. Returns the material. */
+export function classicFogDims(material) {
+  if (lightsInFog) return fogDims(material);
+  material.fog = false;
+  return material;
+}
+
 /** The uniforms a shader of the port's own needs to use `ATMOSPHERE_GLSL`: the same state every other material reads. */
 export const atmosphereUniforms = () => ({ mtmFog: SHARED.mtmFog, mtmCloudNoise: SHARED.mtmCloudNoise, mtmDetailNoise: SHARED.mtmDetailNoise, mtmFogFloor: SHARED.mtmFogFloor, mtmFogBillow: SHARED.mtmFogBillow });
 /** The fog's functions for a shader of the port's own (its uniforms from `atmosphereUniforms`), in a vertex shader. */
