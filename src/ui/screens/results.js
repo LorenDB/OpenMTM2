@@ -13,22 +13,20 @@ import { createMenu } from "../../game/vr/menu.js";
 import { racePoints } from "../../game/race-points.js";
 import { frame, uiImageUrl } from "../frame.js";
 import { takeRace } from "../../app/tournament.js";
+import { isExtensionMode } from "../../game/extensions/loader.js";
 
 const DIFFICULTIES = ["Rookie", "Intermediate", "Professional"];
 
-/** The party modes (docs/PLAN.md, "Party modes"): the score is Hockey's goals or Tag's points, the time the game's length. */
-export const PARTY_MODES = Object.freeze(["hockey", "tag"]);
-
 /**
- * The seven cells under the headings already painted into RESULTS.BMP. A party game (`party`) shows its score
+ * The seven cells under the headings already painted into RESULTS.BMP. An extension shows its score
  * and its length (`row.raceTime`) as a Rumble shows its own.
  */
-export function winnerCells(row, { summit = false, party = false, laps = 1, difficulty = 1, points = null } = {}) {
+export function winnerCells(row, { summit = false, extension = false, laps = 1, difficulty = 1, points = null } = {}) {
   return [
     ordinal(row.place), row.name, row.truckName, DIFFICULTIES[difficulty] ?? DIFFICULTIES[1],
-    summit || party ? String(Math.round(row.score)) : points === null ? "" : String(points),
-    party ? formatRaceTime(row.raceTime) : summit ? formatRaceTime(laps * 60) : row.rerun ? "Rerun" : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
-    row.best && !party ? formatRaceTime(row.best) : "",
+    summit || extension ? String(Math.round(row.score)) : points === null ? "" : String(points),
+    extension ? formatRaceTime(row.raceTime) : summit ? formatRaceTime(laps * 60) : row.rerun ? "Rerun" : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
+    row.best && !extension ? formatRaceTime(row.best) : "",
   ];
 }
 
@@ -44,13 +42,13 @@ export function crowdCheers(me, summit = false) {
  * The headset's Winner's Circle: place, driver, truck, the score (a Rumble) or the time, and
  * the best lap, the player's row marked. `rows` are in finishing order.
  */
-export function winnerBoard(rows, { summit = false, party = false, laps = 1, difficulty = 1, note = null, onAgain, onNew, onLeave }) {
+export function winnerBoard(rows, { summit = false, extension = false, laps = 1, difficulty = 1, note = null, onAgain, onNew, onLeave }) {
   return createMenu({
     title: "Winner's Circle",
     lines: note ? [note] : [],
     table: rows.map((row) => {
-      const cells = winnerCells(row, { summit, party, laps, difficulty });
-      return Object.assign([cells[0], cells[1], cells[2], summit || party ? cells[4] : cells[5], cells[6]], { highlight: !!row.player });
+      const cells = winnerCells(row, { summit, extension, laps, difficulty });
+      return Object.assign([cells[0], cells[1], cells[2], summit || extension ? cells[4] : cells[5], cells[6]], { highlight: !!row.player });
     }),
     items: [
       { label: "Race again", action: onAgain },
@@ -64,7 +62,7 @@ export default async function mount(container, context, { track, laps, difficult
   // Loaded here, not at the top: the previews need three.js, which the pure parts of this file do not.
   const { createPreviewSlot } = await import("../truck-preview-slot.js");
   const summit = mode === "summit";
-  const party = PARTY_MODES.includes(mode);
+  const extension = isExtensionMode(mode);
   const me = rows.find((r) => r.player);
   const driver = currentDriver(await getProfiles(context));
   // Coming back from the replay mounts this screen again with the same rows: count the race once.
@@ -77,12 +75,12 @@ export default async function mount(container, context, { track, laps, difficult
   // The points (game/race-points.js): a Rumble's score, else the place's base with the lap bonuses.
   const ordered = [...rows].sort((a, b) => a.place - b.place);
   const pointList = racePoints(ordered, laps);
-  const pointsOf = new Map(ordered.map((r, i) => [r, summit || party ? Math.round(r.score) : pointList[i]]));
+  const pointsOf = new Map(ordered.map((r, i) => [r, summit || extension ? Math.round(r.score) : pointList[i]]));
   // A tournament's race (app/tournament.js): its points go to the tournament, once.
   if (tournament && context.tournament) await takeRace(context, rows, rows.map((r) => pointsOf.get(r) ?? 0));
-  // A finished race, or any Rumble, may earn a Hall of Fame place; a party game does not.
+  // A finished race, or any Rumble, may earn a Hall of Fame place; an extension race does not.
   let hallNote = null;
-  if (me && !counted && !party && (summit || (me.finished && !me.dq && me.raceTime > 0))) {
+  if (me && !counted && !extension && (summit || (me.finished && !me.dq && me.raceTime > 0))) {
     const hall = await getHall(context);
     const rank = addEntry(hall, {
       name: driver.name, truck: truck ?? "", track: track.file, trackName: track.name, mode, difficulty, laps,
@@ -100,7 +98,7 @@ export default async function mount(container, context, { track, laps, difficult
   const lit = me && me.place === 2 ? "RESWIN2" : "RESWIN1";
   const toStart = () => context.router.go("start", {}, { replace: false });
   context.xr?.setBoard(winnerBoard(sorted, {
-    summit, party, laps, difficulty, note: hallNote,
+    summit, extension, laps, difficulty, note: hallNote,
     onAgain: () => raceFromBoard(context),
     // Back among the menus the headset shows the race setup.
     onNew: toStart,
@@ -128,7 +126,7 @@ export default async function mount(container, context, { track, laps, difficult
   const slots = [];
   const info = (row) => {
     if (!row) return [null, null];
-    const cells = winnerCells(row, { summit, party, laps, difficulty, points: pointsOf.get(row) });
+    const cells = winnerCells(row, { summit, extension, laps, difficulty, points: pointsOf.get(row) });
     const line = (text) => el("div", { class: "winner-line" }, text);
     const stat = (label, value) => el("div", { class: "winner-line" }, el("span", { class: "winner-label" }, `${label}: `), value);
     return [
@@ -153,7 +151,7 @@ export default async function mount(container, context, { track, laps, difficult
       // The art paints the column headings; the modern stage writes them.
       ...(ui.art ? [] : [el("thead", {}, el("tr", {}, ...["Place", "Player Name", "Truck", "Skill Level", "Points", "Time", "Fast Lap"].map((h) => el("th", {}, context.t(h)))))]),
       el("tbody", {}, ...sorted.map((r) => {
-        const cells = winnerCells(r, { summit, party, laps, difficulty, points: pointsOf.get(r) });
+        const cells = winnerCells(r, { summit, extension, laps, difficulty, points: pointsOf.get(r) });
         cells[3] = context.t(cells[3]);
         const placeCell = el("td", {}, cells[0]);
         if (ui.classic) uiImageUrl(context.assets, `RESULT${r.place}`).then((url) => {

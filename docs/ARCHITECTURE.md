@@ -13,10 +13,18 @@ the game did not (smoothed ground, its own water and weather) is specified in `V
 | Install, virtual file system, content catalogue, render preparation | `src/worker/` | the asset worker |
 | Race session | `src/game/` | the main thread, driving the sim worker |
 | Rendering | `src/render/` (the only code importing three.js) | the main thread |
-| Party modes (Hockey, Tag; `PLAN.md`, "Party modes") | rules in `src/game/hockey.js` and `src/game/tag.js`, run by the sim worker after the race tick; the rink's boards and goal tints in `src/render/party-scene.js` | the sim worker and the main thread; the rules also Node in tests |
+| Extensions (`EXTENSIONS.md`) | manifests, rules and runtime adapters in `src/game/extensions/`; optional drawing in `src/render/extensions/` | the sim worker and the main thread; pure rules also run under Node in tests |
 | Headset mode | rules in `src/game/vr/`, drawing in `src/render/xr/`, the app's side in `src/app/xr.js` | the main thread; the rules also Node in tests |
 | The port's own scenery (`VISUALS.md`) | rules in `src/game/` (`terrain-relief.js`, `drawn-ground.js`, `ground-maps.js`, `snow-cover.js`, `atmosphere.js`, `fog-floor.js`, `water.js`, `ice.js`, `lighting.js`, `ground-detail.js`, `particles.js`, `truck-lights.js`, `replay-effects.js`, `visuals.js`), the mesh in `src/worker/relief-mesh.js`, drawing in `src/render/` (`scenery.js` and what it makes) | the asset worker and the main thread; the rules also Node in tests |
 | Screens | `src/ui/` (HTML), `src/app/` (boot, router, settings) | the main thread |
+
+## Extension boundary
+
+OpenPhotex owns TRI file formats and simulation behavior from the original games. Optional modes
+that the original games never shipped are not OpenPhotex features. They remain OpenMTM2 extensions,
+even when they use OpenPhotex simulation primitives. Core game, worker and UI modules call the
+generic loaders; only the registries and extension modules know which extensions ship with the app.
+See `EXTENSIONS.md` for the contract and the two bundled examples.
 
 ## Threads
 

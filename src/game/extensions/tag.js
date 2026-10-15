@@ -1,5 +1,5 @@
 /*
-  Tag (docs/PLAN.md, "Party modes"): one truck is It and hands that on by touching another, on any
+  Tag (docs/EXTENSIONS.md): one truck is It and hands that on by touching another, on any
   track in any weather, for a set number of minutes. An addition, not in the game.
 
   It is picked at random and held where it stands for 5 s after the countdown; a truck made It is
@@ -16,9 +16,24 @@
   side of an object, and they do that instead of wandering while It is close. Pure, so it runs under
   Node.
 */
-import { WORLD_FT } from "../shared/scene-frame.js";
+import { WORLD_FT } from "../../shared/scene-frame.js";
 
 export const DEFAULT_TAG_MINUTES = 5;
+
+/** Public metadata consumed by the extension loader. */
+export const TAG_EXTENSION = Object.freeze({
+  id: "tag",
+  name: "Tag",
+  description: "One truck is It and passes that role by touching another truck.",
+  length: Object.freeze({ key: "minutes", label: "Minutes", default: DEFAULT_TAG_MINUTES, min: 1, max: 99 }),
+  settings: Object.freeze([
+    Object.freeze({ key: "minutes", legacyKey: "tagMinutes", label: "Round length", type: "number", min: 1, max: 99, default: DEFAULT_TAG_MINUTES, suffix: "minutes" }),
+  ]),
+  acceptsTrack: () => true,
+  trackLocked: false,
+  weather: null,
+  detailLevel: null,
+});
 export const IT_START_HOLD_S = 5;
 /** No tag-backs: the truck that made It is safe from it this long. */
 export const TAG_BACK_S = 10;

@@ -9,10 +9,11 @@
 import { AA_MODES } from "../game/aa.js";
 import { GRAPHICS_FLAGS, GRAPHICS_PRESETS } from "../game/graphics.js";
 import { VISUAL_OPTIONS } from "../game/visuals.js";
+import { extensionSettingDefaults, migrateExtensionSettings } from "../game/extensions/loader.js";
 
 const KEY = "openmtm2.settings";
 /** The settings' format, stored with them and with an export (Options, Data). */
-export const SETTINGS_VERSION = 10;
+export const SETTINGS_VERSION = 11;
 
 /**
  * The physics a race can run under, as Options (Game) and the console's `physics` list them. A model is one more entry
@@ -39,9 +40,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   weather: 0,                 // 0 Clear ... 8 Pitch Black, or "random" (a track may not allow it)
   opponents: 3,               // MONSTER.INI defaultOpponents (built-in default 3)
   opponentTrucks: Object.freeze([]), // explicitly selected CPU truck files from the Races dialog
-  gameMode: "default",        // the Races screen's Mode: "default" (the track's own race), "freeroam", "flyby", "hockey" or "tag" (docs/PLAN.md, "Party modes")
-  hockeyGoals: 3,             // Hockey: the goals that win
-  tagMinutes: 5,              // Tag: the game's length
+  gameMode: "default",        // a core mode id, or an id registered by the extension loader
+  extensions: Object.freeze(extensionSettingDefaults()), // settings owned by shipped extensions
   wording: "",                // a .LOC from the install that rewords the game's text ("" is the standard wording)
   skin: "auto",               // "auto" (classic on retail and beta builds, modern on a community patch), "classic" or "modern"
   developer: false,           // list tracks and trucks with the developer views on the Start screen
@@ -113,7 +113,7 @@ export function loadSettings() {
   try {
     return migrateSettings(JSON.parse(localStorage.getItem(KEY) ?? "{}"));
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, extensions: extensionSettingDefaults() };
   }
 }
 
@@ -122,7 +122,7 @@ export function loadSettings() {
  * for what was saved before them, then the defaults for whatever is missing. `stored` is changed.
  */
 export function migrateSettings(stored) {
-  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULT_SETTINGS };
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULT_SETTINGS, extensions: extensionSettingDefaults() };
   // Version 2 made the enhanced look the default and version 3 listed the hidden tracks; what was saved
   // before them was never a choice.
   if (!(stored.version >= 2)) stored.look = "enhanced";
@@ -144,12 +144,16 @@ export function migrateSettings(stored) {
   if (!(stored.version >= 9)) { delete stored.waterReflections; delete stored.truckReflections; delete stored.mtm1EarthSky; }
   // Version 10 keeps the chase camera clear of the ground by default; the "off" saved before it was the old default.
   if (!(stored.version >= 10)) delete stored.cameraClearance;
+  // Version 11 moved optional mode settings into the extension namespace. Keep values saved by 0.5.3.
+  if (!(stored.version >= 11)) stored.extensions = migrateExtensionSettings(stored);
   stored.version = SETTINGS_VERSION;
   delete stored.showHiddenTrucks;
   // A value that is not one of the choices draws the default.
   if (!AA_MODES.some((mode) => mode.id === stored.aa)) delete stored.aa;
   if (!GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) delete stored.graphics;
-  return { ...DEFAULT_SETTINGS, ...stored };
+  const extensions = extensionSettingDefaults();
+  for (const [id, defaults] of Object.entries(extensions)) extensions[id] = { ...defaults, ...(stored.extensions?.[id] ?? {}) };
+  return { ...DEFAULT_SETTINGS, ...stored, extensions };
 }
 
 /** The format name an exported options file carries (Options, Data). */

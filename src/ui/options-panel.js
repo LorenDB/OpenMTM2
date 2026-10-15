@@ -16,6 +16,7 @@ import { graphicsHardware } from "../app/graphics-hardware.js";
 import { VISUAL_OPTIONS } from "../game/visuals.js";
 import { CPU_NAMES, CPU_NAME_MAX, cpuNames } from "../game/race-setup.js";
 import { SHORT_VIEW_CHOICES, shortViews } from "../game/cameras.js";
+import { EXTENSIONS, setExtensionSetting, settingsForExtension } from "../game/extensions/loader.js";
 
 /*
   The controls edit a draft. Save puts it to use and stores it; Close warns first when the draft differs from what is
@@ -278,6 +279,28 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     }),
     nav("Start screen", leaveFor(() => context.router.go("start", {}, { replace: true }))));
 
+  /** Settings declared by each extension, isolated in one panel per extension. */
+  const extensionPanels = EXTENSIONS.map((extension) => el("section", { class: "extension-options-panel" },
+    el("h3", {}, extension.name),
+    el("p", { class: "muted" }, extension.description),
+    ...extension.settings.map((spec) => {
+      const current = settingsForExtension(settings, extension)[spec.key];
+      if (spec.type === "number") {
+        return row(spec.label, el("input", {
+          type: "number", min: spec.min, max: spec.max, value: current,
+          "aria-label": `${extension.name}: ${spec.label}`,
+          onchange: (event) => {
+            const value = Math.max(spec.min, Math.min(spec.max, Math.trunc(Number(event.target.value)) || spec.default));
+            event.target.value = String(value);
+            setExtensionSetting(settings, extension, spec.key, value);
+            save();
+          },
+        }), spec.suffix ?? null);
+      }
+      return null;
+    }),
+  ));
+
   const sections = [
     ["Game", [
       row("Physics", el("select", { "aria-label": "Physics", onchange: (event) => { settings.physics = event.target.value; save(); } },
@@ -357,6 +380,10 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ["Keys", [choose("Fly-by controls", "flyControls", FLY_SCHEMES.map((id) => FLY_SCHEME_NAMES[id]), [...FLY_SCHEMES]), note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
       Object.assign(bindings, mergeBindings({})); settings.bindings = {}; save(); note.textContent = "Keys reset."; showKeys();
     }))]],
+    ["Extensions", [
+      el("p", { class: "muted" }, "Optional game modes shipped with OpenMTM2. Each extension owns its settings and runtime rules."),
+      ...extensionPanels,
+    ]],
     // What a newcomer can leave alone: other games' tracks, the patch's materials, the computer trucks and the cameras.
     ["Advanced", [
       // Each preset sets the draft; Save keeps it.

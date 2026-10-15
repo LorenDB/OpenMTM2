@@ -20,6 +20,7 @@ export async function refreshAfterPodChange(context) {
   clearTruckPreviewCache();
   clearFontCache();
   context.menuAudio?.clearSamples?.();
+  context.menuMusic?.reload?.();
   await loadStrings(context);
   const top = context.router?.stack.at(-1);
   if (top) await context.router.go(top.name, top.params, { replace: true });

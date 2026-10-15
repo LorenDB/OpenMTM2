@@ -5,6 +5,10 @@
 export function createMenuMusic(audio, settings, sample = "SPLASH") {
   let voice = null, wanted = false;
   const allowed = () => settings.menuMusic !== false && !settings.sound?.muted && (settings.sound?.music ?? 0.6) > 0;
+  const stopVoice = () => {
+    voice?.then((v) => v?.stop());
+    voice = null;
+  };
   return {
     start() {
       wanted = true;
@@ -13,13 +17,17 @@ export function createMenuMusic(audio, settings, sample = "SPLASH") {
     },
     stop() {
       wanted = false;
-      voice?.then((v) => v?.stop());
-      voice = null;
+      stopVoice();
     },
     /** The options changed (volume, mute, the switch): start or stop to match. */
     refresh() {
       if (wanted && allowed() && !voice) voice = audio.play(sample, { loop: true, gain: 0.8, bus: "music" });
-      else if (!allowed() && voice) { voice.then((v) => v?.stop()); voice = null; }
+      else if (!allowed() && voice) stopVoice();
+    },
+    /** The mounted PODs changed: stop the old loop and read its sample again if it is still wanted. */
+    reload() {
+      stopVoice();
+      if (wanted && allowed()) voice = audio.play(sample, { loop: true, gain: 0.8, bus: "music" });
     },
   };
 }

@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CPU_NAMES, raceEntrants } from "../src/game/race-setup.js";
 import { END_COOLDOWN_SECONDS, SPECTATOR_WAIT_SECONDS, createRaceEnd } from "../src/game/race-end.js";
-import { spectatorField } from "../src/app/flow.js";
+import { goRace, spectatorField } from "../src/app/flow.js";
 
 const trucks = "ABCDEFGHIJ".split("").map((c) => ({ file: `${c}.TRK` }));
 
@@ -16,6 +16,30 @@ test("the field to watch: spectator mode with trucks picked, on a track with a r
   assert.equal(spectatorField(config, { freeRoamOnly: true }, trucks), null);
   assert.equal(spectatorField({ ...config, opponents: [] }, {}, trucks), null, "nobody to watch: the player drives");
   assert.equal(spectatorField({ ...config, opponents: 3 }, {}, trucks), null);
+});
+
+test("a watched extension race keeps the selected extension", async () => {
+  const track = { file: "TPARK.SIT", raceType: "circuit" };
+  const went = [];
+  const context = {
+    raceConfig: {
+      track: track.file, mode: track.raceType, laps: 5, difficulty: 1, opponents: ["A.TRK", "B.TRK"], weather: 0,
+      gameMode: "tag", spectator: true,
+    },
+    profiles: { current: 0, drivers: [{ name: "Player", lastTruck: "A.TRK", garage: {}, races: 0, wins: 0 }] },
+    assets: { call: async () => ({ tracks: [track], trucks }) },
+    router: { go: (screen, params) => { went.push({ screen, params }); return params; } },
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { confirm: () => true };
+  try {
+    await goRace(context);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+  }
+  assert.equal(went[0].screen, "race");
+  assert.equal(went[0].params.gameMode, "tag");
+  assert.equal(went[0].params.spectator, true);
 });
 
 test("a watched race has no player: up to eight computer trucks, the player's own truck allowed among them", () => {

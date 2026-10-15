@@ -27,7 +27,7 @@ test("the track backdrops stay off by default, and a saved choice sticks", async
   const first = loadSettings();
   assert.equal(first.backdrops, false);
   assert.equal(first.look, "classic", "what an earlier version settled is left alone");
-  assert.equal(first.version, 10);
+  assert.equal(first.version, 11);
   saveSettings({ ...first, backdrops: true });
   assert.equal(loadSettings().backdrops, true);
   delete globalThis.localStorage;
@@ -40,7 +40,7 @@ test("a save from before the scenery presets takes Off, and one that turned a pa
   store.set("openmtm2.settings", JSON.stringify({ version: 6, aa: "taa", look: "classic" }));
   const plain = loadSettings();
   assert.equal(plain.graphics, "off");
-  assert.equal(plain.version, 10);
+  assert.equal(plain.version, 11);
   assert.equal(plain.lensEffects, false);
   assert.equal(plain.aa, "taa");
   assert.equal(plain.look, "classic");
@@ -187,4 +187,13 @@ test("the Volumetric weather slider: Default where a preset turns it on, None wh
   for (const tier of ["high", "max"]) assert.equal(GRAPHICS_FLAGS[tier].weatherAmount, 2, tier);
   for (const tier of ["off", "low"]) assert.equal(GRAPHICS_FLAGS[tier].weatherAmount, 0, tier);
   assert.equal(weatherLevel(applyOpenMtm2({})), 2);
+});
+
+test("version 11 moves shipped mode settings into extension-owned panels", async () => {
+  const { migrateSettings } = await import("../src/app/settings.js");
+  const moved = migrateSettings({ version: 10, hockeyGoals: 7, tagMinutes: 12 });
+  assert.deepEqual(moved.extensions.hockey, { goals: 7 });
+  assert.deepEqual(moved.extensions.tag, { minutes: 12 });
+  assert.ok(!("hockeyGoals" in moved));
+  assert.ok(!("tagMinutes" in moved));
 });

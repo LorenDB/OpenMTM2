@@ -1,8 +1,7 @@
 /*
   One all-types track table, track preview, exact CPU field and allowed weather selection, and the Mode
-  list: the track's own race, driving alone (Free Roam), a camera-only visit (Fly-by) or a party game
-  (docs/PLAN.md, "Party modes"). Hockey locks the track to Breakneck Ridge and the weather to Snow;
-  Tag plays on any track in any weather it allows.
+  list: the track's own race, driving alone (Free Roam), a camera-only visit (Fly-by), or a mode
+  supplied by the extension loader.
 */
 import { startDragWeekend } from "../../app/drag-weekend.js";
 import { MAX_FIELD, MIN_FIELD } from "../../game/events/drag-event.js";
@@ -10,10 +9,9 @@ import { el } from "../dom.js";
 import { currentDriver, getProfiles } from "../../app/profile-store.js";
 import { saveSettings } from "../../app/settings.js";
 import { setRaceConfig } from "../../app/flow.js";
-import { GAME_MODES, raceLengthLabel, raceTypeName, trackPreviewBmp } from "../../game/menu-data.js";
+import { GAME_MODES, raceTypeName, trackPreviewBmp } from "../../game/menu-data.js";
 import { WEATHER_NAMES, allowedWeathers, resolveWeather } from "../../game/weather.js";
-import { DEFAULT_GOALS, HOCKEY_WEATHER, isHockeyTrack } from "../../game/hockey.js";
-import { DEFAULT_TAG_MINUTES } from "../../game/tag.js";
+import { availableExtensions, extensionById, extensionLength, lengthLabel as extensionLengthLabel, setExtensionSetting, trackForExtension } from "../../game/extensions/loader.js";
 import { playMenuSound } from "../../audio/menu-sounds.js";
 import { frame, uiImageUrl } from "../frame.js";
 
@@ -30,19 +28,24 @@ export default async function mount(container, context) {
     container.append(el("section", { class: "screen" }, el("p", { class: "error" }, "The install has no tracks.")));
     return;
   }
-  // The party modes: Hockey only where the install has Breakneck Ridge (MTM2's own, not another game's).
-  const hockeyTrack = tracks.find((item) => isHockeyTrack(item)) ?? null;
-  let gameMode = GAME_MODES.some((m) => m.id === settings.gameMode) && (settings.gameMode !== "hockey" || hockeyTrack) ? settings.gameMode : "default";
+  const extensions = availableExtensions(tracks);
+  const modes = [...GAME_MODES, ...extensions];
+  let gameMode = modes.some((mode) => mode.id === settings.gameMode) ? settings.gameMode : "default";
   // Free Roam used to be its own box: a save with it ticked opens in the Free Roam mode now.
   if (gameMode === "default" && settings.freeRoam) gameMode = "freeroam";
   const isFlyBy = () => gameMode === "flyby";
-  /** The track chosen before Hockey took Breakneck Ridge, to go back to. */
-  let trackBeforeHockey = null;
-  if (gameMode === "hockey") { trackBeforeHockey = track; track = hockeyTrack; }
+  /** The track chosen before a track-locking extension took its own track. */
+  let trackBeforeExtension = null;
+  const initialExtension = extensionById(gameMode);
+  if (initialExtension?.trackLocked) {
+    trackBeforeExtension = track;
+    track = trackForExtension(initialExtension, tracks, track);
+  }
   // A track with no checkpoints has no race on it: it is driven in Free Roam.
   if (track.freeRoamOnly && gameMode === "default") gameMode = "freeroam";
-  /** The length box's value in a mode: a party game's own (goals or minutes), else the track's laps. */
-  const lengthFor = (mode, item) => (mode === "hockey" ? settings.hockeyGoals ?? DEFAULT_GOALS : mode === "tag" ? settings.tagMinutes ?? DEFAULT_TAG_MINUTES : item.defaultLaps);
+  /** The length box's value in a mode: an extension's declared setting, else the track's laps. */
+  const lengthFor = (mode, item) => extensionLength(settings, extensionById(mode)) ?? item.defaultLaps;
+  const lengthLabelFor = (type, mode) => extensionLengthLabel(type, mode);
 
   const validOpponentFiles = new Set(trucks.filter((item) => item.file !== driver.lastTruck).map((item) => item.file));
   // The player's own list (which may be empty: no opponents), or without one the default number (Options, Game).
@@ -71,7 +74,6 @@ export default async function mount(container, context) {
   };
 
   const laps = el("input", { type: "number", min: 1, max: 99, value: lengthFor(gameMode, track), class: "race-length", "aria-label": "Laps or minutes" });
-  const modes = GAME_MODES.filter((m) => m.id !== "hockey" || hockeyTrack);
   const modeSelect = el("select", { "aria-label": "Mode", class: "race-mode" },
     ...modes.map((m) => el("option", { value: m.id, selected: m.id === gameMode }, context.t(m.name))));
   const modeLabel = el("span", { class: "race-length-label race-mode-label" }, context.t("Mode"));
@@ -116,9 +118,10 @@ export default async function mount(container, context) {
   let previewRequest = 0;
 
   const fillWeather = () => {
-    weather.disabled = gameMode === "hockey";
-    if (gameMode === "hockey") {
-      weather.replaceChildren(el("option", { value: HOCKEY_WEATHER, selected: true }, context.t(WEATHER_NAMES[HOCKEY_WEATHER])));
+    const fixed = extensionById(gameMode)?.weather;
+    weather.disabled = fixed !== null && fixed !== undefined;
+    if (weather.disabled) {
+      weather.replaceChildren(el("option", { value: fixed, selected: true }, context.t(WEATHER_NAMES[fixed])));
       return;
     }
     const allowed = allowedWeathers(track.weatherMask);
@@ -156,7 +159,7 @@ export default async function mount(container, context) {
     openZoomMap(item, url, text);
   });
   /** Whether the chosen track can be played in the chosen mode: everything but a race runs anywhere; else the race types the port runs. */
-  const playable = (item) => gameMode !== "default" || SUPPORTED.has(item.raceType);
+  const playable = (item) => extensionById(gameMode)?.acceptsTrack(item) ?? (gameMode !== "default" || SUPPORTED.has(item.raceType));
   /** The Race button reads Fly-by in the Fly-by mode, where it starts a visit and not a race. */
   const updateGoButton = () => {
     goButton.textContent = isFlyBy() ? context.t("Fly-by") : "Race";
@@ -174,12 +177,13 @@ export default async function mount(container, context) {
     Object.assign(settings, {
       gameMode, spectator, opponentTrucks: [...selectedOpponents], opponents: selectedOpponents.length,
     });
-    // Hockey's locked track and weather are not the player's choice: the ones chosen before stay remembered.
-    if (gameMode !== "hockey") Object.assign(settings, { lastTrack: track.file, weather: chosen.weather });
+    const extension = extensionById(gameMode);
+    // A locked track and weather are not the player's choices: the previous choices stay remembered.
+    if (!extension?.trackLocked) settings.lastTrack = track.file;
+    if (extension?.weather === null || extension?.weather === undefined) settings.weather = chosen.weather;
     // Free Roam used to be a separate box; the mode holds it now.
     delete settings.freeRoam;
-    if (gameMode === "hockey") settings.hockeyGoals = value;
-    if (gameMode === "tag") settings.tagMinutes = value;
+    if (extension?.length) setExtensionSetting(settings, extension, extension.length.key, value);
     saveSettings(settings);
     setRaceConfig(context, chosen);
     updateGoButton();
@@ -189,13 +193,12 @@ export default async function mount(container, context) {
   const updateModeOptions = () => {
     for (const option of modeSelect.options) {
       if (option.value === "default") option.disabled = !!track.freeRoamOnly;
-      else if (option.value === "hockey") option.disabled = !hockeyTrack;
       else option.disabled = false;
     }
   };
   const chooseTrack = (item) => {
-    // Hockey's track is Breakneck Ridge, whatever is clicked.
-    if (gameMode === "hockey" && item !== hockeyTrack) return;
+    // A track-locking extension ignores track choices while it is active.
+    if (extensionById(gameMode)?.trackLocked && item !== track) return;
     if (item !== track) playMenuSound(context.menuAudio, settings, "TRACK", 0.7);
     track = item;
     // A track with no race on it is driven in Free Roam: the list follows.
@@ -205,7 +208,7 @@ export default async function mount(container, context) {
     }
     updateModeOptions();
     laps.value = String(lengthFor(gameMode, item));
-    lengthLabel.textContent = raceLengthLabel(item.raceType, gameMode);
+    lengthLabel.textContent = lengthLabelFor(item.raceType, gameMode);
     fillWeather();
     updateDrivingUI();
     showWeekend();
@@ -234,7 +237,7 @@ export default async function mount(container, context) {
   // Typing in the box is not driving the menus.
   filter.addEventListener("keydown", (event) => event.stopPropagation());
   const show = () => {
-    const locked = gameMode === "hockey";
+    const locked = !!extensionById(gameMode)?.trackLocked;
     filter.disabled = locked;
     table.setAttribute("aria-disabled", String(locked));
     tableBody.replaceChildren(...(locked ? [track] : listed()).map((item) => el("tr", {
@@ -260,17 +263,24 @@ export default async function mount(container, context) {
   modeSelect.addEventListener("change", () => {
     let next = modeSelect.value;
     if (next === gameMode) return;
-    // Hockey is hidden without Breakneck Ridge, and never selected then.
-    if (next === "hockey" && !hockeyTrack) return;
-    // Into Hockey the track goes to Breakneck Ridge; out of it, back to the one chosen before.
-    if (next === "hockey") { trackBeforeHockey = track; track = hockeyTrack; } else if (gameMode === "hockey") { track = trackBeforeHockey ?? track; trackBeforeHockey = null; }
+    const previousExtension = extensionById(gameMode);
+    const nextExtension = extensionById(next);
+    // A track-locking extension owns the track while selected, then restores the player's choice.
+    if (nextExtension?.trackLocked) {
+      if (!previousExtension?.trackLocked) trackBeforeExtension = track;
+      track = trackForExtension(nextExtension, tracks, track);
+      if (!track) return;
+    } else if (previousExtension?.trackLocked) {
+      track = trackBeforeExtension ?? track;
+      trackBeforeExtension = null;
+    }
     // A track with no race on it has no Race mode: the list falls back to Free Roam.
     if (track.freeRoamOnly && next === "default") next = "freeroam";
     gameMode = next;
     modeSelect.value = next;
     updateModeOptions();
     laps.value = String(lengthFor(gameMode, track));
-    lengthLabel.textContent = raceLengthLabel(track.raceType, gameMode);
+    lengthLabel.textContent = lengthLabelFor(track.raceType, gameMode);
     fillWeather();
     updateDrivingUI();
     show();
@@ -289,7 +299,7 @@ export default async function mount(container, context) {
     else context.router.go("garage");
   });
   fillWeather();
-  lengthLabel.textContent = raceLengthLabel(track.raceType, gameMode);
+  lengthLabel.textContent = lengthLabelFor(track.raceType, gameMode);
   showWeekend();
   showSelected();
   show();
@@ -301,12 +311,12 @@ export default async function mount(container, context) {
     title: "Races", backdrop: "RACES", current: "races",
     regions: {
       list: [42, 141, 274, 189], lengthLabel: [48, 350, 58, 24], length: [106, 350, 38, 24],
-      opponents: [343, 81, 132, 38], preview: [342, 124, 258, 210], weather: [488, 349, 109, 27], weatherLabel: [0, 0, 0, 0],
-      // The Mode list sits on the bottom row, right, its label to the left.
-      selected: [42, 88, 296, 24], mode: [489, 379, 109, 20], modeLabel: [427, 378, 58, 22],
+      opponents: [343, 81, 132, 38], preview: [342, 124, 258, 210], weather: [300, 349, 109, 27], weatherLabel: [237, 349, 58, 24],
+      // Length, weather and mode share one row, with mode at the far right.
+      selected: [42, 88, 296, 24], mode: [489, 349, 109, 24], modeLabel: [427, 349, 58, 24],
     },
     // Without the art: the list takes its own column headings, and Weather sits beside Laps under the list, in the same type.
-    modernRegions: { opponents: [343, 84, 200, 32], list: [42, 122, 274, 208], weatherLabel: [150, 350, 70, 24], weather: [222, 350, 94, 24], modeLabel: [150, 378, 70, 24], mode: [222, 378, 94, 24] },
+    modernRegions: { opponents: [343, 84, 200, 32], list: [42, 122, 274, 208], weatherLabel: [150, 350, 70, 24], weather: [222, 350, 94, 24], modeLabel: [427, 350, 58, 24], mode: [489, 350, 109, 24] },
   });
   ui.regions.list.parentElement.append(weekendButton, tourneyButton);
   if (ui.classic) {
@@ -317,11 +327,11 @@ export default async function mount(container, context) {
     ui.regions.opponents.append(opponentsButton);
     ui.regions.preview.append(preview, zoomButton);
     ui.regions.selected.append(selectedLabel);
+    ui.regions.weatherLabel.append(el("span", { class: "race-length-label" }, context.t("Weather")));
     ui.regions.weather.append(weather);
     ui.regions.modeLabel.append(modeLabel);
     ui.regions.mode.append(modeSelect);
     if (!ui.art) {
-      ui.regions.weatherLabel.append(el("span", { class: "race-length-label" }, context.t("Weather")));
       table.prepend(el("thead", {}, el("tr", {}, el("th", {}, context.t("Track Name")), el("th", {}, context.t("Track Type")))));
     }
   } else {

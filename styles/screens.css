@@ -340,6 +340,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .opt-page > .opt-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
 .opt-page > .opt-switches:empty { display: none; }
 .opt-page > .bindings { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
+.extension-options-panel { display: grid; gap: 6px; align-content: start; padding: 12px; border: 1px solid var(--panel-edge); border-radius: 8px; }
+.extension-options-panel h3, .extension-options-panel p { margin: 0; }
 .opt-page > .bindings .form-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; height: 36px; margin: 0; padding: 0 10px; border: 1px solid var(--panel-edge); border-radius: 6px; }
 /* On the modern stage the controls that sit in the art's openings have no box of their own either. */
 .stage-modern :is(.stage-panel-name, .stage-panel-skill, .stage-panel-truck, .stage-panel-message, .stage-panel-sonic, .stage-panel-lengthLabel,

@@ -1,21 +1,22 @@
 /*
-  The party modes (docs/PLAN.md, "Party modes"): Hockey's rink, rules and computer trucks
-  (src/game/hockey.js), Tag's (src/game/tag.js), and both played in the simulation worker's session.
+  The shipped extensions (docs/EXTENSIONS.md): Hockey's rink, rules and computer trucks,
+  Tag's rules, and both played through the simulation worker's extension session.
 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BOARD_HEIGHT_FT, CELEBRATE_S, FACEOFF_HOLD_S, FROZEN_SURFACE, RINK_SURFACE, createHockey, hockeyAim, hockeyHeld,
   hockeyPlaces, hockeyRink, hockeyRoles, hockeySpot, hockeyStep, hockeyTeams, isHockeyTrack, outsideRink, rinkBoxes, rinkGround, toLocal, toWorld,
-} from "../src/game/hockey.js";
+} from "../src/game/extensions/hockey.js";
 import {
   AIM_MIN_S, AIM_MAX_S, CALM_COVER_SHARE, COVER_REACH_FT, FLANK_FT, HIDE_STANDOFF_FT, IT_ARROW, IT_START_HOLD_S,
   PRESS_FT, PRESSED_COVER_SHARE, ROAM_FT, ROAM_MARGIN_FT, TAG_BACK_S, WANDER_SHARE, chasePoint, clampToRect,
   coverBetween, coverOf, createTag, createTagDriver, fleePoint, flankPoint, hideBehind, hideScore, rampAway, rampLaunch,
   roamRect, routePoint, tagDrivePoint, tagHeld, tagItDrain, tagPlaces, tagRanks, tagSafe, tagStep, tagTransfer, wanderPoint,
-} from "../src/game/tag.js";
+} from "../src/game/extensions/tag.js";
 import { WORLD_FT } from "../src/shared/scene-frame.js";
 import { GAME_MODES, raceLengthLabel } from "../src/game/menu-data.js";
+import { EXTENSIONS, lengthLabel } from "../src/game/extensions/loader.js";
 import { winnerCells } from "../src/ui/screens/results.js";
 import { createSession } from "../src/worker/sim-worker.js";
 import { buildTrackRender } from "../src/worker/track-build.js";
@@ -376,14 +377,15 @@ test("the It marker is an arrow pointing down, wound so its +Z face is the front
 });
 
 test("the Races screen's modes and their length box", () => {
-  assert.deepEqual(GAME_MODES.map((m) => m.id), ["default", "freeroam", "flyby", "hockey", "tag"]);
-  assert.equal(raceLengthLabel("circuit", "hockey"), "Goals");
-  assert.equal(raceLengthLabel("rally", "tag"), "Minutes");
+  assert.deepEqual(GAME_MODES.map((m) => m.id), ["default", "freeroam", "flyby"]);
+  assert.deepEqual(EXTENSIONS.map((m) => m.id), ["hockey", "tag"]);
+  assert.equal(lengthLabel("circuit", "hockey"), "Goals");
+  assert.equal(lengthLabel("rally", "tag"), "Minutes");
   assert.equal(raceLengthLabel("rally"), "Laps");
   assert.equal(raceLengthLabel("circuit", "freeroam"), "Laps");
   assert.equal(raceLengthLabel("summit", "flyby"), "Minutes");
   // The results: the score, and the game's length for the time.
-  assert.deepEqual(winnerCells({ place: 1, name: "A", truckName: "B", score: 41.6, raceTime: 300, best: 12 }, { party: true }).slice(4), ["42", "05:00.00", ""]);
+  assert.deepEqual(winnerCells({ place: 1, name: "A", truckName: "B", score: 41.6, raceTime: 300, best: 12 }, { extension: true }).slice(4), ["42", "05:00.00", ""]);
 });
 
 test("Hockey runs only on Breakneck Ridge: without it the mode does not trigger", async () => {
@@ -418,7 +420,7 @@ async function hockeySession(n, { autopilot = true, goals = 3 } = {}) {
       truck: { anchors: build.truckModels[f].anchors, scrapePoints: build.truckModels[f].scrapePoints },
       start: hockeySpot(breakneck, teams, i), autopilot: autopilot && i > 0,
     })),
-    race: { checkpoints: [], laps: 1, mode: "circuit" }, party: { mode: "hockey", rink: breakneck, teams, goals },
+    race: { checkpoints: [], laps: 1, mode: "circuit" }, extension: { mode: "hockey", rink: breakneck, teams, goals },
   });
   return { session, rink: breakneck, build };
 }
@@ -435,7 +437,7 @@ test("Breakneck Ridge's rink: its two goals, the puck brought up onto the ice, a
   const puck = r.boxes.find((b) => b.sitIndex === breakneck.puck.sitIndex);
   assert.ok(puck, "the puck's pose is in the first reply");
   assert.ok(puck.pos[1] > 28.5, "on the ice");
-  assert.equal(r.race.party.mode, "hockey");
+  assert.equal(r.race.extension.mode, "hockey");
 });
 
 test("a truck standing on the rink drives off it; on the game's own ice it never moves", { skip: skipWithoutStock("POD.INI") }, async () => {
@@ -463,19 +465,19 @@ test("a puck sent over a goal line scores, and the face-off brings the puck and 
   // The puck slid at the blue goal (the +a end) from just in front of it.
   const blue = breakneck.goals[1];
   const [x, z] = toWorld(breakneck.frame, blue.along - 20, (blue.mouth[0] + blue.mouth[1]) / 2);
-  session.puck.pos[0] = x;
-  session.puck.pos[2] = z;
+  session.extension.puck.pos[0] = x;
+  session.extension.puck.pos[2] = z;
   const dir = breakneck.frame.u;
-  session.puck.vel.splice(0, 3, dir[0] * 40, 0, dir[1] * 40);
+  session.extension.puck.vel.splice(0, 3, dir[0] * 40, 0, dir[1] * 40);
   // World velocity into body axes (the puck lies flat): x and z by its yaw.
-  const m = session.puck.matrix;
-  session.puck.bvel.set([m[0] * dir[0] * 40 + m[6] * dir[1] * 40, 0, m[2] * dir[0] * 40 + m[8] * dir[1] * 40]);
+  const m = session.extension.puck.matrix;
+  session.extension.puck.bvel.set([m[0] * dir[0] * 40 + m[6] * dir[1] * 40, 0, m[2] * dir[0] * 40 + m[8] * dir[1] * 40]);
   for (let t = 4; t < 6; t += 0.25) r = session.advance(t, {});
-  assert.deepEqual(r.race.party.score, [1, 0]);
-  assert.equal(r.race.party.event.kind, "goal");
+  assert.deepEqual(r.race.extension.score, [1, 0]);
+  assert.equal(r.race.extension.event.kind, "goal");
   for (let t = 6; t < 9; t += 0.25) r = session.advance(t, {});
-  assert.equal(r.race.party.phase, "faceoff");
-  assert.ok(Math.hypot(session.puck.pos[0] - breakneck.puck.start[0], session.puck.pos[2] - breakneck.puck.start[2]) < 1, "the puck back at the centre");
+  assert.equal(r.race.extension.phase, "faceoff");
+  assert.ok(Math.hypot(session.extension.puck.pos[0] - breakneck.puck.start[0], session.extension.puck.pos[2] - breakneck.puck.start[2]) < 1, "the puck back at the centre");
   const spot = hockeySpot(breakneck, [0, 1], 1);
   assert.ok(Math.hypot(r.poses[1].current.pos[0] - spot.pos[0], r.poses[1].current.pos[2] - spot.pos[2]) < 2, "the truck back at its spot");
   assert.equal(r.poses[1].current.gear, S.GEAR.PARK, "held in Park");
@@ -484,7 +486,7 @@ test("a puck sent over a goal line scores, and the face-off brings the puck and 
 test("computer trucks go for the puck", { skip: skipWithoutStock("POD.INI") }, async () => {
   const { session, rink: breakneck } = await hockeySession(4);
   for (let t = 0; t < 25; t += 0.25) session.advance(t, {});
-  const moved = Math.hypot(session.puck.pos[0] - breakneck.puck.start[0], session.puck.pos[2] - breakneck.puck.start[2]);
+  const moved = Math.hypot(session.extension.puck.pos[0] - breakneck.puck.start[0], session.extension.puck.pos[2] - breakneck.puck.start[2]);
   assert.ok(moved > 20, `the puck moved ${moved} ft`);
 });
 
@@ -501,14 +503,14 @@ test("Tag on Farm Road 29: It sits in Park through its hold, and a touch makes t
       truck: { anchors: build.truckModels[files[i]].anchors, scrapePoints: build.truckModels[files[i]].scrapePoints },
       start: { pos: grid[i * 7].pos, heading: grid[i * 7].heading }, autopilot: i === 1,
     })),
-    race: { checkpoints: [], laps: 1, mode: "circuit" }, party: { mode: "tag", minutes: 1, it: 0, byCourse: true },
+    race: { checkpoints: [], laps: 1, mode: "circuit" }, extension: { mode: "tag", minutes: 1, it: 0, byCourse: true },
   });
   let r;
   for (let t = 0; t < 3 + IT_START_HOLD_S - 1; t += 0.25) {
     r = session.advance(t, { accelerate: true });
     if (r.race.started) assert.equal(session.trucks[0].state.controls.gear, S.GEAR.PARK, "It is held");
   }
-  assert.equal(r.race.party.it, 0);
+  assert.equal(r.race.extension.it, 0);
   // byCourse is set, and ignored: the free truck drives at a point on the ground around the course, not the lap.
   assert.equal(session.trucks[1].recovery.player, true);
   assert.equal(session.trucks[1].recovery.autopilot, false);
@@ -521,8 +523,8 @@ test("Tag on Farm Road 29: It sits in Park through its hold, and a touch makes t
   other.prevPos.set(other.pos);
   other.bvel.fill(0);
   for (let t = 3 + IT_START_HOLD_S + 1; t < 3 + IT_START_HOLD_S + 3; t += 0.25) r = session.advance(t, {});
-  assert.equal(r.race.party.it, 1, "the touch made truck 1 It");
-  assert.deepEqual(r.race.party.event, { kind: "tag", from: 0, to: 1, points: 28 });
+  assert.equal(r.race.extension.it, 1, "the touch made truck 1 It");
+  assert.deepEqual(r.race.extension.event, { kind: "tag", from: 0, to: 1, points: 28 });
   // The game ends at its minute.
   for (let t = 3 + IT_START_HOLD_S + 3; t < 3 + 62; t += 0.25) r = session.advance(t, {});
   assert.ok(r.race.over && r.race.trucks.every((x) => x.finished));

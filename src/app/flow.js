@@ -4,7 +4,7 @@
   button runs this from any screen, as in the game.
 */
 import { currentDriver, getProfiles } from "./profile-store.js";
-import { isHockeyTrack } from "../game/hockey.js";
+import { extensionById } from "../game/extensions/loader.js";
 
 /**
  * Remember what the Races screen chose.
@@ -31,13 +31,11 @@ export async function goDemo(context) {
 }
 
 /**
- * A party mode that may run on `track` (docs/PLAN.md, "Party modes"): Hockey only on Breakneck
- * Ridge, Tag anywhere. Null for the track's own race. Pure, so it runs under Node.
+ * An extension mode that may run on `track`. Null for a core or unavailable mode.
  */
 export function resolveGameMode(gameMode, track) {
-  if (gameMode === "hockey") return isHockeyTrack(track) ? "hockey" : null;
-  if (gameMode === "tag") return "tag";
-  return null;
+  const extension = extensionById(gameMode);
+  return extension?.acceptsTrack(track) ? extension.id : null;
 }
 
 export const SPECTATOR_WARNING = "Spectator mode is on: the computer trucks race and you watch. You will not drive.\n\nStart the race?";
@@ -68,18 +66,17 @@ export async function goRace(context) {
   const driver = currentDriver(await getProfiles(context));
   const truck = trucks.find((t) => t.file === driver.lastTruck) ?? trucks[0];
   if (!track || !truck) return context.router.go("race-select", { mode: config.mode }, { replace: true });
+  const gameMode = resolveGameMode(config.gameMode, track);
   // Spectator mode: the computer's trucks alone, watched. Not in free roam, which has no race to watch.
   const watched = spectatorField(config, track, trucks);
   if (watched) {
     if (!window.confirm(SPECTATOR_WARNING)) return undefined;
     return context.router.go("race", {
       track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: watched.slice(1), weather: config.weather,
-      freeRoam: false, truck: watched[0], trucks, setup: undefined, spectator: true,
+      gameMode, freeRoam: false, truck: watched[0], trucks, setup: undefined, spectator: true,
     });
   }
-  // A party game (docs/PLAN.md, "Party modes"): Hockey or Tag, `laps` its goals or minutes; never free roam.
-  // Hockey only runs on Breakneck Ridge: without it the track runs its own race instead.
-  const gameMode = resolveGameMode(config.gameMode, track);
+  // An extension uses `laps` as its declared length and never runs as free roam.
   return context.router.go("race", {
     track, mode: config.mode, laps: config.laps, difficulty: config.difficulty, opponents: config.opponents, weather: config.weather, gameMode,
     // Free Roam (the Races screen's mode, or a track that has no checkpoints): the player alone, no race.

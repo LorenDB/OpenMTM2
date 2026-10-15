@@ -23,6 +23,9 @@ browser and reads the player's own install. `docs/PLAN.md` holds the milestones;
   (`~/dev/OpenPhotex`), then `npm run build && npm run vendor -- <this repo>/src/vendor/openphotex`.
 - File formats belong in OpenPhotex, never here. So does the simulation
   (`OpenPhotex/src/sim/mtm2/`).
+- Non-original game modes are OpenMTM2 extensions. They belong under
+  `src/game/extensions/` and `src/render/extensions/`, never in OpenPhotex. Core modules depend
+  on the extension loaders and must not import a specific extension.
 - Only `src/render/**` imports three.js. `src/worker/**` and `src/game/**` (except
   `game/input/`) must not touch the DOM or three.js, so they run under Node in tests.
 - Units in game code are the game's: feet, seconds, radians, slugs, pounds-force, body axes

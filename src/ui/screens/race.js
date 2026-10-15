@@ -83,9 +83,8 @@ import { SEAT_STEP_FT } from "../../game/vr/seat.js";
 import { CAB_STYLES, VIEW_DISTANCES, VR_VIEWS } from "../../game/vr/settings.js";
 import { createRaceVr } from "../../render/xr/race-vr.js";
 import { vrButton } from "../vr-button.js";
-import { HOCKEY_WEATHER, TEAM_COLOURS, TEAM_NAMES, hockeyRink, hockeySpot, hockeyTeams, isHockeyTrack, rinkBoxes } from "../../game/hockey.js";
-import { dressParty } from "../../render/party-scene.js";
-import { createItMarker } from "../../render/it-marker.js";
+import { extensionHud, extensionMarkerTarget, extensionResultTime, extensionTruckLabels, extensionTruckMarks, prepareExtensionRace, resolveRaceExtension } from "../../game/extensions/race-loader.js";
+import { createExtensionScene } from "../../render/extensions/loader.js";
 
 /** The race HUD text is a light grey with a one-pixel black shadow (the game's own look). */
 const HUD_GREY = "#cfcfcf";
@@ -158,9 +157,9 @@ export default async function mount(container, context, params) {
 
 async function mountRace(container, context, params) {
   const { track, laps, difficulty, truck: playerTruck, trucks: catalogTrucks, setup, weather: chosenWeather } = params;
-  /** A party mode (docs/PLAN.md, "Party modes"): "hockey" or "tag", or null for the track's own race. `laps` is then goals or minutes. Hockey only runs on Breakneck Ridge. */
-  const gameMode = !params.demo && (params.gameMode === "tag" || (params.gameMode === "hockey" && isHockeyTrack(track))) ? params.gameMode : null;
-  const hockeyMode = gameMode === "hockey";
+  /** Optional race behavior supplied by the extension loader, or null for the track's own race. */
+  const extension = !params.demo ? resolveRaceExtension(params.gameMode, track) : null;
+  const gameMode = extension?.id ?? null;
   /** Free roam: the track with no race on it (no checkpoints, laps, places or results) and the player alone. */
   const freeRoam = !!params.freeRoam && !params.demo && !gameMode;
   const opponents = freeRoam ? [] : params.opponents;
@@ -178,8 +177,7 @@ async function mountRace(container, context, params) {
     ? context.router.go("drag-event", {}, { replace: true })
     : context.router.go("race-select", { mode: track?.raceType }, { replace: true }));
   const t = context.t;
-  // Hockey is played on the frozen lake: always Snow.
-  const weatherId = hockeyMode ? HOCKEY_WEATHER : resolveWeather(chosenWeather ?? context.settings.weather ?? 0, track.weatherMask);
+  const weatherId = extension?.weather ?? resolveWeather(chosenWeather ?? context.settings.weather ?? 0, track.weatherMask);
   const summit = track.raceType === "summit";
   const dragRace = track.raceType === "drag";
   const dragTree = createDragTree();
@@ -251,8 +249,7 @@ async function mountRace(container, context, params) {
   // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
   setLightsInFog(visualSettings(context.settings).weather);
   const build = await context.assets.call("trackRender", {
-    // Hockey's puck and goals are boxes of priority 2, drawn and solid at the full detail level only.
-    path: track.path, scope: track.scope, detailLevel: hockeyMode ? 2 : context.settings.detailLevel, raceType: track.raceType,
+    path: track.path, scope: track.scope, detailLevel: extension?.detailLevel ?? context.settings.detailLevel, raceType: track.raceType,
     truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap,
     // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
     visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
@@ -276,13 +273,13 @@ async function mountRace(container, context, params) {
   const entrants = eventPass
     ? eventPass.entrants.filter((e) => build.truckModels[e.file] && e.slot < grid.length)
     : raceEntrants({ playerTruck, trucks: usable, slots: grid.length, opponents, playerName: driver.name, spectator, names: cpuNames(context.settings.aiNames) });
-  // Hockey's rink, read from the level (game/hockey.js), and the teams: the trucks face off on it, not on the grid.
-  const rinkTerrain = hockeyMode ? terrainOfBuild(build) : null;
-  const rink = hockeyMode ? hockeyRink(rinkBoxes(build), (x, z) => mtm2Sim.groundHeightAt(rinkTerrain, x, z), build.waterLevelFt) : null;
-  if (hockeyMode && !rink) throw new Error(`${track.name} has no hockey rink: Hockey needs Breakneck Ridge's frozen lake, its puck and its two goals.`);
-  const teams = rink ? hockeyTeams(entrants.length) : null;
-  /** What the party mode draws, and what its replay draws again (render/party-scene.js). */
-  const partyDress = rink ? { mode: "hockey", rink, teams } : gameMode ? { mode: gameMode } : null;
+  const extensionTerrain = extension ? terrainOfBuild(build) : null;
+  const extensionRace = prepareExtensionRace(extension, {
+    build, entrants, length: laps,
+    groundHeightAt: (x, z) => mtm2Sim.groundHeightAt(extensionTerrain, x, z),
+  });
+  /** What an extension draws, and what its replay draws again. */
+  const extensionDress = extensionRace?.dress ?? null;
   // A little smaller than the HUD's text, in whole pixels so the glyphs stay sharp.
   const nameTags = createNameTags(entrants.length, hudFont, Math.max(1, Math.round(scale * 0.75)));
   view.append(nameTags.element);
@@ -313,11 +310,7 @@ async function mountRace(container, context, params) {
     terrainDetail: context.settings.terrainDetail !== false, reflections: context.settings.reflections !== false,
   });
   scene.add(world);
-  // Hockey's boards and the teams' goals (render/party-scene.js).
-  const partyScene = dressParty(scene, world, partyDress);
-  // Tag's arrow over It (render/it-marker.js). It is in the world, so a wall hides it.
-  const itMarker = gameMode === "tag" ? createItMarker() : null;
-  if (itMarker) scene.add(itMarker.object);
+  const extensionScene = createExtensionScene(scene, world, extensionDress);
   // Sound: the engines, skids and impacts of every truck, and the world's ambience and music.
   context.menuMusic?.stop();
   // Reuse the already unlocked menu context. A newly created context after the asynchronous
@@ -403,7 +396,7 @@ async function mountRace(container, context, params) {
     if (truckReflections) truckReflections.setImage(await context.assets.call("envMap", { weather: next }).catch(() => null));
   };
   // The renderer is the app's: it is handed back, with the headset's rig taken out of the scene first.
-  cleanups.push(() => { partyScene.dispose(); itMarker?.dispose(); host.release(); disposeObject(scene); });
+  cleanups.push(() => { extensionScene.dispose(); host.release(); disposeObject(scene); });
 
   // The lamps as the port draws them, where "Truck lamps" is on (docs/VISUALS.md, "Lamps").
   const richLamps = visualSettings(context.settings).lamps;
@@ -429,7 +422,7 @@ async function mountRace(container, context, params) {
   const crash = createCrashDamage(entrants.length, { enabled: context.settings.crashDamage !== false && physics !== "mtm1" });
   // Instant replay (game/replay.js): a frame every quarter second, kept for the results screen.
   const recorder = createReplayRecorder({
-    level: track.path.split(/[\\/]/).pop().toLowerCase(), weather: weatherId, detailLevel: hockeyMode ? 2 : context.settings.detailLevel ?? 2,
+    level: track.path.split(/[\\/]/).pop().toLowerCase(), weather: weatherId, detailLevel: extension?.detailLevel ?? context.settings.detailLevel ?? 2,
     vehicles: entrants.map((e) => ({ truck: e.file, driver: e.name })), originals: build.originals ?? [],
   });
 
@@ -460,10 +453,8 @@ async function mountRace(container, context, params) {
     boxes: build.sim.boxes,
     ramps: build.sim.ramps,
     topCrush: build.sim.topCrush ?? [],
-    // Hockey has no course: the helicopter sets a truck down where it is.
-    course: hockeyMode ? [] : raceCourse,
-    // Hockey's boards are walls, for the trucks and the puck.
-    ...(rink ? { walls: [...(build.sim.walls ?? []), ...rink.boards] } : {}),
+    course: extensionRace?.course ?? raceCourse,
+    ...(extensionRace?.walls ? { walls: extensionRace.walls } : {}),
     // The SIT's fly-by flag makes a track Sonic; on Professional the player can also ask for Sonic computer trucks anywhere.
     sonicTrack: build.sim.sonicTrack || (Number(difficulty) === 2 && !!context.settings.sonicTrucks),
     // A level of a game without water gives its own value, so that low ground is not read as deep water.
@@ -476,7 +467,8 @@ async function mountRace(container, context, params) {
       const model = build.truckModels[e.file];
       return {
         truck: { anchors: model.anchors, scrapePoints: model.scrapePoints, tire: model.tire ?? null },
-        start: rink ? hockeySpot(rink, teams, entrants.indexOf(e)) : { pos: grid[e.slot].pos, heading: grid[e.slot].heading },
+        start: extensionRace?.start(entrants.indexOf(e), { pos: grid[e.slot].pos, heading: grid[e.slot].heading })
+          ?? { pos: grid[e.slot].pos, heading: grid[e.slot].heading },
         autopilot: !e.player || !!context.settings.fullAutopilot || demo,
         // A drag strip's grid slot is the lane.
         lane: e.slot,
@@ -492,9 +484,8 @@ async function mountRace(container, context, params) {
         // A drag pass: lane 1's course (the SIT's course 2), and whether the player's truck stages itself.
         laneCourse: dragRace ? build.sim.proCourse : null, autoStage: context.settings.autoStage !== false,
       },
-    // A party mode's game (game/hockey.js, game/tag.js).
-    party: rink ? { mode: "hockey", rink, teams, goals: laps }
-      : gameMode === "tag" ? { mode: "tag", minutes: laps } : null,
+    // The simulation worker reaches this payload through its extension runtime loader.
+    extension: extensionRace?.simulation ?? null,
   };
   // Where the player's truck starts, for the frames before the simulation's first reply.
   const startPose = await sim.call("init", init);
@@ -582,7 +573,7 @@ async function mountRace(container, context, params) {
   let replaying = null;
   async function showInstantReplay() {
     if (replaying) return;
-    const replay = Object.assign(recorder.build({ lastSeconds: INSTANT_REPLAY_S }), { party: partyDress });
+    const replay = Object.assign(recorder.build({ lastSeconds: INSTANT_REPLAY_S }), { extension: extensionDress });
     const overlay = el("div", { class: "race-replay-overlay" });
     view.append(overlay);
     const close = () => {
@@ -882,7 +873,7 @@ async function mountRace(container, context, params) {
   let drawAnchor = null;
   /** A drawn position (which may be worlds from the simulation's) as the simulation has it, for what is placed in the world. */
   const inWorld = (pos) => [wrapFt(pos[0]), pos[1], wrapFt(pos[2])];
-  // A party game ends as a Rumble does, all at once.
+  // An extension race ends as a Rumble does, all at once.
   const raceEnd = createRaceEnd({ summit: summit || !!gameMode, spectator });
   let cameraTarget = 0;
   // A watched race: the truck the camera is on is the spectator's to choose, and the camera can be flown free
@@ -974,20 +965,9 @@ async function mountRace(container, context, params) {
     return special ? special.zoom : view.zoom ?? null;
   };
 
-  /**
-   * The labels over the trucks: the Names key's, except that in Hockey every truck has its driver's name (in its
-   * team's colour). Tag's It is the arrow in the world (render/it-marker.js), not a label.
-   */
-  const truckLabels = (party) => entrants.map((e) => {
-    const label = nameLabel(namesMode, e, truckName);
-    if (party?.mode === "hockey") return label ?? e.name;
-    return label;
-  });
-  /** Hockey's team colours over the trucks (render/name-tags.js `marks`). */
-  const partyMarks = (party) => entrants.map((_, i) => {
-    if (party?.mode === "hockey") return { color: TEAM_COLOURS[party.teams[i]], far: false };
-    return null;
-  });
+  /** Labels and optional marks are extension presentation hooks. */
+  const truckLabels = (state) => extensionTruckLabels(state, entrants, (entrant) => nameLabel(namesMode, entrant, truckName));
+  const extensionMarks = (state) => extensionTruckMarks(state, entrants.length);
   // The demo keeps its own caption up.
   const flash = (text, now, seconds = 3) => { if (!demo) { caption.show(text, seconds); vrMessage.set([text]); } };
   // A function declaration: the key handler above may call it before this line runs.
@@ -998,54 +978,19 @@ async function mountRace(container, context, params) {
     cleanups.push(() => window.removeEventListener("pointerdown", leaveDemo));
   }
   let lastLaps = 0, lastCheckpoint = 0;
-  let wasMissed = false, finalLapShown = false, lightsOn = null, dragNoted = false, partyEvents = 0, partyPhase = null;
+  let wasMissed = false, finalLapShown = false, lightsOn = null, dragNoted = false, extensionEvents = 0, extensionPhase = null;
   /** What the player is told when a drag pass puts them out (game/drag-race.js `DQ_CODE`). */
   const DRAG_OUT = {
     "red light": "Red light! Disqualified.", "out of lane": "Out of your lane! Disqualified.", "reversing": "Backing up! Disqualified.",
     "not staged": "Not staged in time! Disqualified.", "timeout": "Out of time! Disqualified.",
   };
-  const nameOf = (i) => (i === 0 ? t("You") : entrants[i]?.name ?? "");
-  /** A party game's HUD and what it says when something happens (game/hockey.js, game/tag.js). */
-  const showParty = (race, party, now) => {
-    const me = race.trucks[0];
-    if (party.mode === "hockey") {
-      const mine = party.teams[0];
-      setHud([
-        [`${t(TEAM_NAMES[0])}:`, String(party.score[0])], [`${t(TEAM_NAMES[1])}:`, String(party.score[1])],
-        [t("Clock:"), formatRaceTime(race.clock)], ["", ""], [t("Team:"), t(TEAM_NAMES[mine])], ["Goals:", String(me.score)],
-      ]);
-      if (party.events !== partyEvents) {
-        partyEvents = party.events;
-        const e = party.event;
-        if (e?.kind === "goal") {
-          const by = e.scorer >= 0 ? ` (${nameOf(e.scorer)})` : e.own >= 0 ? ` (own goal, ${nameOf(e.own)})` : "";
-          flash(`${t(TEAM_NAMES[e.team])} scores!${by}  ${party.score[0]} - ${party.score[1]}`, now, 3);
-        } else if (e?.kind === "out") flash("Puck out of the rink. Face-off!", now, 2);
-      }
-      if (party.phase === "faceoff" && partyPhase !== "faceoff" && party.events > 0) flash(`Face-off! First to ${party.target}`, now, 2);
-      else if (party.phase === "over" && partyPhase !== "over") flash(`${t(TEAM_NAMES[party.score[0] >= party.score[1] ? 0 : 1])} wins!`, now, 4);
-      partyPhase = party.phase;
-      return;
-    }
-    // Tag.
-    setHud([
-      [t("Time Remaining:"), formatRaceTime(party.left)], [t("Points:"), String(Math.round(party.points[0]))],
-      ["It:", party.it === 0 ? t("You") : entrants[party.it]?.name ?? ""], ["It time:", formatRaceTime(party.itTime[0])],
-      [t("Place:"), `${me.place}/${race.trucks.length}`], ["", ""],
-      ...summitBoard(race.trucks, entrants.map((e) => e.name)),
-    ]);
-    if (party.events !== partyEvents) {
-      partyEvents = party.events;
-      const e = party.event;
-      const pts = e?.points ? `${e.points}` : "";
-      if (e?.to === 0) flash(`${nameOf(e.from)} tagged you. You're It!${pts ? ` (-${pts})` : ""}`, now, 3);
-      else if (e?.from === 0) flash(`You tagged ${nameOf(e.to)}!${pts ? ` (+${pts})` : ""}`, now, 3);
-      else if (e) flash(`${nameOf(e.from)} tagged ${nameOf(e.to)}!${pts ? ` (+${pts})` : ""}`, now, 2);
-    }
-    if (partyPhase === null && race.started) {
-      flash(party.it === 0 ? "You're It! Wait for it..." : `${nameOf(party.it)} is It! Run!`, now, 3);
-      partyPhase = "started";
-    }
+  const showExtension = (race, state, now) => {
+    const view = extensionHud(state, race, entrants, { t, formatRaceTime, summitBoard }, { events: extensionEvents, phase: extensionPhase });
+    if (!view) return;
+    setHud(view.rows);
+    for (const message of view.flashes) flash(message, now);
+    extensionEvents = view.events;
+    extensionPhase = view.phase;
   };
   const showRace = (race, now) => {
     // The gantry's lamps change only when the countdown state does (6.1).
@@ -1054,7 +999,7 @@ async function mountRace(container, context, params) {
       if (startLamps) startLamps.set(lightsOn);
       else setStartLights(world, lightsOn, build.startLightColours);
     }
-    if (race.party) { showParty(race, race.party, now); return; }
+    if (race.extension) { showExtension(race, race.extension, now); return; }
     // A watched race shows the watched truck's times.
     const me = race.trucks[spectator ? cameraTarget : 0] ?? race.trucks[0];
     // The level's own sounds for passing a checkpoint and closing a lap (SOUNDnnn.TXT).
@@ -1115,11 +1060,11 @@ async function mountRace(container, context, params) {
     loading.hidden = false;
     const race = await sim.call("finish");
     if (disposed) return;
-    context.lastReplay = Object.assign(recorder.build(), { party: partyDress });
+    context.lastReplay = Object.assign(recorder.build(), { extension: extensionDress });
     const rows = race.trucks.map((t, i) => ({
       ...t, name: entrants[i].name, file: entrants[i].file, truckName: truckName(entrants[i].file), player: entrants[i].player,
-      // A party game's length for the Time column: Hockey's clock, Tag's minutes.
-      ...(gameMode ? { raceTime: gameMode === "tag" ? laps * 60 : race.clock } : {}),
+      // An extension supplies the result time shown in the Winner's Circle.
+      ...(gameMode ? { raceTime: extensionResultTime(gameMode, laps, race) } : {}),
     }));
     if (eventPass) {
       // What each truck made of the pass, by its driver in the event (game/drag-race.js `DQ_CODE`; not finished is the timeout).
@@ -1277,7 +1222,7 @@ async function mountRace(container, context, params) {
       }
       camera.getWorldDirection(forwardVector);
       audio.setListener(camera.position, forwardVector, camera.up);
-      nameTags.update(camera, view.clientWidth, view.clientHeight, truckLabels(latest.race?.party), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0), partyMarks(latest.race?.party));
+      nameTags.update(camera, view.clientWidth, view.clientHeight, truckLabels(latest.race?.extension), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0), extensionMarks(latest.race?.extension));
       weatherScene.update(dt, shown.map((p, i) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: lamps[i] === 2, pool: pools[i], matrix: p.matrix })),
         { floorFt: waterLevelNow, viewHeight: host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height, lite: host.presenting });
       // In a headset the seat follows the player's truck and the flat camera takes the head's place. The
@@ -1310,14 +1255,14 @@ async function mountRace(container, context, params) {
       else if (freeRoam && !latest.race) hud.set([[t("Clock:"), formatRaceTime(latest.time ?? 0)]]);
     } else if (host.presenting) vr.place(startPose, dt, camera);
     // After the camera is placed: the arrow faces it, and a wall in front of it hides it.
-    if (itMarker) {
-      const partyNow = latest?.race?.party;
-      const itIndex = partyNow?.mode === "tag" ? partyNow.it : -1;
+    if (extensionDress) {
+      const extensionNow = latest?.race?.extension;
+      const itIndex = extensionMarkerTarget(extensionNow);
       const itPose = itIndex >= 0 ? shownPoses?.[itIndex] : null;
       // From inside that truck's cab the roof does not hide an arrow above it (its inside faces are not drawn).
       const inCab = host.presenting ? vr.view?.id === "cab" : viewMode === 0;
       const insideIt = inCab && itIndex === (host.presenting ? 0 : cameraTarget);
-      itMarker.update(itPose && !insideIt ? itPose.pos : null, camera, now / 1000);
+      extensionScene.updateMarker(itPose && !insideIt ? itPose.pos : null, camera, now / 1000);
     }
     vr.update({ state: latest?.poses[0].current ?? startPose, timing: !!latest?.race, message: caption.active, light: weatherScene.lightLevel() });
     host.menu.update(now);
@@ -1457,7 +1402,7 @@ async function mountRace(container, context, params) {
     const summary = () => {
       const pos = latest?.poses[0]?.current.pos ?? [0, 0, 0];
       const me = latest?.race?.trucks[0];
-      const lap = freeRoam || !latest?.race ? "free roam" : gameMode === "hockey" ? "Hockey" : gameMode === "tag" ? "Tag" : summit ? "Rumble" : `Lap ${me?.lap ?? 1}/${latest.race.laps}`;
+      const lap = freeRoam || !latest?.race ? "free roam" : extension?.name ?? (summit ? "Rumble" : `Lap ${me?.lap ?? 1}/${latest.race.laps}`);
       return [
         `Track: ${track.name} (${track.file}), Truck: ${truckName(playerTruck)} (${playerTruck})`,
         `Position X:${Math.round(pos[0])} Y:${Math.round(pos[1])} Z:${Math.round(pos[2])}, ${lap}, Weather: ${t(WEATHER_NAMES[weatherNow()])}, Backdrop: ${said(!!context.settings.backdrops)}, Bots: ${bots().length}`,

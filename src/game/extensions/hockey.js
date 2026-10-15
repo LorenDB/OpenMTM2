@@ -1,5 +1,5 @@
 /*
-  Hockey (docs/PLAN.md, "Party modes"): two teams of trucks and the puck on Breakneck Ridge's
+  Hockey (docs/EXTENSIONS.md): two teams of trucks and the puck on Breakneck Ridge's
   frozen lake in Snow, first to a number of goals. An addition; the game has the rink's puck and
   goals but no game on them.
 
@@ -36,6 +36,24 @@ export const FACEOFF_HOLD_S = 3;
 export const RIDE_FT = 6;
 /** A truck this far outside the boards for this long is put back at its face-off spot. */
 export const ESCAPE_FT = 4, ESCAPE_S = 2;
+
+/**
+ * Public metadata consumed by the extension loader. Core menus know this shape, not Hockey's
+ * rules. Runtime hooks stay in this module and are reached through the extension registries.
+ */
+export const HOCKEY_EXTENSION = Object.freeze({
+  id: "hockey",
+  name: "Hockey",
+  description: "Two teams play for goals on Breakneck Ridge's frozen lake.",
+  length: Object.freeze({ key: "goals", label: "Goals", default: DEFAULT_GOALS, min: 1, max: 99 }),
+  settings: Object.freeze([
+    Object.freeze({ key: "goals", legacyKey: "hockeyGoals", label: "Goals to win", type: "number", min: 1, max: 99, default: DEFAULT_GOALS }),
+  ]),
+  acceptsTrack: isHockeyTrack,
+  trackLocked: true,
+  weather: HOCKEY_WEATHER,
+  detailLevel: 2,
+});
 
 const POST_REACH_FT = 45;
 const POST_HALF_FT = 2;

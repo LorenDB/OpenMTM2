@@ -33,6 +33,7 @@ test("refreshAfterPodChange forgets cached sounds, reads the wording and shows t
   const context = {
     settings: { wording: "" },
     menuAudio: { clearSamples() { calls.push("clearSamples"); } },
+    menuMusic: { reload() { calls.push("reloadMusic"); } },
     router: {
       stack: [{ name: "race-select", params: { mode: "circuit" } }],
       async go(name, params, options) { calls.push(["go", name, params, options]); },
@@ -41,6 +42,7 @@ test("refreshAfterPodChange forgets cached sounds, reads the wording and shows t
   await refreshAfterPodChange(context);
   assert.deepEqual(calls, [
     "clearSamples",
+    "reloadMusic",
     ["go", "race-select", { mode: "circuit" }, { replace: true }],
   ]);
   assert.equal(typeof context.t, "function");

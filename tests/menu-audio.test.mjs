@@ -20,6 +20,28 @@ test("menu music loops SPLASH.WAV on the music bus", async () => {
   assert.deepEqual(calls[1], ["stop"]);
 });
 
+test("menu music reloads its loop after the POD-backed sample cache changes", async () => {
+  const calls = [], voices = [
+    { stop() { calls.push(["stop", 1]); } },
+    { stop() { calls.push(["stop", 2]); } },
+  ];
+  const audio = {
+    play(name, options) {
+      calls.push(["play", name, options]);
+      return Promise.resolve(voices.shift());
+    },
+  };
+  const music = createMenuMusic(audio, { menuMusic: true, sound: { music: 0.6, muted: false } });
+  music.start();
+  music.reload();
+  await Promise.resolve();
+  assert.deepEqual(calls, [
+    ["play", "SPLASH", { loop: true, gain: 0.8, bus: "music" }],
+    ["play", "SPLASH", { loop: true, gain: 0.8, bus: "music" }],
+    ["stop", 1],
+  ]);
+});
+
 test("ordinary and special menu sounds honor mute", () => {
   const calls = [];
   const audio = {

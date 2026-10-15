@@ -1,12 +1,12 @@
 /*
-  The It arrow (docs/PLAN.md, "Party modes"): a flat arrow above the It truck, turned to face the
+  The It arrow (docs/EXTENSIONS.md): a flat arrow above the It truck, turned to face the
   camera, drawn in the world. It is an ordinary mesh, so a wall or the ground between it and the
-  camera hides it. The outline is game/tag.js `IT_ARROW`, tip down, in the marker's own XY plane;
+  camera hides it. The outline is game/extensions/tag.js `IT_ARROW`, tip down, in the marker's own XY plane;
   copying the camera's quaternion puts that plane's +Z toward the camera and its down toward the
   bottom of the picture (a camera's local -Y).
 */
 import * as THREE from "three";
-import { IT_ARROW, IT_COLOUR } from "../game/tag.js";
+import { IT_ARROW, IT_COLOUR } from "../../game/extensions/tag.js";
 
 /** Feet above the truck's origin where the arrow's centre hangs. */
 const ABOVE_FT = 15;
