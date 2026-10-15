@@ -45,8 +45,9 @@
       cascade redraws every frame and each further one half as often.
     - The fit is snapped to whole texels, so a refit does not make shadow edges crawl.
     - With Natural light each cascade keeps a copy of what never moves (the ground, the placed
-      objects). A redraw puts that copy back and draws only the trucks, the keyframed models and
-      the camera-facing trees on top. A cascade a truck's shadow cannot reach skips that truck.
+      objects, the camera-facing trees among them: their shadows are held square to the sun). A
+      redraw puts that copy back and draws only the trucks and the keyframed models on top. A
+      cascade a truck's shadow cannot reach skips that truck.
       The copies are 32 MB each. Without Natural light only a few objects cast, and every redraw
       draws the whole map, as before.
 */
@@ -317,7 +318,7 @@ export class SunShadows {
       let owner = null;
       for (let node = object; node; node = node.parent) if (truckRoots.has(node)) { owner = node; break; }
       if (owner) byRoot.get(owner).meshes.push(object);
-      else if (object.userData.facing || object.userData.shadowProxy || object.userData.frameCount) this._dynamicCasters.push(object);
+      else if (object.userData.shadowProxy || object.userData.frameCount) this._dynamicCasters.push(object);
       else this._staticCasters.push(object);
     };
     this._scene.traverse(consider);
@@ -564,6 +565,9 @@ export function enableSunShadows({ renderer, scene, camera, world, sun, trucks =
   // A facing object (type 8 and 9 billboards) turns to the camera, which would swing its shadow around with the
   // view. Its shadow comes from an invisible copy held square to the sun instead (updateTrackWorld keeps it there).
   world.userData.shadowFacing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(sun.position.x, sun.position.z));
+  // The instanced ones turn in their depth shader (track-scene.js `facingDepthMaterial`): the same turn, as its sine and cosine.
+  const across = Math.hypot(sun.position.x, sun.position.z);
+  world.userData.shadowTurn = across > 1e-6 ? new THREE.Vector2(sun.position.x / across, sun.position.z / across) : new THREE.Vector2(0, 1);
   tile?.traverse((group) => {
     if (group.name !== "placedObject" || !group.userData.billboard) return;
     for (const mesh of [...group.children]) {

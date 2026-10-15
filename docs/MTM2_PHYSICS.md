@@ -1073,9 +1073,11 @@ truck and a box in sphere range (truck radius + box radius):
    When it beats the point's stored depth, the depth and the face's outward normal (world)
    become that point's contact, just like a terrain probe (section 14.10).
 3. **Each wheel** (`0x4a7fc0`), tires 13 to 16 in order, side -1, +1, -1, +1:
-   - **Suspension** (`0x4a6390`, `0x4a5da0`): a ray from last step's truck centre, moved half
-     the tire width along the axle (the articulated axle, as for the probe), toward the bottom
-     of the wheel at its static anchor (`anchor - (0, r, 0)`). The nearest crossed face wins,
+   - **Suspension** (`0x4a6390`, `0x4a5da0`): a ray from the hub where it was last step (tire
+     `+0x24`, world: the tire geometry `0x47f7d0` adds the hub's last offset `+0x18` to the
+     truck's last position), moved half the tire width along the axle (the articulated axle, as
+     for the probe), toward the bottom of the wheel at its static anchor now (`anchor - (0, r,
+     0)`; the direction is from last step's hub itself, without the move along the axle). The nearest crossed face wins,
      with no direction test, and it counts only when its outward normal points mostly up in
      the truck frame (`|n_y| > 0.5`); otherwise the wheel gets nothing from this box. When it
      counts (`n_y > 0.5` in the truck frame), the contact point is the anchor moved half the
@@ -1085,8 +1087,11 @@ truck and a box in sphere range (truck radius + box radius):
      one also sets the wheel's ground normal (the face's outward normal, world) and on-ground;
      and the penetration and lever `hypot(r, anchor x + side w / 2)` are stored, as from the
      wheel probe (section 14.11.3).
-   - **Tire contact point** (13 to 16): a ray from last step's truck centre (relative to the
-     box's last position) toward the hub now. The nearest crossed face wins, no direction test.
+   - **Tire contact point** (13 to 16): a ray along the hub's own move this step, from where it
+     was last step (tire `+0x24`, relative to the box's last position) toward where it is now
+     (the truck's position plus the hub's offset `+0x18`). Both rays start at the hub, not at
+     the truck's centre: a line from the centre, high above a low box, could meet a
+     neighbouring box's side below its top, a wall for a hub that is over it. The nearest crossed face wins, no direction test.
      With `n` its outward normal in the truck frame: the point is the hub, moved `w / 2` toward
      the face's side in x (`+` when `n_x < 0`), and `r * max(|sin atan2(n_z, n_y)|, |sin
      atan2(n_x, n_y)|)` along `-(n_y, n_z)` normalised. Its depth inside the face, when it

@@ -48,8 +48,7 @@ export function collideTruckBox(s, p, box, dt) {
     // Wheels, tires 13 to 16 (FR, FL, RR, RL), sides -1, +1, -1, +1.
     for (let i = 0; i < 4; i++) {
         const side = i % 2 === 0 ? -1 : 1;
-        const prevCentre = [s.prevPos[0] - box.pos[0], s.prevPos[1] - box.pos[1], s.prevPos[2] - box.pos[2]];
-        wheelSuspension(s, p, box, i, side, prevCentre);
+        wheelSuspension(s, p, box, i, side);
         tireContactPoint(s, p, box, i, pair, dt);
     }
     if (box.mass > 0 && !truckBoxSeparated(s, p, box, dt)) {
@@ -77,8 +76,7 @@ export function collideTruckImmovableBox(s, p, box, dt) {
     hullPoints(s, box, { pushable: false, mEff: truckMass(p), box: null, truck: null }, dt);
     for (let i = 0; i < 4; i++) {
         const side = i % 2 === 0 ? -1 : 1;
-        const prevCentre = [s.prevPos[0] - box.pos[0], s.prevPos[1] - box.pos[1], s.prevPos[2] - box.pos[2]];
-        wheelSuspension(s, p, box, i, side, prevCentre);
+        wheelSuspension(s, p, box, i, side);
         tireContactPoint(s, p, box, i, { pushable: false, mEff: 0, box: null, truck: null }, dt);
     }
 }
@@ -203,21 +201,30 @@ function smoothedFace(box, contactAt, maxWallDepth) {
     // into the air.
     return over && top[1] > -half[1] ? 3 : -1;
 }
+/**
+ * Where tire `i`'s hub was last step, world feet (tire +0x24, §14.14 step 3): the truck's last position and rotation,
+ * and the hub as the step began. The wheels' rays start here, not at the truck's centre.
+ */
+function lastHub(s, i) {
+    const h = s.tires[i].hub;
+    const w = toWorld(s.prevMatrix, h[0], h[1], h[2]);
+    return [s.prevPos[0] + w[0], s.prevPos[1] + w[1], s.prevPos[2] + w[2]];
+}
 /** The wheel's suspension against the box: driving on its top (§14.14 step 3). */
-function wheelSuspension(s, p, box, i, side, prevCentre) {
+function wheelSuspension(s, p, box, i, side) {
     const m = s.matrix, bm = box.matrix, half = box.half;
     const t = s.tires[i];
     const [ax, ay, az] = p.hubs[i];
     const r = p.tireRadiusFt, w = p.tireWidthFt;
-    // Toward the bottom of the wheel at its static anchor, from last step's centre.
+    // Toward the bottom of the wheel at its static anchor now, from the hub last step.
     const bottom = toWorld(m, ax, ay - r, az);
-    const toBottom = [
-        s.pos[0] + bottom[0] - s.prevPos[0], s.pos[1] + bottom[1] - s.prevPos[1], s.pos[2] + bottom[2] - s.prevPos[2],
-    ];
+    const from = lastHub(s, i);
+    const toBottom = [s.pos[0] + bottom[0] - from[0], s.pos[1] + bottom[1] - from[1], s.pos[2] + bottom[2] - from[2]];
     const dir = unit(toBody(bm, toBottom[0], toBottom[1], toBottom[2]));
     const art = s.axles[i < 2 ? 0 : 1].articulation;
     const off = toWorld(m, Math.cos(art) * w * side * 0.5, Math.sin(art) * w * side * 0.5, 0);
-    const origin = toBody(bm, prevCentre[0] + off[0], prevCentre[1] + off[1], prevCentre[2] + off[2]);
+    // Moved half the tire's width out along the axle.
+    const origin = toBody(bm, from[0] - box.pos[0] + off[0], from[1] - box.pos[1] + off[1], from[2] - box.pos[2] + off[2]);
     // A smoothed ground box carries a wheel on its top only (see `smoothedFace`).
     const smoothed = box.openFaces !== undefined;
     // A box over the truck carries none of its wheels.
@@ -256,9 +263,10 @@ function tireContactPoint(s, p, box, i, pair, dt) {
     const m = s.matrix, bm = box.matrix, half = box.half;
     const t = s.tires[i];
     const hubW = toWorld(m, t.hub[0], t.hub[1], t.hub[2]);
-    // From last step's centre, relative to the box's last position, toward the hub now.
-    const origin = toBody(bm, s.prevPos[0] - (box.pos[0] - box.vel[0] * dt), s.prevPos[1] - (box.pos[1] - box.vel[1] * dt), s.prevPos[2] - (box.pos[2] - box.vel[2] * dt));
-    const ray = toBody(bm, s.pos[0] + hubW[0] - s.prevPos[0], s.pos[1] + hubW[1] - s.prevPos[1], s.pos[2] + hubW[2] - s.prevPos[2]);
+    // Along the hub's own move: from where it was last step, relative to the box's last position, to where it is now.
+    const from = lastHub(s, i);
+    const origin = toBody(bm, from[0] - (box.pos[0] - box.vel[0] * dt), from[1] - (box.pos[1] - box.vel[1] * dt), from[2] - (box.pos[2] - box.vel[2] * dt));
+    const ray = toBody(bm, s.pos[0] + hubW[0] - from[0], s.pos[1] + hubW[1] - from[1], s.pos[2] + hubW[2] - from[2]);
     if (ray[0] === 0 && ray[1] === 0 && ray[2] === 0)
         return;
     /** The tire's contact point for a face: the face's normals, the point on the truck and in the box frame. */

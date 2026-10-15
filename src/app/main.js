@@ -14,6 +14,7 @@ import { createOffline } from "./offline.js";
 import { offlineNote } from "../ui/offline-note.js";
 import { WorkerClient } from "../shared/worker-client.js";
 import { mountWatermark } from "../ui/watermark.js";
+import { missingRequiredPods } from "../install/required-pods.js";
 
 const screens = {
   install: () => import("../ui/screens/install.js"),
@@ -59,6 +60,16 @@ async function boot() {
     return;
   }
   context.assets = new WorkerClient(new URL("../worker/asset-worker.js", import.meta.url));
+  // Two Advanced options every screen's requests follow: the catalogue "Keep MTM1 trucks apart" (worker/catalog.js
+  // `mtm1ApartTrucks`), and the skies "CP3 HD weather" (worker/weather-art.js).
+  const callAssets = context.assets.call.bind(context.assets);
+  const withOptions = (type, payload) => {
+    if (type === "catalog") return { mtm1Apart: context.settings.mtm1TrucksApart !== false, ...(payload ?? {}) };
+    if (type === "trackRender") return { hdWeather: context.settings.hdWeather !== false, originalBackdrops: !!context.settings.originalBackdrops, ...(payload ?? {}) };
+    if (type === "sky") return { hdWeather: context.settings.hdWeather !== false, ...(payload ?? {}) };
+    return payload;
+  };
+  context.assets.call = (type, payload, ...rest) => callAssets(type, withOptions(type, payload), ...rest);
   // The headset, where the browser has one (docs/VR.md). Between races it shows the race setup.
   context.xr = createXr(context);
   context.xr.setLobby(() => lobbyMenu(context));
@@ -76,7 +87,9 @@ async function boot() {
   // (docs/ARCHITECTURE.md, "Without a server"). It is made in the background.
   context.offline = createOffline(context);
   context.offlineNote = offlineNote(context);
-  await router.go(installed ? "start" : "install");
+  // An install without the archives OpenMTM2 needs (install/required-pods.js) cannot run: the folder is picked again.
+  const requiredMissing = installed ? missingRequiredPods(manifest.archives.map((a) => a.name)) : [];
+  await router.go(installed && !requiredMissing.length ? "start" : "install", requiredMissing.length ? { requiredMissing } : {});
   context.offline.start();
 }
 

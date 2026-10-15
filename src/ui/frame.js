@@ -18,17 +18,21 @@ import { vrButton } from "./vr-button.js";
 const BUTTONS = {
   driver: [16, 410, 116, 40], races: [136, 410, 116, 40], garage: [256, 410, 114, 40], multi: [374, 410, 116, 40],
   go: [508, 408, 118, 44], continue: [508, 408, 118, 44], hall: [16, 408, 116, 44], replay: [136, 408, 116, 44],
+  again: [256, 408, 116, 44],
   startDriver: [506, 408, 122, 44],
   startWeb: [54, 406, 70, 50], startDemo: [208, 406, 64, 50], startManual: [376, 406, 64, 50],
 };
 
-/** The hotspots per bar: [button, label, action name]; `null` actions are drawn nowhere in the game either. */
+/**
+ * The hotspots per bar: [button, label, action name, modern only]; `null` actions are drawn nowhere in the game either. A
+ * button the art does not paint (modern only) is left out on the classic stage.
+ */
 const BARS = {
   main: [["driver", "Driver Check-in", "drivers"], ["races", "Races", "races"], ["garage", "Garage", "garage"], ["multi", "Multiplayer", null], ["go", "GO", "go"]],
   hall: [["continue", "Continue", "back"]],
   // The Winner's Circle after a tournament's race: Continue goes back to the tournament.
   tournament: [["hall", "Hall of Fame", "hall"], ["replay", "Instant Replay", "replay"], ["continue", "Continue", "tournament"]],
-  results: [["hall", "Hall of Fame", "hall"], ["replay", "Instant Replay", "replay"], ["continue", "Continue", "races"]],
+  results: [["hall", "Hall of Fame", "hall"], ["replay", "Instant Replay", "replay"], ["again", "Race Again", "again", true], ["continue", "Continue", "races"]],
   start: [["startWeb", "Web Page", "web"], ["startDemo", "Monster Demo", "demo"], ["startManual", "Monster Manual", null], ["startDriver", "Driver Check-in", "drivers"]],
   none: [],
 };
@@ -76,11 +80,12 @@ export async function frame(container, context, { title, backdrop, bar = "main",
     stage.append(panel);
     return [name, panel];
   }));
-  for (const [button, label, action] of BARS[bar] ?? []) {
+  for (const [button, label, action, modernOnly] of BARS[bar] ?? []) {
+    if (art && modernOnly) continue;
     const hotspot = el("button", {
       class: art ? "stage-hotspot" : `stage-button${action === current ? " current" : ""}${button === "go" ? " go" : ""}`,
       "aria-label": label, title: label, disabled: action === null,
-      "data-menu-sound": action === "go" ? "GOOFF" : action && action !== "web" ? "STARTOFF" : null,
+      "data-menu-sound": action === "go" || action === "again" ? "GOOFF" : action && action !== "web" ? "STARTOFF" : null,
       onclick: () => navigate(context, action),
     }, art ? "" : context.t?.(label) ?? label);
     place(hotspot, BUTTONS[button]);
@@ -115,7 +120,7 @@ function place(node, [x, y, w, h]) {
 async function navigate(context, action) {
   const { router } = context;
   if (action === "back") return router.back();
-  if (action === "go") return goRace(context);
+  if (action === "go" || action === "again") return goRace(context);
   if (action === "demo") return goDemo(context);
   if (action === "web") return window.open("https://mtm2.com/", "_blank", "noopener");
   if (action === "replay") return context.lastReplay ? router.go("replay", { replay: context.lastReplay }) : undefined;

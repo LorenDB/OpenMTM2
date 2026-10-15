@@ -776,6 +776,54 @@ transfer gear)".
 
 ---
 
+## 6.6 Particles and tire tracks
+
+`MONSTER.INI` `partsFlag` (`0x548118`) is a level, 0 to 2, that a key steps up and down in a race. Its two effects
+work on the ground's own texture: MTM1 has no dust sprites behind the wheels and no tire track models.
+
+**The surface flags** (`0x4300c0`, the same table as MTM2's `0x4de180`): the value's type gives Cement 10, Dirt 13,
+Water 1, Mud 5, Sand 9, Grass 5, Gravel 5, Snow 5, anything else 0. Bit 1 throws particles (every one of them but
+Cement); bit 4 takes tracks (Dirt, Mud, Grass, Gravel, Snow).
+
+**Particles** (level 2; `0x433980`, for each of the four tires every frame): a tire on the ground,
+moving, with the truck moving, on a bit-1 surface, throws three particles from each of its three points (`+0xd8`,
+`+0xe4`, `+0xf0`), nine a frame. Each leaves at the tire's velocity (`+0xfc`) times a random factor: 0.9 to 1.1
+across (x and z), 0.5 to 1.5 up (y). That velocity (`0x448a20`) is a direction of the tire's (`+0xac`, not traced)
+times half the rim speed (`radius x spin / 2`, in size), plus a random push across of up to 3 ft/s and along of up to
+half the truck's forward speed, in body axes.
+- The pool holds 256 (`0x7c1c10`, 52 bytes each, a ring: the 257th takes the first's place). A particle is a single
+  point (`0x4a0f6b`) in one palette colour: the texel of the ground's texture under the place it was thrown from.
+- It lives 3 s (`0x30000`), falls at 32 ft/s² (`-0x2000` in feet x 256), and (`0x4a0e20`) when falling below the
+  ground it lands: it is gone, and the ground's texel where it landed takes its colour (`0x4a1440`).
+
+**Tracks** (level 1 and up): a tire on a bit-4 surface lays a line (`0x4a16c0`, Bresenham, one texel a foot, at most
+32 texels a step) from where it touched last to where it touches now, darkening each texel through the palette's
+shade table. The line's width in texels (its fifth argument, pushed first at `0x433d0f`) is the tire's radius
+(`+0x6c`) truncated to a whole number, not its width (`+0x74`): 2 texels for a tire of 2.x ft, 3 for the default
+3.0 ft. The texels across run from `-width / 2` (integer division) to `width - 1 - width / 2`.
+
+**How the ground is drawn on** (`0x4a1440`, `0x4a1130`): a cell that is drawn on gets a copy of its tile
+(`TRTRK%d.RAW`, in the texture cache) and the cell's texture is pointed at it; the texel is found with the cell's own
+turn and mirror (CLR bits 12-15). At most 32 cells hold copies, taken in turn: the 33rd cell drawn on gives the first
+its own tile back, its marks gone.
+
+## 6.7 Skid sounds
+
+MTM1's skid sounds come from the same triggers as MTM2's (MONSTER_EXE_ANALYSIS.md 12, "Skids"), and one more that
+MTM2 left unused. Each picks its sample by the surface under the tire (`type * 100`):
+
+| Routine | Fired by | 0, 100 | 200, 400, 500, 600 | 300, 800, 900 | 700, 1000, 1100, 1200 |
+|---|---|---|---|---|---|
+| corner `0x43cac0` | a tire starting to slide, as MTM2's `0x47c480` (`0x456700`); the RL tire, looping | `corncem1` | `corndir1` | `cornice1` | `corndir1` |
+| spin `0x43cd60` | full throttle on dust, as MTM2's `0x477520` (`0x452b40`); one a truck, looping | `spincem%d` | `spindir%d` | `spinice%d` | `spinroc%d` |
+| skid `0x43d050` | the brake going on, from fully off, faster than 29.34 ft/s (`0x43d580`, `0x42eacc`); each rear tire, once | `skidcem%d` | `skiddir%d` | `skidice%d` | `skidroc%d` |
+
+Other surfaces (1300, 1400) play nothing. `%d` is `(rand << 2) / 0x7fff`, 0 to 3. MTM1's archives hold `skidcem0`-`3`,
+`skiddir0`-`3`, `spin*1`-`3` and the `corn*1`: a spin of variant 0, and any `skidice` or `skidroc`, is silent.
+MTM2's `SOUND.POD` carries every one of these but `spinice1`-`3`. The spin and the corner stop as MTM2's do (`0x43d300`,
+`0x43d3c0`). MTM1's engine (`engstart.wav`, then `idle1.wav` looping, `shift.wav`, `engstop.wav`, `0x43c930`,
+`0x441350`) is not in MTM2's `SOUND.POD`, and its pitch, set in the mixer, is not traced.
+
 ## 7. What this means for OpenMTM2
 
 ### 7.1 "MTM1 physics" as an option
@@ -834,6 +882,16 @@ games, so they can be offered whenever the tracks they name are installed.
 - **TREX, DANCE**: two more typed codes for `src/ui/gold-mode.js`, where the art is installed.
 - The **Quick'n'Ugly** menu's layout is fully known (2.2), should the console or a debug menu
   want to pay tribute to it.
+
+### 7.5 Ramps and checkpoints on MTM1 tracks
+
+As MTM1 plays (seen in the game, **not traced** in its executable): a ramp's model (type 99,
+`CRURAMP.BIN`) is drawn, where MTM2 leaves ramps unseen, and a checkpoint banner (`CKBAN1.BIN`
+to `CKBAN4.BIN`, type 6) stands on two solid poles that stop a truck, while the banner between
+them is passed under. In the model the poles are its one opaque mesh (`BAN06.RAW`, two posts
+2.9 ft by 4 ft and 32 ft tall, 77 ft apart) and the banner its cut-out meshes. OpenMTM2 draws an
+MTM1 track's ramps, and makes each separate opaque part of an MTM1 checkpoint's model an
+immovable box (`worker/track-build.js` `solidParts`); MTM2 makes no checkpoint a collision box.
 
 ---
 

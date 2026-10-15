@@ -15,6 +15,10 @@
   the pause menu is a board too, and the controllers drive (game/vr/controls.js). The renderer
   is the app's one shared renderer, so a headset session carries over from race to race.
 */
+import { createMtm1Particles } from "../../render/mtm1-particles.js";
+import { createTruckReflections } from "../../render/truck-reflection.js";
+import { createWaterMirror } from "../../render/water-mirror.js";
+import { dustLevel, sparkLevel } from "../../game/tire-effects.js";
 import { WATERMARK } from "../../app/version.js";
 import { TREX } from "../../game/cheats.js";
 import { moveToEvent, runEvent } from "../../app/tournament.js";
@@ -49,7 +53,7 @@ import { createTruckAudio } from "../../audio/truck-audio.js";
 import { createWorldAudio } from "../../audio/world-audio.js";
 import { createWeatherScene } from "../../render/weather-scene.js";
 import { WEATHER_LOOK, WEATHER_NAMES, isUnderwater, resolveWeather, waterOffsetFt } from "../../game/weather.js";
-import { beamAir, lampsAtStart, toggleLamps } from "../../game/truck-lights.js";
+import { beamAir, headlightPool, lampsAtStart, toggleLamps } from "../../game/truck-lights.js";
 import { createGoldMode } from "../gold-mode.js";
 import { createGamepadInput } from "../../game/input/gamepad.js";
 import { createTextPanel, loadFont } from "../../render/bitmap-text.js";
@@ -88,6 +92,9 @@ const HEADSET_FINE_RANGE_FT = 800;
 const HEADSET_VIEW_HEIGHT = 1800;
 
 const DEMO_CAPTION = "Demo mode. Press any key to begin", DEMO_CAMERA_S = 8;
+/** Before the race's clock starts, this many frames in a row must each take less than `WARM_FRAME_S`; `WARM_LIMIT_MS` at most. */
+const WARM_FRAMES = 6, WARM_FRAME_S = 0.08, WARM_LIMIT_MS = 15000;
+
 /** How much of the race the pause menu's instant replay shows. */
 const INSTANT_REPLAY_S = 60;
 
@@ -231,7 +238,7 @@ async function mountRace(container, context, params) {
   }).catch(() => {});
 
   const truckName = (file) => catalogTrucks.find((t) => t.file === file)?.name ?? file;
-  const mtm1Options = { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap };
+  const mtm1Options = { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap };
   // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
   applyGraphics(context.settings, graphicsHardware());
   // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
@@ -295,8 +302,10 @@ async function mountRace(container, context, params) {
   context.menuMusic?.stop();
   // Reuse the already unlocked menu context. A newly created context after the asynchronous
   // track load can be blocked by autoplay policy even though GO was clicked.
-  const audio = context.menuAudio ?? createAudio(context.assets, context.settings.sound);
+  const sharedAudio = context.menuAudio ?? createAudio(context.assets, context.settings.sound);
   const ownsAudio = !context.menuAudio;
+  // The race's own view of the mixer: what it started is stopped when it ends, one-shots included.
+  const audio = sharedAudio.scoped?.() ?? sharedAudio;
   const ambience = await context.assets.call("ambience", { number: track.ambientSound ?? 0 }).catch(() => null);
   // Started whatever the music's level, which alone makes it heard: the console's `music 1` then needs no restart.
   const musicName = build.musicName ?? null;
@@ -305,7 +314,7 @@ async function mountRace(container, context, params) {
     hitInfo: new Map(build.sim.boxes.map((b) => [b.sitIndex, { hitSound: b.hitSound, type: b.type }])),
   });
   const truckAudio = createTruckAudio(audio, {
-    count: entrants.length, player: 0, kookyHorn: !!context.settings.kookyHorn,
+    count: entrants.length, player: 0, kookyHorn: !!context.settings.kookyHorn, mtm1Sounds: !!context.settings.mtm1Sounds,
     onHit: (sitIndex, force, pos) => worldAudio.hit(sitIndex, force, pos),
   });
   // The announcer: phrases from events in the race, spoken in the drivers' own name clips.
@@ -337,7 +346,8 @@ async function mountRace(container, context, params) {
     window.removeEventListener("pointerdown", resumeAudio);
     worldAudio.dispose();
     truckAudio.dispose();
-    if (ownsAudio) audio.dispose();
+    audio.stopAll?.();
+    if (ownsAudio) sharedAudio.dispose();
     context.menuMusic?.start();
   });
   const forwardVector = new THREE.Vector3();
@@ -370,17 +380,25 @@ async function mountRace(container, context, params) {
     audio.setRange?.(soundRange(next));
     worldAudio.setWeather(next);
     flare?.setMode(celestialFor(next));
+    if (truckReflections) truckReflections.setImage(await context.assets.call("envMap", { weather: next }).catch(() => null));
   };
   // The renderer is the app's: it is handed back, with the headset's rig taken out of the scene first.
   cleanups.push(() => { host.release(); disposeObject(scene); });
 
   // The lamps as the port draws them, where "Truck lamps" is on (docs/VISUALS.md, "Lamps").
   const richLamps = visualSettings(context.settings).lamps;
+  // MTM2's truck reflections (Options, Display; render/truck-reflection.js): CLOUDENV over the bodies.
+  const truckReflections = context.settings.truckReflections
+    ? createTruckReflections(await context.assets.call("envMap", { weather: weatherId }).catch(() => null)) : null;
+  if (truckReflections) cleanups.push(() => truckReflections.dispose());
+  // The light each truck's own lamps throw on the ground, with "Truck lamps" (game/truck-lights.js `headlightPool`).
+  const pools = entrants.map((e) => headlightPool(build.truckModels[e.file]?.lights ?? []));
   // One drawn truck per entrant, at the TRK's own anchors (the simulation clamps the wheelbase, §3.1).
   const drawn = entrants.map((e) => {
     const model = build.truckModels[e.file];
     const object = createTruckObject(model, model.anchors, look, { richLamps });
     scenery.gloss?.dress(object.object);
+    truckReflections?.dress(object.object);
     scene.add(object.object);
     return object;
   });
@@ -456,7 +474,9 @@ async function mountRace(container, context, params) {
   const vrCockpit = await context.assets.call("cockpitPanel").catch(() => null);
   if (disposed) return { unmount };
   if (spectator) caption.show(SPECTATOR_CAPTION, 8);
-  loading.hidden = true;
+  // The loading screen stays until the first frames have been drawn at an even pace (`ready` in the frame loop below):
+  // the race's clock starts only then, so the countdown is not spent while shaders compile and textures go up.
+  loadingText.textContent = `${t("Getting ready")}…`;
 
   // The race in a headset: the seat, the boards, the cab and the controllers.
   const vr = createRaceVr(host, {
@@ -757,12 +777,23 @@ async function mountRace(container, context, params) {
   cleanups.push(() => waterFx.dispose());
   // Dust, tire tracks and sparks (render/tire-effects.js), each switched in Options.
   // In the dark a shower of sparks lights what is about it.
-  const tireFx = createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: entrants.length, rich: scenery.particles, dark: !!WEATHER_LOOK[weatherId]?.headlights });
+  const tireFx = createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: entrants.length, rich: scenery.particles, greyDust: !!context.settings.greyDust, dark: !!WEATHER_LOOK[weatherId]?.headlights });
   cleanups.push(() => tireFx.dispose());
-  const effectFlags = () => ({ dust: context.settings.dustEffects !== false, tracks: context.settings.tireTracks !== false, sparks: context.settings.sparks !== false, splash: context.settings.waterSplash !== false });
+  // MTM1 particles (Options, Advanced; render/mtm1-particles.js) take the place of the dust, the spray and the tracks.
+  const mtm1Particles = context.settings.mtm1Particles
+    ? createMtm1Particles({ scene, ground, atlas: build.terrain?.atlas ?? null, clr: build.sim?.clr ? new Uint16Array(build.sim.clr) : null }) : null;
+  if (mtm1Particles) cleanups.push(() => mtm1Particles.dispose());
+  const effectFlags = () => (mtm1Particles
+    ? { dust: 0, tracks: false, sparks: sparkLevel(context.settings), splash: false }
+    : { dust: dustLevel(context.settings), tracks: context.settings.tireTracks !== false, sparks: sparkLevel(context.settings), splash: context.settings.waterSplash !== false });
   // The water's surface: the port's own (render/water-surface.js) or the game's frames.
   const waterSurface = scenery.water ?? createWaterSurface(waters, effectsArt, look);
   if (!scenery.water) cleanups.push(() => waterSurface?.dispose());
+  // MTM2's water reflections (Options, Display; render/water-mirror.js), on the game's own water: "Reflective water" has
+  // its own. Not in Snow, where the water is ice.
+  const waterMirror = context.settings.waterReflections && !scenery.water && waterSurface?.material && waters.length
+    ? createWaterMirror({ renderer, scene, levelAt: () => (weatherScene.weather === 5 ? null : waterLevelNow), hide: () => waters }) : null;
+  if (waterMirror) { waterMirror.dress(waterSurface.material); cleanups.push(() => waterMirror.dispose()); }
   /** The water's level as it stands this frame, bob included, or null. */
   let waterLevelNow = build.waterLevelFt ?? null;
   const chase = createChaseCamera();
@@ -990,7 +1021,12 @@ async function mountRace(container, context, params) {
 
   const finish = async () => {
     finishing = true;
-    showMessage(t("Determining times for remaining trucks..."));
+    // The game leaves the race for its loading screen while it works out the times; a headset keeps the message.
+    const determining = t("Determining times for remaining trucks...");
+    caption.clear();
+    vrMessage.set([determining]);
+    loadingText.textContent = determining;
+    loading.hidden = false;
     const race = await sim.call("finish");
     if (disposed) return;
     context.lastReplay = recorder.build();
@@ -1011,6 +1047,9 @@ async function mountRace(container, context, params) {
   };
 
   let busy = false, latest = null, drawnAt = performance.now(), poolsWarmed = false;
+  // Held until the frames come steadily: `WARM_FRAMES` in a row each shorter than `WARM_FRAME_S`, or `WARM_LIMIT_MS` at most.
+  let ready = false, steadyFrames = 0;
+  const warmStart = performance.now();
   let drawnCells = drawDistance / TERRAIN_CELL_FT;
   const movedBoxes = new Set();
   const movedPositions = new Map();
@@ -1040,7 +1079,14 @@ async function mountRace(container, context, params) {
       if (dome?.userData.radius) dome.scale.setScalar(Math.min(6000, feet * 0.95) / dome.userData.radius);
     }
     actOnHands(vr.drive());
-    if (!busy && !paused && !finishing) {
+    if (!ready) {
+      steadyFrames = dt > 0 && dt < WARM_FRAME_S ? steadyFrames + 1 : 0;
+      if ((poolsWarmed && steadyFrames >= WARM_FRAMES) || now - warmStart > WARM_LIMIT_MS) {
+        ready = true;
+        loading.hidden = true;
+      }
+    }
+    if (ready && !busy && !paused && !finishing) {
       busy = true;
       sim.call("tick", { tMs: now, input: sampleInput() })
         .then((r) => {
@@ -1101,6 +1147,10 @@ async function mountRace(container, context, params) {
           tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius,
         })),
       });
+      mtm1Particles?.update({
+        dt: paused ? 0 : dt, camera, pixelSize: Math.max(1, Math.round((host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height) / 480)),
+        trucks: shown.map((p, i) => ({ object: drawn[i], pose: p, tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius })),
+      });
       contactShade?.update(shown, scenery.lightRig?.rig?.shadow ?? 1, weatherScene.weather === 5 ? build.waterLevelFt ?? null : null);
       helicopters?.update(shown.map((p) => p.heli ?? null), paused ? 0 : dt);
       lampClockMs += paused ? 0 : dt * 1000;
@@ -1140,7 +1190,7 @@ async function mountRace(container, context, params) {
       camera.getWorldDirection(forwardVector);
       audio.setListener(camera.position, forwardVector, camera.up);
       nameTags.update(camera, view.clientWidth, view.clientHeight, entrants.map((e, i) => nameLabel(namesMode, e, truckName)), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0));
-      weatherScene.update(dt, shown.map((p, i) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: lamps[i] === 2 })),
+      weatherScene.update(dt, shown.map((p, i) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: lamps[i] === 2, pool: pools[i], matrix: p.matrix })),
         { floorFt: waterLevelNow, viewHeight: host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height, lite: host.presenting });
       // In a headset the seat follows the player's truck and the flat camera takes the head's place. The
       // RaceCam's truck (cameraTarget, another one once the player has finished) is the flat camera's only:
@@ -1224,11 +1274,18 @@ async function mountRace(container, context, params) {
       flare.update(camera, sunTravel, true, weatherScene.weather <= 1, flareBlocked);
     }
     // The lens is the flat screen's (render/lens.js): a headset draws each eye straight to its display.
+    truckReflections?.update(camera, weatherScene.weather);
+    // The world mirrored in the water, drawn first, without the trucks' reflections (the game draws none in it).
+    if (waterMirror && !host.presenting) {
+      truckReflections?.setVisible(false);
+      waterMirror.render(camera);
+      truckReflections?.setVisible(true);
+    }
     if (host.presenting) scenery.draw(host.camera, { plain: true }); else scenery.draw(camera);
     // Once the scene has been drawn with the trucks in it, so every material is as it will be and what waits unseen
     // (the helicopters) is there: the shaders of all of it, and for the headlights' pools shown and hidden, built
     // before a rescue or the Headlights key needs them (render/weather-scene.js `warmPools`).
-    if (!poolsWarmed && latest) { poolsWarmed = true; weatherScene.warmPools(() => scenery.compile(camera)); }
+    if (!poolsWarmed) { poolsWarmed = true; weatherScene.warmPools(() => scenery.compile(camera)); }
     if (!host.presenting) renderMirror();
     flare?.render(renderer, camera);
     gold?.afterRender(dt, build.title ?? track.name);

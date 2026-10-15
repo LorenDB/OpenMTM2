@@ -278,8 +278,9 @@ vec3 mtmFogSky( vec3 color, vec3 dir ) {
 }
 // How much of a track's backdrop in direction \`dir\` the fog hides: it stands beyond the world, and at the horizon,
 // where the ground's own far fade has closed, it is hidden altogether.
-float mtmFogBackdropHidden( vec3 dir ) {
-  float through = 1.0 - exp( - mtmFogDepth( dir, ${BACKDROP_DISTANCE_FT.toFixed(1)} ) );
+float mtmFogBackdropHidden( vec3 dir, float haze ) {
+  // Only a weather with fog of its own (game/atmosphere.js BACKDROP_HAZED) is seen between the eye and the backdrop.
+  float through = haze * ( 1.0 - exp( - mtmFogDepth( dir, ${BACKDROP_DISTANCE_FT.toFixed(1)} ) ) );
   return max( through, 1.0 - smoothstep( 0.0, ${BACKDROP_FOOT.toFixed(3)}, dir.y ) );
 }
 // The fog's colour over a backdrop in direction \`dir\`: the ground's far edge, which it stands behind, has the same.
@@ -420,10 +421,10 @@ export function veilBackdropShader(shader) {
     .replace("#include <common>", "#include <common>\nvarying vec3 vMtmSkyWay;")
     .replace("#include <project_vertex>", "#include <project_vertex>\n\tvMtmSkyWay = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz - cameraPosition;");
   shader.fragmentShader = shader.fragmentShader
-    .replace("#include <common>", `#include <common>\nvarying vec3 vMtmSkyWay;\nuniform vec4 backdropVeil;\n${JITTER}\n${COMMON}`)
+    .replace("#include <common>", `#include <common>\nvarying vec3 vMtmSkyWay;\nuniform vec4 backdropVeil;\nuniform float backdropHaze;\n${JITTER}\n${COMMON}`)
     .replace("#include <fog_fragment>", `{
       vec3 mtmWay = normalize( vMtmSkyWay );
-      if ( mtmFog[ 0 ].x > 0.5 ) gl_FragColor.rgb = mix( gl_FragColor.rgb, mtmFogBackdropTint( mtmWay ), mtmFogBackdropHidden( mtmWay ) );
+      if ( mtmFog[ 0 ].x > 0.5 ) gl_FragColor.rgb = mix( gl_FragColor.rgb, mtmFogBackdropTint( mtmWay ), mtmFogBackdropHidden( mtmWay, backdropHaze ) );
       else gl_FragColor.rgb = mix( gl_FragColor.rgb, backdropVeil.rgb, backdropVeil.a );
     }`);
 }

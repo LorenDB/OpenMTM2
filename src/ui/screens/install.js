@@ -8,13 +8,14 @@
 import { el } from "../dom.js";
 import { pickInstallFolder } from "../../install/picker.js";
 import { inspectSource } from "../../install/inspect-source.js";
+import { requiredPodsMessage } from "../../install/required-pods.js";
 import { hasServedGame, installEntry, mayServeGame, urlSource } from "../../install/url-source.js";
 import { loadStrings } from "../../app/strings-store.js";
 import { primeMenuAudio, startMenuAudio } from "../../app/menu-audio.js";
 
 const MB = 1024 * 1024;
 
-export default function mount(container, context) {
+export default function mount(container, context, { requiredMissing = [] } = {}) {
   const status = el("p", { class: "muted" },
     "OpenMTM2 reads the tracks, trucks, art and sounds from your own Monster Truck Madness 2 "
     + "install. Pick the folder it is installed in (the one holding POD.INI). "
@@ -41,6 +42,8 @@ export default function mount(container, context) {
   );
 
   let busy = false;
+  // The stored install lacks archives OpenMTM2 needs (app/main.js): it is to be picked again.
+  if (requiredMissing.length) show(requiredPodsMessage(requiredMissing), "error");
 
   /** Install from the source `open` gives: the picked folder, or the served one. */
   async function install(open) {
@@ -95,6 +98,8 @@ export default function mount(container, context) {
         files: result.files.map(({ name, file }) => ({ name, file: installEntry(file) })),
         podIni: result.podIni,
         exeVersion: result.exeVersion ?? null,
+        // Community Patch 3's loose WeatherArt folder (worker/weather-art.js).
+        weatherArt: (result.weatherArt ?? []).map(({ name, file }) => ({ name, file: installEntry(file) })),
       });
       context.exeVersion = result.exeVersion ?? null;
     } finally {

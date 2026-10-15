@@ -21,9 +21,10 @@ const GLOW = new THREE.Color(1, 0.94, 0.82);
  *   `ground` is the drawn ground's height in game feet; `groundTexture` the same as a texture
  *   (render/ground-textures.js), which stops the rain and the snow at the ground; `indoor` a
  *   stadium, which has a hall's air and no day's haze; `fogFloor` where the fog lies
- *   (game/fog-floor.js), without which it lies at the height the eye starts over.
+ *   (game/fog-floor.js), without which it lies at the height the eye starts over. `amount` the
+ *   share of the fog's thickness the Volumetric weather slider asks for (game/atmosphere.js `FOG_AMOUNTS`).
  */
-export function createWeatherVolume({ scene, camera, sun, ground = null, groundTexture = null, random = Math.random, indoor = false, fogFloor = null }) {
+export function createWeatherVolume({ scene, camera, sun, ground = null, groundTexture = null, random = Math.random, indoor = false, fogFloor = null, amount = 1 }) {
   const root = new THREE.Group();
   root.name = "weather-volume";
   scene.add(root);
@@ -65,7 +66,7 @@ export function createWeatherVolume({ scene, camera, sun, ground = null, groundT
       // A weather without fog of its own, or one with a top (Foggy), fades out where a clear day's haze does: `clearRange`,
       // or the scene's fog where it is a clear day's.
       const range = clearRange ?? (scene.fog?.isFog ? { startFt: scene.fog.near, endFt: scene.fog.far } : null);
-      volume = !underwater && scene.fog?.isFog ? fogVolume(current, range, { indoor }) : null;
+      volume = !underwater && scene.fog?.isFog ? fogVolume(current, range, { indoor, amount }) : null;
       if (!volume) { atmosphere.clear(); return; }
       fogColor.copy(scene.fog.color);
       scene.fog.near = volume.fadeStartFt;

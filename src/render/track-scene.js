@@ -28,6 +28,7 @@ import { blockShift, chunkTriangles, indexedBounds } from "../shared/object-chun
 import { WORLD_FT } from "../shared/scene-frame.js";
 import { bleedCutout } from "../game/cutouts.js";
 import { installAtmosphere, screenColor, veilBackdropShader, veilSky } from "./atmosphere.js";
+import { BACKDROP_HAZED } from "../game/atmosphere.js";
 
 // The fog every material here is built with (render/atmosphere.js): three.js's own until "Volumetric weather" turns it on.
 installAtmosphere();
@@ -548,12 +549,19 @@ vec3 mtmFace( vec3 v, vec2 turn ) {
 `;
 const FACING_PARS = facingPars("cameraPosition");
 /*
-  A shadow map is drawn from the sun, so there the camera's place is not the shader's own
-  `cameraPosition`: `updateTrackWorld` keeps it here, and the depth materials below read it, so
-  that a shadow is that of the model as the picture shows it.
+  A shadow map is drawn from the sun, and a camera-facing model's shadow does not turn with the
+  camera: it is cast by the model held square to the sun, as the classic look's shadows are, and
+  stays put however the camera goes round it. `SHADOW_TURN` is the sun's direction across the
+  ground (the sine and cosine of that turn); `updateTrackWorld` keeps it from the world's sun.
 */
-const VIEWER = { value: new THREE.Vector3() };
-const FACING_DEPTH_PARS = `uniform vec3 mtmViewer;\n${facingPars("mtmViewer")}`;
+const SHADOW_TURN = { value: new THREE.Vector2(0, 1) };
+const FACING_DEPTH_PARS = /* glsl */ `
+uniform vec2 mtmShadowTurn;
+vec2 mtmFacing() { return mtmShadowTurn; }
+vec3 mtmFace( vec3 v, vec2 turn ) {
+  return vec3( v.x * turn.y + v.z * turn.x, v.y, v.z * turn.y - v.x * turn.x );
+}
+`;
 const facingMaterials = new WeakMap(), roundedMaterials = new WeakMap(), facingDepthMaterials = new WeakMap();
 /*
   A camera-facing model is a flat card, and lit as one it brightens and darkens as the camera goes round it. `rounded`
@@ -579,12 +587,12 @@ function facingMaterial(material, rounded = false) {
   return made.get(material);
 }
 
-/** The depth material for a camera-facing part's shadow, turned the same way. One per source material: three.js gives it that material's texture. */
+/** The depth material for a camera-facing part's shadow, held square to the sun. One per source material: three.js gives it that material's texture. */
 function facingDepthMaterial(material) {
   if (!facingDepthMaterials.has(material)) {
     const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
     depth.onBeforeCompile = (shader) => {
-      shader.uniforms.mtmViewer = VIEWER;
+      shader.uniforms.mtmShadowTurn = SHADOW_TURN;
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", `#include <common>\n${FACING_DEPTH_PARS}`)
         .replace("#include <begin_vertex>", "#include <begin_vertex>\n\ttransformed = mtmFace( transformed, mtmFacing() );");
@@ -825,25 +833,41 @@ export function tintObjects(world, tints) {
 /** Draw the SIT backdrop models as camera-centred scenery behind the world. */
 export function createBackdrops(build, look) {
   if (!build.backdrops?.length) return null;
-  const library = createModelLibrary(build.models, build.modelTextures, look);
+  // An HD backdrop's panels sit in a ring of see-through texels: sealed, so that faces meeting show no seam.
+  const sealed = { ...build.modelTextures };
+  for (const name of build.backdrops) {
+    for (const mesh of build.models[name]?.meshes ?? []) {
+      const image = sealed[mesh.textureName];
+      if (image && image !== build.modelTextures[mesh.textureName]) continue;
+      if (image && hasAlpha(image)) sealed[mesh.textureName] = sealPanels(image);
+    }
+  }
+  const library = createModelLibrary(build.models, sealed, look);
   const group = new THREE.Group();
   group.name = "backdrops";
-  const uniforms = { backdropTint: { value: new THREE.Color(0xffffff) }, backdropSaturation: { value: 1 }, backdropVeil: { value: new THREE.Vector4(0, 0, 0, 0) } };
+  const uniforms = {
+    backdropTint: { value: new THREE.Color(0xffffff) }, backdropSaturation: { value: 1 }, backdropVeil: { value: new THREE.Vector4(0, 0, 0, 0) },
+    backdropHaze: { value: 0 },
+  };
   // After the sky, at the end of the opaque pass, so the world has already written its depth and only the backdrop
   // that shows is shaded. The group stays at 0 (three.js sorts by the nearest Group's renderOrder first, and the sky
   // is part of `world`); the meshes carry 3, after the dome. Depth is tested, and not written, so a hole still shows the sky.
+  // It is drawn at the far plane (installBackdropShader): the game draws it first with depth off, so the world stands in
+  // front of it wherever the world is, however far, and never the other way round.
   group.renderOrder = 0;
   for (const name of build.backdrops) {
     for (const part of library.get(name) ?? []) {
       const source = part.material;
       const material = new THREE.MeshBasicMaterial({
         map: source.map, color: source.color, transparent: source.transparent,
-        alphaTest: source.alphaTest, side: THREE.DoubleSide, depthTest: true, depthWrite: false,
+        alphaTest: source.alphaTest, side: THREE.DoubleSide, depthTest: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
         fog: false,
       });
       installBackdropShader(material, uniforms);
       const mesh = new THREE.Mesh(part.geometry, material);
-      mesh.renderOrder = 3;
+      // An HD backdrop (a PNG with its own alpha) is see-through, and so drawn in the see-through pass. There it goes
+      // first: drawn after the trees' cut-out leaves it painted over their soft edges, which write no depth.
+      mesh.renderOrder = material.transparent ? -100 : 3;
       group.add(mesh);
     }
   }
@@ -860,9 +884,53 @@ export const BACKDROP_WEATHER = Object.freeze({
   5: [0xc6c8cc, 0.4], 6: [0x7a6466, 0.9], 7: [0x3c3d58, 0.8], 8: [0x16161e, 0.6],
 });
 
+/** Whether a texture has see-through texels. */
+function hasAlpha({ rgba }) {
+  for (let i = 3; i < rgba.length; i += 4) if (rgba[i] < 255) return true;
+  return false;
+}
+
+/**
+ * A copy of an HD backdrop picture whose panels are sealed: the see-through texels within `reach` of a solid one take its
+ * colour and become solid, so filtering at the edge of a face reads the panel and not the ring round it, and two faces
+ * that meet show no line of sky between them. The game's 2-texel gutters of the RAW art did this; a PNG's ring does not.
+ */
+function sealPanels({ width, height, rgba }, reach = 3) {
+  const out = new Uint8Array(rgba);
+  let solid = new Uint8Array(width * height);
+  for (let i = 0; i < solid.length; i++) solid[i] = out[i * 4 + 3] >= 250 ? 1 : 0;
+  for (let pass = 0; pass < reach; pass++) {
+    const next = solid.slice();
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const at = y * width + x;
+        if (solid[at]) continue;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ox = x + dx, oy = y + dy;
+            if (ox < 0 || oy < 0 || ox >= width || oy >= height) continue;
+            const o = oy * width + ox;
+            if (!solid[o]) continue;
+            r += out[o * 4]; g += out[o * 4 + 1]; b += out[o * 4 + 2]; n++;
+          }
+        }
+        if (!n) continue;
+        out[at * 4] = r / n; out[at * 4 + 1] = g / n; out[at * 4 + 2] = b / n; out[at * 4 + 3] = 255;
+        next[at] = 1;
+      }
+    }
+    solid = next;
+  }
+  return { width, height, rgba: out };
+}
+
 function installBackdropShader(material, uniforms) {
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
+    // At the far plane: behind everything the world draws, as the game's backdrop, drawn first with depth off, is.
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <project_vertex>", "#include <project_vertex>\n\tgl_Position.z = gl_Position.w;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\nuniform vec3 backdropTint;\nuniform float backdropSaturation;")
       .replace("#include <map_fragment>", `#include <map_fragment>
@@ -887,6 +955,7 @@ export function setBackdropWeather(world, weather, veil = null) {
   const [tint, saturation] = BACKDROP_WEATHER[weather] ?? BACKDROP_WEATHER[0];
   uniforms.backdropTint.value.setHex(tint);
   uniforms.backdropSaturation.value = saturation;
+  uniforms.backdropHaze.value = BACKDROP_HAZED.has(weather) ? 1 : 0;
   // The veil is mixed in after the picture's colours are encoded for where they are going, so its colour is encoded the same way.
   if (veil) screenColor(veil.color, _veil);
   uniforms.backdropVeil.value.set(veil ? _veil.r : 0, veil ? _veil.g : 0, veil ? _veil.b : 0, veil?.amount ?? 0);
@@ -955,7 +1024,9 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fine
   // A world without recorded parts is drawn once, as a window around the camera: every block of
   // it is moved each frame to the copy nearest the camera (`placeBlocks`).
   if (!parts) placeBlocks(world, camera, viewRange);
-  VIEWER.value.copy(camera.position);
+  // The turn of the camera-facing models' shadows (race.js enableShadows sets the sun's).
+  const sunTurn = world.userData.shadowTurn;
+  if (sunTurn) SHADOW_TURN.value.copy(sunTurn);
   if (parts) {
     if (parts.backdrops) parts.backdrops.position.copy(camera.position);
     for (const object of parts.placed) {

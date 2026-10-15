@@ -159,10 +159,73 @@ export const puffsForHit = (force) => (force < 600 ? 0 : Math.min(5, 1 + Math.fl
 /**
  * Advance a contact's scrape timer by `seconds` of contact; returns `{ timer, sparks }`: how many sparks to
  * throw now. Below the scrape speed (`minSpeed`) the timer starts over. `share` scales the chance (a tire's contact).
+ * `many`: the rate before 0.5.0, two sparks every interval (a tire's contact at its `share` of the intervals).
  */
-export function scrapeSparks(timer, seconds, speedFtS, random = Math.random, share = 1, minSpeed = SPARK_MIN_SPEED) {
+export function scrapeSparks(timer, seconds, speedFtS, random = Math.random, share = 1, minSpeed = SPARK_MIN_SPEED, many = false) {
   if (speedFtS < minSpeed) return { timer: 0, sparks: 0 };
   let t = timer + seconds, sparks = 0;
-  while (t >= SPARK_INTERVAL_S) { t -= SPARK_INTERVAL_S; if (random() < SPARK_CHANCE * share) sparks += 1; }
+  while (t >= SPARK_INTERVAL_S) {
+    t -= SPARK_INTERVAL_S;
+    if (many) { if (share >= 1 || random() < share) sparks += 2; } else if (random() < SPARK_CHANCE * share) sparks += 1;
+  }
   return { timer: t, sparks };
 }
+
+/** A hit's burst before 0.5.0 (the Sparks slider's Many): six and one more for every 250 lbf, 28 at most, from 600. */
+export const manySparksForHit = (force) => (force < 600 ? 0 : Math.min(28, Math.round(6 + force / 250)));
+
+/*
+  The Sparks slider (Options, Display), for both pictures: 0 None, 1 Few, 2 Normal, 3 Many. Normal is the rate above, one
+  streak a spark with the enhanced picture too; Few has half its chances; Many is the rate before 0.5.0 (two sparks every
+  scrape interval and the large bursts), and with the enhanced picture each spark a shower of flecks.
+*/
+export const SPARK_LEVEL_NAMES = Object.freeze(["None", "Few", "Normal", "Many"]);
+export const DEFAULT_SPARK_LEVEL = 2;
+
+/** The level the settings ask for: `sparkAmount` 0..3, or 0 when the older Sparks switch is off. */
+export function sparkLevel(settings) {
+  if (settings?.sparks === false) return 0;
+  const level = settings?.sparkAmount;
+  return Number.isInteger(level) && level >= 0 && level <= 3 ? level : DEFAULT_SPARK_LEVEL;
+}
+
+/** How a level throws: `share` scales every chance, `many` the rates before 0.5.0 and the enhanced showers. */
+export const sparkRules = (level) => ({ share: level <= 0 ? 0 : level === 1 ? 0.5 : 1, many: level >= 3 });
+
+/*
+  The Dust slider (Options, Display), for both pictures, as the Sparks one: 0 None, 1 Few, 2 Normal, 3 Many. Few is the
+  game's own puffs (MONSTER_EXE_ANALYSIS.md "Dust puffs": their size, a foot of growth, 1.5 to 3.5 s, a pool of 96); Normal
+  the port's larger, longer dust as it has been; Many larger and longer still. A collision's smoke follows the same steps.
+*/
+export const DUST_LEVEL_NAMES = Object.freeze(["None", "Few", "Normal", "Many"]);
+export const DEFAULT_DUST_LEVEL = 2;
+
+/** The level the settings ask for: `dustAmount` 0..3, or 0 when the Dust switch of before is off. */
+export function dustLevel(settings) {
+  if (settings?.dustEffects === false) return 0;
+  const level = settings?.dustAmount;
+  return Number.isInteger(level) && level >= 0 && level <= 3 ? level : DEFAULT_DUST_LEVEL;
+}
+
+/**
+ * The game's puff sprites at a level: for a wheel's dust and a hit's smoke, how many times the game's size a puff starts
+ * (`scale`), how many feet it swells (`growth`) and how many times the game's life it lives (`life`); `pool` the most alive.
+ */
+export const CLASSIC_DUST = Object.freeze({
+  1: Object.freeze({ dust: { scale: 1, growth: 1, life: 1 }, smoke: { scale: 1, growth: 1, life: 1 }, pool: 96 }),
+  2: Object.freeze({ dust: { scale: 2.8, growth: 14, life: 2.2 }, smoke: { scale: 3, growth: 10, life: 1.6 }, pool: Infinity }),
+  3: Object.freeze({ dust: { scale: 3.8, growth: 22, life: 3.4 }, smoke: { scale: 4, growth: 15, life: 2.4 }, pool: Infinity }),
+});
+
+/** "Rich particles" dust at a level: its size (`scale`), its life (`life`) and how many puffs (`count`) against Normal. */
+export const RICH_DUST = Object.freeze({
+  1: Object.freeze({ scale: 0.6, life: 0.6, count: 0.5 }),
+  2: Object.freeze({ scale: 1, life: 1, count: 1 }),
+  3: Object.freeze({ scale: 1.4, life: 1.8, count: 1.5 }),
+});
+
+/**
+ * MTM2's own dust colour (Options, Advanced, "MTM2 classic dust"): the puff art is grey, and the game draws a wheel's dust
+ * and a collision's alike in it. Linear RGB, for the port's own puffs; the sprites keep the art's own colour.
+ */
+export const GREY_DUST_TONE = Object.freeze([0.36, 0.36, 0.37]);

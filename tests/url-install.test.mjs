@@ -33,16 +33,19 @@ test("a served folder: files are found as written, then in upper and lower case"
 });
 
 test("a served folder goes through the same check as a picked one", async () => {
+  // The archives OpenMTM2 needs (install/required-pods.js), each one byte, besides the two the test looks at.
+  const others = ["MUSIC.POD", "SOUND.POD", "COCKPIT.POD", "TRUCK2.POD"];
   const { fetchFn } = fakeFetch({
-    "/game/": "", "/game/SYSTEM/POD.INI": "2\r\nc:\\mtm2\\startup.pod\r\nui.pod\r\n", "/game/STARTUP.POD": "x".repeat(10), "/game/SYSTEM/UI.POD": "y".repeat(4),
+    "/game/": "", "/game/SYSTEM/POD.INI": `6\r\nc:\\mtm2\\startup.pod\r\nui.pod\r\n${others.join("\r\n")}\r\n`,
+    "/game/STARTUP.POD": "x".repeat(10), "/game/SYSTEM/UI.POD": "y".repeat(4), ...Object.fromEntries(others.map((name) => [`/game/${name}`, "z"])),
   });
   assert.equal(await hasServedGame("http://h/game/", fetchFn), true);
   const result = await inspectSource(urlSource("http://h/game/", fetchFn));
   assert.equal(result.ok, true);
-  assert.deepEqual(result.files.map((f) => f.name), ["STARTUP.POD", "SYSTEM/UI.POD"]);
-  assert.equal(result.totalBytes, 14);
+  assert.deepEqual(result.files.map((f) => f.name), ["STARTUP.POD", "SYSTEM/UI.POD", ...others]);
+  assert.equal(result.totalBytes, 14 + others.length);
   // What goes to the worker is plain data: the address and the size.
-  assert.deepEqual(result.files.map((f) => installEntry(f.file)), [
+  assert.deepEqual(result.files.slice(0, 2).map((f) => installEntry(f.file)), [
     { url: "http://h/game/STARTUP.POD", size: 10 }, { url: "http://h/game/SYSTEM/UI.POD", size: 4 },
   ]);
   const picked = { name: "x.pod", size: 3 };

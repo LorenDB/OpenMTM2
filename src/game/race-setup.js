@@ -84,3 +84,25 @@ export function summitBoard(trucks, names) {
   return trucks.map((row, i) => ({ name: names[i] ?? `Driver ${i + 1}`, score: Math.round(row.score ?? 0), i }))
     .sort((a, b) => b.score - a.score || a.i - b.i).map((row) => [row.name, String(row.score)]);
 }
+
+/**
+ * The start of a Summit Rumble whose SIT puts every start slot well away from its scoring zone (an add-on such as
+ * Scream3 Cemetery, whose slots stand on the high ground outside the ring of stands round its pit). The game puts the
+ * trucks where the SIT says (0x4195d0 only shuffles the slots); the port, where all slots are farther than
+ * `RUMBLE_FAR_FT` (and than the zone's own size) from the zone's centre, sets them instead in a ring inside the zone, a
+ * little over its top, facing its centre, to come down onto its floor. `zone` is the zone's gate
+ * (`{ position, size }`, game feet, as the simulation builds it); a grid it does not change is returned as it is.
+ */
+export const RUMBLE_FAR_FT = 400;
+export function rumbleGrid(grid, zone) {
+  if (!zone?.position || !zone.size || !grid.length) return grid;
+  const [cx, cy, cz] = zone.position, [sx, sy, sz] = zone.size;
+  const far = Math.max(RUMBLE_FAR_FT, sx, sz);
+  if (!grid.every((slot) => Math.hypot(slot.pos[0] - cx, slot.pos[2] - cz) > far)) return grid;
+  const radius = Math.min(sx, sz) * 0.3, top = cy + sy / 2 + 6;
+  return grid.map((slot, i) => {
+    const a = (i / grid.length) * Math.PI * 2;
+    const x = cx + Math.sin(a) * radius, z = cz + Math.cos(a) * radius;
+    return { ...slot, pos: [x, top, z], heading: Math.atan2(cx - x, cz - z), moved: true };
+  });
+}

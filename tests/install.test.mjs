@@ -43,7 +43,11 @@ test("findArchive falls back to the file name in the folder, then in SYSTEM", as
 
 test("inspectSource needs only POD.INI and its archives, not MONSTER.EXE", async () => {
   const { inspectSource } = await import("../src/install/inspect-source.js");
-  const files = { "POD.INI": "2\r\nstartup.pod\r\nui.pod\r\n", "STARTUP.POD": "x", "UI.POD": "y" };
+  // The archives OpenMTM2 cannot run without (install/required-pods.js), and nothing else.
+  const files = {
+    "POD.INI": "6\r\nstartup.pod\r\nui.pod\r\nmusic.pod\r\nsound.pod\r\ncockpit.pod\r\ntruck2.pod\r\n",
+    "STARTUP.POD": "x", "UI.POD": "y", "MUSIC.POD": "m", "SOUND.POD": "s", "COCKPIT.POD": "c", "TRUCK2.POD": "t",
+  };
   const source = {
     getFile: async (p) => {
       const body = files[installPathKey(p)];
@@ -52,8 +56,8 @@ test("inspectSource needs only POD.INI and its archives, not MONSTER.EXE", async
   };
   const result = await inspectSource(source);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.files.map((f) => f.name), ["STARTUP.POD", "UI.POD"]);
-  assert.equal(result.podIni, "2\r\nstartup.pod\r\nui.pod\r\n");
+  assert.deepEqual(result.files.map((f) => f.name), ["STARTUP.POD", "UI.POD", "MUSIC.POD", "SOUND.POD", "COCKPIT.POD", "TRUCK2.POD"]);
+  assert.equal(result.podIni, "6\r\nstartup.pod\r\nui.pod\r\nmusic.pod\r\nsound.pod\r\ncockpit.pod\r\ntruck2.pod\r\n");
   delete files["POD.INI"];
   assert.match((await inspectSource(source)).message, /no POD\.INI/);
 });
@@ -62,8 +66,12 @@ test("a Community Patch 3 build mounts what POD.INI lists, like the retail game,
   const { inspectSource } = await import("../src/install/inspect-source.js");
   const utf16 = (str) => Uint8Array.from([...str].flatMap((c) => [c.charCodeAt(0), 0]));
   const exe = { name: "MONSTER.EXE", size: 1, arrayBuffer: async () => Uint8Array.from([...utf16("FileVersion"), 0, 0, 0, 0, ...utf16("2.0.52.0"), 0, 0]).buffer };
-  const entries = { "POD.INI": { text: async () => "1\r\nstartup.pod\r\n" }, "STARTUP.POD": { name: "STARTUP.POD", size: 10 }, "GAME.POD": { name: "GAME.POD", size: 10 }, "MONSTER.EXE": exe };
+  const required = ["STARTUP.POD", "MUSIC.POD", "SOUND.POD", "COCKPIT.POD", "TRUCK2.POD", "UI.POD"];
+  const entries = {
+    "POD.INI": { text: async () => `6\r\n${required.join("\r\n").toLowerCase()}\r\n` }, "GAME.POD": { name: "GAME.POD", size: 10 }, "MONSTER.EXE": exe,
+    ...Object.fromEntries(required.map((name) => [name, { name, size: 10 }])),
+  };
   const result = await inspectSource({ getFile: async (p) => entries[p.toUpperCase().replace(/\\/g, "/")] ?? null });
-  assert.deepEqual(result.files.map((f) => f.name), ["STARTUP.POD"]);
+  assert.deepEqual(result.files.map((f) => f.name), required);
   assert.equal(result.exeVersion, "2.00.52");
 });

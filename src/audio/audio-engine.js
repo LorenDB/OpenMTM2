@@ -1,6 +1,6 @@
 /*
   Sound in the browser: one Web Audio graph for the game, with master, effects and music
-  volumes, a sample cache fed by the asset worker (`SOUND\*.WAV` with their `.KLP` loop
+  volumes on separate channels, a sample cache fed by the asset worker (`SOUND\*.WAV` with their `.KLP` loop
   points), looping and one-shot voices, and positioned voices for the other trucks and the world.
 
   Positions are game feet; the scene mirrors z, so a position's z is negated for the listener.
@@ -21,10 +21,17 @@ export function createAudio(assets, volumes = {}) {
   if (!AudioContextClass) return createSilentAudio();
   const ctx = new AudioContextClass();
   const master = ctx.createGain(), effects = ctx.createGain(), music = ctx.createGain(), commentary = ctx.createGain();
-  // The game's mixer compresses its master; here a compressor keeps many loud voices from clipping.
+  /*
+    Effects and music are separate channels. The effects' compressor keeps many loud voices from clipping, and squeezes
+    only them: a crash or a pile of trucks no longer pulls the music down with them, as one compressor over the whole
+    mix did. The music and the voice reach the master past it; the last stage only catches the sum's peaks.
+  */
+  const effectsLimiter = ctx.createDynamicsCompressor();
+  effectsLimiter.threshold.value = -12; effectsLimiter.knee.value = 10; effectsLimiter.ratio.value = 6; effectsLimiter.attack.value = 0.003; effectsLimiter.release.value = 0.25;
   const limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -12; limiter.knee.value = 10; limiter.ratio.value = 6; limiter.attack.value = 0.003; limiter.release.value = 0.25;
-  effects.connect(master);
+  limiter.threshold.value = -2; limiter.knee.value = 2; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.1;
+  effects.connect(effectsLimiter);
+  effectsLimiter.connect(master);
   music.connect(master);
   commentary.connect(master);
   master.connect(limiter);
@@ -39,7 +46,8 @@ export function createAudio(assets, volumes = {}) {
   const buffers = new Map();
   let active = 0;
   let ducked = false, currentVolumes = {};
-  // The mixer (game/sound-model.js): positioned voices fade with distance over the audible range, and only the loudest 16 sound.
+  // The mixer (game/sound-model.js): positioned voices fade with distance over the audible range, and only the loudest 16
+  // effects sound. The music and the voice are not among them: no number of effects takes their place.
   const live = new Set();
   // Once the race feeds the listener every frame, `mix` alone sets each voice's gain; a direct write would undo its fades.
   let mixing = false;
@@ -130,7 +138,7 @@ export function createAudio(assets, volumes = {}) {
     source.playbackRate.value = rate;
     if (guarded) shots.get(key)?.push({ start: ctx.currentTime, end: ctx.currentTime + data.buffer.duration / rate });
     const volume = ctx.createGain();
-    const rec = { name: key, loop, base: gain, position: position ? [...position] : null, volume, stopped: false, startedAt: ctx.currentTime };
+    const rec = { name: key, loop, base: gain, position: position ? [...position] : null, volume, stopped: false, startedAt: ctx.currentTime, mixed: bus === "effects" };
     volume.gain.value = levelOf(rec);
     let panner = null;
     source.connect(volume);
@@ -163,12 +171,12 @@ export function createAudio(assets, volumes = {}) {
     let stopped = false;
     active++;
     const done = new Promise((resolve) => { source.onended = () => { stopped = true; rec.stopped = true; live.delete(rec); active--; resolve(); }; });
-    live.add(rec);
+    if (rec.mixed) live.add(rec);
     source.start(0, offset);
     return {
       done,
       get stopped() { return stopped; },
-      setGain: (g) => { rec.base = g; if (!mixing) volume.gain.value = levelOf(rec); },
+      setGain: (g) => { rec.base = g; if (!mixing || !rec.mixed) volume.gain.value = levelOf(rec); },
       setRate: (r) => { source.playbackRate.value = r; },
       setPosition: (p) => {
         if (!panner) return;
@@ -214,7 +222,7 @@ export function createAudio(assets, volumes = {}) {
     }
   }
 
-  return {
+  const api = {
     /** Load samples ahead of their first use, so a one-shot plays the moment it is asked for. */
     preload(names) { for (const name of names) if (name) sample(name); },
     context: ctx, sample, play, playMod, setVolumes, setDucking, setListener,
@@ -236,7 +244,34 @@ export function createAudio(assets, volumes = {}) {
     suspend: () => ctx.suspend().catch(() => {}),
     setEffectsPaused,
     dispose: () => ctx.close().catch(() => {}),
+    /**
+     * The same mixer for one user, such as a race: `stopAll()` stops every sound it started, loops and one-shots alike,
+     * and any still loading, so nothing it started plays on in the menus after it.
+     */
+    scoped() {
+      const started = new Set();
+      let closed = false;
+      const track = (promise) => {
+        started.add(promise);
+        promise.then((voice) => {
+          if (closed) voice?.stop();
+          else voice?.done?.then(() => started.delete(promise));
+        });
+        return promise;
+      };
+      return {
+        ...api,
+        play: (name, options) => (closed ? Promise.resolve(null) : track(play(name, options))),
+        playMod: (name, options) => (closed ? Promise.resolve(null) : track(playMod(name, options))),
+        stopAll() {
+          closed = true;
+          for (const promise of started) promise.then((voice) => voice?.stop());
+          started.clear();
+        },
+      };
+    },
   };
+  return api;
 }
 
 /** The same interface with no output, for browsers without Web Audio and for tests. */
@@ -245,5 +280,6 @@ export function createSilentAudio() {
   return {
     context: null, stats: () => ({ state: "none", samples: 0, sampleNames: [], voices: 0 }), sample: async () => null, preload() {}, play: async () => voice, playMod: async () => voice, setVolumes() {}, setListener() {}, setRange() {},
     setDucking() {}, setEffectsPaused() {}, waveform: (out) => out.fill(128), resume: async () => {}, suspend: async () => {}, dispose: async () => {},
+    scoped() { return { ...this, stopAll() {} }; },
   };
 }

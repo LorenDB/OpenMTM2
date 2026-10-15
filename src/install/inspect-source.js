@@ -4,6 +4,7 @@
 */
 import { parsePodIni, installPathKey } from "./pod-ini.js";
 import { readExeVersion } from "./exe-version.js";
+import { missingRequiredPods, requiredPodsMessage } from "./required-pods.js";
 
 /**
  * An archive POD.INI lists. Installs differ in how the list is written (a drive letter, a
@@ -19,6 +20,33 @@ export async function findArchive(source, path) {
   return null;
 }
 
+/** The skies Community Patch 3 reads from a loose WeatherArt folder (worker/weather-art.js), probed where a source cannot list. */
+export const WEATHER_ART_STEMS = Object.freeze(["CCLOUDS", "CLOUDY2", "DUSKSKY", "NITESKY"]);
+
+/**
+ * The pictures in the folder's WeatherArt folder (any case), `{ name, file }` with `name` the upper-case file name: every
+ * PNG and TGA there where the source can list its files, else the known skies.
+ */
+export async function findWeatherArt(source) {
+  const found = [];
+  const listed = source.list ? await source.list() : null;
+  if (listed) {
+    for (const path of listed) {
+      const match = /^WEATHERART\/([^/]+\.(?:PNG|TGA))$/i.exec(path);
+      const file = match && await source.getFile(path);
+      if (file) found.push({ name: match[1].toUpperCase(), file });
+    }
+    return found;
+  }
+  for (const stem of WEATHER_ART_STEMS) {
+    for (const extension of ["PNG", "TGA"]) {
+      const file = await source.getFile(`WeatherArt/${stem}.${extension}`);
+      if (file) { found.push({ name: `${stem}.${extension}`, file }); break; }
+    }
+  }
+  return found;
+}
+
 /**
  * The archives are the same in every retail build, so any folder with a POD.INI and its archives
  * will do; the executable is read only for its version (`exeVersion`, null when it is missing),
@@ -26,7 +54,7 @@ export async function findArchive(source, path) {
  * @param {{ getFile(path: string): Promise<File|null> }} source
  * @returns {Promise<{ ok: boolean, message: string, podIni?: string,
  *   files?: { name: string, file: File }[], missing?: string[], totalBytes?: number,
- *   warnings?: string[] }>}
+ *   warnings?: string[], weatherArt?: { name: string, file: File }[] }>}
  */
 export async function inspectSource(source) {
   let exeVersion = null;
@@ -55,10 +83,15 @@ export async function inspectSource(source) {
   if (files.length === 0) {
     return { ok: false, message: "None of the archives POD.INI lists are in this folder." };
   }
+  // Without the archives OpenMTM2 needs (install/required-pods.js) there is nothing to install.
+  const required = missingRequiredPods(files.map((f) => f.name));
+  if (required.length) return { ok: false, message: requiredPodsMessage(required), required };
   const totalBytes = files.reduce((sum, f) => sum + f.file.size, 0);
   const warnings = [...ini.warnings];
+  const weatherArt = await findWeatherArt(source).catch(() => []);
   return {
     exeVersion,
+    weatherArt,
     ok: missing.length === 0,
     message: missing.length === 0
       ? "Monster Truck Madness 2 found."

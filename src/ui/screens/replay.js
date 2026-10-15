@@ -4,6 +4,7 @@
   VCR controls: play, pause, rewind, fast forward, slow, frame step, zoom, rotate, save and open.
   The camera is any of the ten views on any truck. Damage is replayed from the damage codes.
 */
+import { dustLevel, sparkLevel } from "../../game/tire-effects.js";
 import { terrainOfBuild } from "../../shared/build-terrain.js";
 import * as THREE from "three";
 import { el } from "../dom.js";
@@ -66,7 +67,7 @@ export default async function mount(container, context, { replay }) {
   // Dust, tracks, sparks and sun shadows read off the film ("Replay effects", docs/VISUALS.md); off, a replay is drawn as it first was.
   const replayFx = visualSettings(context.settings).replay;
   const build = await context.assets.call("trackRender", {
-    mtm1: { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap },
+    mtm1: { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap },
     path, scope: trackInfo.scope, detailLevel: replay.detailLevel ?? context.settings.detailLevel, raceType: trackInfo.raceType ?? "circuit", truckFiles, weather: replay.weather,
     // A replay's weather never changes, so the puddle map is built only for one recorded in Rain.
     visuals: trackVisuals(context.settings, { weather: replay.weather ?? 0, weatherMask: 0 }),
@@ -164,13 +165,13 @@ export default async function mount(container, context, { replay }) {
     (game/replay-effects.js). What the ground is made of is the level's own.
   */
   // In the dark a shower of sparks lights what is about it.
-  const tireFx = replayFx ? createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: drawn.length, rich: scenery.particles, dark: !!WEATHER_LOOK[replay.weather ?? 0]?.headlights }) : null;
+  const tireFx = replayFx ? createTireEffects({ scene, art: effectsArt, ground, floor: scenery.floorAt, count: drawn.length, rich: scenery.particles, greyDust: !!context.settings.greyDust, dark: !!WEATHER_LOOK[replay.weather ?? 0]?.headlights }) : null;
   cleanups.push(() => tireFx?.dispose());
   window.__openmtm2Replay = { scene, camera, renderer, tireFx };
   cleanups.push(() => { delete window.__openmtm2Replay; });
   const surfaces = build.sim?.clr && build.sim?.textureValues ? mtm2Sim.createSurfaceMap(new Uint16Array(build.sim.clr), new Int32Array(build.sim.textureValues)) : null;
   const madeOf = surfaces ? mtm2Sim.createTerrainGround(terrain, surfaces, replay.weather ?? 0, build.waterLevelFt ?? null) : null;
-  const effectFlags = () => ({ dust: context.settings.dustEffects !== false, tracks: context.settings.tireTracks !== false, sparks: context.settings.sparks !== false, splash: context.settings.waterSplash !== false });
+  const effectFlags = () => ({ dust: dustLevel(context.settings), tracks: context.settings.tireTracks !== false, sparks: sparkLevel(context.settings), splash: context.settings.waterSplash !== false });
   const contacts = drawn.map(() => new Map());
   /** What a truck at game (x, y, z) stands on: a bridge's deck, the ground, or in Snow the ice over the level's water. */
   const standOn = (x, z, y) => standOnFt(scenery.floorAt(x, z, y), replay.weather ?? 0, build.waterLevelFt ?? null);

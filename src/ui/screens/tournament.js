@@ -23,7 +23,6 @@ export default async function mount(container, context) {
   const tracks = catalog.tracks.filter((item) => context.settings.showHiddenTracks || !item.hidden);
   const trucks = catalog.trucks.filter((item) => !item.hidden);
   const button = (label, onclick, cls = null) => el("button", { class: cls, "data-menu-sound": "STARTOFF", onclick }, label);
-  const toRaces = () => context.router.go("race-select", {}, { replace: true });
   const head = el("h2", {}), body = el("div", { class: "tournament-body" }), actions = el("div", { class: "screen-actions" });
   panel.append(head, body, actions);
   const eventLine = (e) => `${e.name}: ${context.t(raceTypeName(e.raceType ?? "unsupported"))}${e.raceType === "circuit" ? `, ${e.laps} ${e.laps === 1 ? "lap" : "laps"}` : ""}${e.problem ? ` (${e.problem})` : ""}`;
@@ -57,11 +56,11 @@ export default async function mount(container, context) {
     });
     if (run.done) enterHall(context).then((rank) => { if (rank && context.tournament?.run === run) head.textContent = `${run.name}: points totals. Hall of Fame: ${ordinal(rank)}.`; }).catch(() => {});
     actions.replaceChildren(...(run.done ? [abandon] : [
+      abandon,
       button(context.dragWeekend?.tournament ? "Resume the drag event" : `Race: ${next.name}`, async () => {
         try { await runEvent(context); } catch (error) { window.alert(error.message); }
-      }, "primary"),
-      abandon,
-    ]), button("Races", toRaces));
+      }, "primary tournament-race"),
+    ]));
   }
 
   /** The editor: a copy of a tournament, or a new one, put among the player's own when saved. */
@@ -130,8 +129,8 @@ export default async function mount(container, context) {
         await beginTournament(context, picked, { tracks, trucks, size: Number(size.value), difficulty: context.settings.difficulty ?? 1, weather: 0 });
         show();
       } catch (error) { note.textContent = error.message; }
-    }, "primary");
-    const edit = button("Custom", () => showEditor(picked?.stock ? { ...picked, name: `${picked.name} 2` } : picked));
+    }, "primary tournament-race");
+    const edit = button("Edit", () => showEditor(picked?.stock ? { ...picked, name: `${picked.name} 2` } : picked));
     const remove = button("Delete", async () => {
       if (!picked) return;
       if (picked.stock) { window.alert("This is a factory-default tournament and cannot be deleted."); return; }
@@ -168,16 +167,18 @@ export default async function mount(container, context) {
       detail.replaceChildren(...(picked ? [
         el("p", {}, picked.description || "The events, listed in race order:"),
         el("ol", { class: "tournament-events" }, ...picked.events.map((e) => el("li", { class: e.problem ? "error" : null }, eventLine(e)))),
-      ] : [el("p", {}, "No tournament is installed. Make one with Custom, or open a .TRN.")]));
+      ] : [el("p", {}, "No tournament is installed. Make one with New, or open a .TRN.")]));
       const problem = picked ? startProblem(picked, Number(size.value)) : "Pick a tournament.";
       note.textContent = problem ?? (picked.hasDrag ? "A tournament with a drag race takes 2, 4 or 8 trucks." : "");
       start.disabled = !!problem;
+      // The factory tournaments stay: only the player's own can be deleted.
+      remove.disabled = !picked || !!picked.stock;
     };
     select.addEventListener("change", pick);
     size.addEventListener("change", () => { const problem = startProblem(picked, Number(size.value)); note.textContent = problem ?? ""; start.disabled = !!problem; });
     body.replaceChildren(el("div", { class: "tournament-pick" }, select, detail), el("div", { class: "form-row" }, el("label", {}, "Field ", size)), note, open);
     pick();
-    actions.replaceChildren(start, edit, button("New", () => showEditor(null)), remove, button("Open .TRN", () => open.click()), saveAs, button("Races", toRaces));
+    actions.replaceChildren(edit, button("New", () => showEditor(null)), remove, button("Open .TRN", () => open.click()), saveAs, start);
   }
 
   function show() {

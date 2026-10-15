@@ -79,23 +79,17 @@ test("a clear day has a haze that gives the distance depth and ends where the pi
   assert.ok(clear.scaleHeightFt >= 1000 && fogVolume(1).scaleHeightFt >= 1000);
 });
 
-test("a track's backdrop is seen through the whole fog: lost at its foot, clearer the higher it stands, gone in fog proper", () => {
+test("a track's backdrop: its foot in the haze the ground fades into, the rest clear but in fog proper, Rain and Snow", () => {
   const clear = fogVolume(0, { startFt: 2500, endFt: 7000 });
   assert.ok(BACKDROP_DISTANCE_FT > 8192, "it stands beyond the next copy of the wrapped world");
   // At the horizon the ground's own far fade has closed, and the backdrop's foot is in the same haze.
-  assert.equal(backdropHides(clear, 0), 1);
-  assert.equal(backdropHides(clear, -0.1), 1);
-  // Above its foot it shows through, more with height, never wholly: it is far.
-  let last = 1;
-  for (let sine = BACKDROP_FOOT; sine <= 0.5; sine += 0.02) {
-    const hidden = backdropHides(clear, sine);
-    assert.ok(hidden <= last + 1e-12 && hidden > 0.2 && hidden < 0.85, `at ${sine}: ${hidden}`);
-    last = hidden;
-  }
-  assert.ok(backdropHides(clear, 0.05) > backdropHides(clear, 0.3) + 0.15, "peaks stand clearer than foothills");
+  assert.equal(backdropHides(clear, 0, 0), 1);
+  assert.equal(backdropHides(clear, -0.1, 0), 1);
+  // Above its foot, on a clear day (or Cloudy, or a dark weather) it stands clear: the day's haze is the ground's distance.
+  for (const weather of [0, 1, 6, 7, 8]) assert.equal(backdropHides(fogVolume(weather), BACKDROP_FOOT * 1.01, weather), 0, `weather ${weather}`);
   // Fog proper, Snow and Rain hide what stands at the horizon; the low fogs let a very high peak through, as they let the sky.
-  for (const weather of [2, 3, 4, 5]) assert.ok(backdropHides(fogVolume(weather), 0.05) > 0.99, `weather ${weather}`);
-  assert.ok(backdropHides(fogVolume(2), 0.5) < 0.7 && backdropHides(fogVolume(5), 0.5) > 0.85, "Foggy lies low; Snow fills the air");
+  for (const weather of [2, 3, 4, 5]) assert.ok(backdropHides(fogVolume(weather), 0.05, weather) > 0.99, `weather ${weather}`);
+  assert.ok(backdropHides(fogVolume(2), 0.5, 2) < 0.7 && backdropHides(fogVolume(5), 0.5, 5) > 0.85, "Foggy lies low; Snow fills the air");
   assert.equal(backdropHides(null, 0.1), 0);
   // The dark weathers have no fog to do it: their darkness takes the backdrop by a share, all of it in Pitch Black.
   assert.ok(BACKDROP_DARK[6] > 0.4 && BACKDROP_DARK[6] < BACKDROP_DARK[7] && BACKDROP_DARK[7] < 1);
@@ -279,4 +273,16 @@ test("the ground is wet within seconds of Rain and its puddles fill over a minut
   assert.ok(puddlesFilled(0) > 0.3 && puddlesFilled(0) < 0.4, "low places hold water as soon as it rains");
   assert.ok(puddlesFilled(20) < 1);
   assert.equal(puddlesFilled(60), 1);
+});
+
+test("the Volumetric weather slider thins the fog by its share and keeps where the picture fades out", async () => {
+  const { FOG_AMOUNTS } = await import("../src/game/atmosphere.js");
+  assert.deepEqual([...FOG_AMOUNTS].map((a, i) => (i === 0 ? a : a > FOG_AMOUNTS[i - 1])), [0, true, true, true]);
+  assert.equal(FOG_AMOUNTS[3], 1);
+  for (const weather of [0, 2, 3, 4, 5]) {
+    const max = fogVolume(weather), some = fogVolume(weather, undefined, { amount: FOG_AMOUNTS[2] });
+    assert.ok(Math.abs(some.densityPerFt - max.densityPerFt * FOG_AMOUNTS[2]) < 1e-12, `weather ${weather}`);
+    assert.ok(some.skyDepth < max.skyDepth);
+    assert.equal(some.farFt, max.farFt);
+  }
 });

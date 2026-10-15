@@ -3,7 +3,8 @@
 
     install/POD.INI            the player's POD.INI, as found
     install/<NAME>             each archive it lists, under its upper-cased relative path
-    install/manifest.json      written last: its presence means the copy completed
+    install/manifest.json      written last: its presence means the copy completed; `unmounted` lists the archives
+                               the POD manager took out, which stay copied until Reload POD.INI mounts them again
 
   Copies use a synchronous access handle, which every browser supports in a dedicated worker
   (Safari offers no other way to write OPFS files).
@@ -15,6 +16,7 @@ import { getFileHandle, readFile, readTextFile, removePath, writeBytesToFile } f
 import { indexPodFile, readPodEntryBytes } from "./pod-index.js";
 import { createVfs } from "./vfs.js";
 import { parsePodIni } from "../install/pod-ini.js";
+import { isRequiredPod } from "../install/required-pods.js";
 
 export const INSTALL_DIR = "install";
 const MANIFEST = `${INSTALL_DIR}/manifest.json`;
@@ -30,6 +32,38 @@ export async function readManifest() {
   }
 }
 
+async function writeManifest(manifest) {
+  await writeBytesToFile(MANIFEST, new TextEncoder().encode(JSON.stringify(manifest, null, 2)));
+}
+
+/**
+ * Take one of the install's archives out of the mounts (the POD manager). Its copy stays, for Reload POD.INI. The
+ * archives OpenMTM2 needs (install/required-pods.js) cannot be taken out.
+ */
+export async function unmountInstallArchive(name) {
+  const manifest = await readManifest();
+  if (!manifest?.archives.some((a) => a.name === name)) throw new Error(`${name} is not in the install.`);
+  if (isRequiredPod(name)) throw new Error(`${name} is needed to run OpenMTM2 and cannot be removed.`);
+  manifest.unmounted = [...new Set([...(manifest.unmounted ?? []), name])];
+  await writeManifest(manifest);
+  return true;
+}
+
+/**
+ * Reload POD.INI: the POD.INI picked with the install, read again from its copy. Every archive it lists is mounted
+ * again, the ones the POD manager took out included. Returns the install's mount keys in its order, and what came back.
+ */
+export async function reapplyPodIni() {
+  const manifest = await readManifest();
+  if (!manifest) throw new Error("There is no install to reload.");
+  const restored = manifest.unmounted ?? [];
+  delete manifest.unmounted;
+  await writeManifest(manifest);
+  const ini = parsePodIni(await readTextFile(`${INSTALL_DIR}/POD.INI`));
+  const copied = new Set(manifest.archives.map((a) => a.name));
+  return { keys: ini.keys.filter((name) => copied.has(name)).map((name) => `install:${name}`), restored };
+}
+
 export async function removeInstall() {
   await removePath(INSTALL_DIR);
 }
@@ -39,7 +73,13 @@ export async function removeInstall() {
  * @param {{ files: { name: string, file: File | { url: string, size: number } }[], podIni: string }} request
  * @param {(progress: { copied: number, total: number, name: string }) => void} onProgress
  */
-export async function copyInstall({ files, podIni, exeVersion = null }, onProgress) {
+/** The WeatherArt folder's pictures (install/inspect-source.js `findWeatherArt`), copied afresh to `install/WEATHERART`. */
+async function copyWeatherArt(weatherArt = []) {
+  await removePath(`${INSTALL_DIR}/WEATHERART`);
+  for (const { name, file } of weatherArt) await copyFile(file, `${INSTALL_DIR}/WEATHERART/${name.toUpperCase()}`, () => {});
+}
+
+export async function copyInstall({ files, podIni, exeVersion = null, weatherArt = [] }, onProgress) {
   await removeInstall();
   const total = files.reduce((sum, f) => sum + f.file.size, 0);
   let copied = 0;
@@ -50,9 +90,11 @@ export async function copyInstall({ files, podIni, exeVersion = null }, onProgre
     });
   }
   await writeBytesToFile(`${INSTALL_DIR}/POD.INI`, new TextEncoder().encode(podIni));
+  await copyWeatherArt(weatherArt);
   const manifest = {
     format: MANIFEST_FORMAT,
     archives: files.map(({ name, file }) => ({ name, size: file.size, modified: file.lastModified ?? null })),
+    weatherArt: weatherArt.map(({ name }) => name.toUpperCase()),
     exeVersion,
     installedAt: new Date().toISOString(),
   };
@@ -66,7 +108,7 @@ export async function copyInstall({ files, podIni, exeVersion = null }, onProgre
  * the mount order becomes the new file's. Returns the manifest with `added`, `removed` and `kept`
  * archive names.
  */
-export async function syncInstall({ files, podIni, exeVersion = null }, onProgress) {
+export async function syncInstall({ files, podIni, exeVersion = null, weatherArt = [] }, onProgress) {
   const old = await readManifest();
   const before = new Map((old?.archives ?? []).map((a) => [a.name, a]));
   const wanted = new Set(files.map((f) => f.name));
@@ -88,9 +130,11 @@ export async function syncInstall({ files, podIni, exeVersion = null }, onProgre
     });
   }
   await writeBytesToFile(`${INSTALL_DIR}/POD.INI`, new TextEncoder().encode(podIni));
+  await copyWeatherArt(weatherArt);
   const manifest = {
     format: MANIFEST_FORMAT,
     archives: files.map(({ name, file }) => ({ name, size: file.size, modified: file.lastModified ?? null })),
+    weatherArt: weatherArt.map(({ name }) => name.toUpperCase()),
     exeVersion,
     installedAt: new Date().toISOString(),
   };
@@ -150,20 +194,22 @@ export async function downloadInto({ url, size }, write, fetchFn = globalThis.fe
 
 /**
  * The copied archives as mounts, in POD.INI order. Archives the manifest does not record (missing
- * from the player's folder) are skipped, as the game would fail to mount them.
+ * from the player's folder) are skipped, as the game would fail to mount them, and so are those the
+ * POD manager took out (`unmounted`). Every archive but the required ones may be taken out.
  */
 export async function installMounts(manifest) {
   const ini = parsePodIni(await readTextFile(`${INSTALL_DIR}/POD.INI`));
   const sizes = new Map(manifest.archives.map((a) => [a.name, a.size]));
+  const unmounted = new Set(manifest.unmounted ?? []);
   const mounts = [];
   for (const name of ini.keys) {
-    if (!sizes.has(name)) continue;
+    if (!sizes.has(name) || unmounted.has(name)) continue;
     const path = `${INSTALL_DIR}/${name}`;
     const file = await readFile(path);
     const archive = await indexPodFile(file);
     mounts.push({
       key: `install:${name}`, name, archive, readEntry: (entry) => readPodEntryBytes(file, entry),
-      family: "MTM", game: "MTM2", source: "MTM2 install", size: sizes.get(name), removable: false,
+      family: "MTM", game: "MTM2", source: "Base MTM2 install", size: sizes.get(name), removable: !isRequiredPod(name), install: true,
     });
   }
   return mounts;

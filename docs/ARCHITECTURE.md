@@ -38,18 +38,26 @@ in Cache storage: "Without a server" below):
 
 - the install: `POD.INI` and the PODs it lists, copied once from the folder the player picks;
 - added archives (`addons`, `src/worker/addon-store.js`): another game's folder, read through its
-  own `POD.INI`, or single PODs added in the POD manager. Each is tagged with the game it comes
+  own `POD.INI`, or single PODs added in the POD manager (a ZIP picked there adds every POD it holds,
+  `src/shared/zip.js`). Each is tagged with the game it comes
   from (the first track script it holds says so), and a file is looked up among the archives of
   the track's own game first, in mount order, then among the rest (`src/worker/vfs.js`), so two
-  games' same-named files stay apart;
+  games' same-named files stay apart. MTM1 and MTM2 are one family, so an MTM1 truck named like an MTM2
+  one is shadowed by it; with "Keep MTM1 trucks apart" it is listed again as `MTM1:<file>` and built
+  through `preferGame("MTM1")`, a view with MTM1's archives first (`src/worker/truck-build.js`);
+- Community Patch 3's loose `WeatherArt` folder, copied with the install to `install/WEATHERART`: its
+  skies come before the archives' with "CP3 HD weather" (`src/worker/weather-art.js`; the port also
+  carries the community's set in `assets/weatherArt`);
 - POD directory indexes, so later visits do not re-read whole archives;
 - driver profiles and the Hall of Fame (later milestones).
 
 Small per-browser preferences (look, difficulty, laps) are in `localStorage`
 (`src/app/settings.js`).
 
-The Options menu has two separate storage actions. Use a different install removes only the
-copied install and preserves profiles, Hall of Fame entries and preferences. Clear browser game
+The Options menu has two separate storage actions. Change base install picks the MTM2 folder again
+(or another one) and copies only the archives that are new or changed, and Reload POD.INI mounts
+again everything the stored POD.INI lists; both preserve profiles, Hall of Fame entries and
+preferences. Clear browser game
 data removes both OpenMTM2 OPFS directories, `install` and `userdata`, plus its
 `openmtm2.settings` local-storage entry, after an explicit confirmation.
 

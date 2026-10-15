@@ -300,7 +300,10 @@ BINs supply the geometry and compatible frames blend in a loop. The SIT's backdr
 drawn without depth testing and follows the camera, independently of ordinary placed objects.
 
 Terrain and ground-box tiles use the game's two-pixel overlap treatment: the UV rectangle crops
-two legacy pixels from each edge of a tile. The atlas still keeps a clamped skirt outside the
+two legacy pixels from each edge of a tile. The pixels are the tile's own: an atlas slot is as
+wide as the track's widest tile, so where a track mixes 64 and 256 px tiles (custom tracks such
+as Valparaiso Racing) the 64 px ones are cropped by eight atlas texels, and an HD replacement
+by two pixels of the legacy tile it replaces. The atlas still keeps a clamped skirt outside the
 cropped rectangle so filtering cannot sample an adjacent tile.
 
 **The sky** (0x42b430): the LVL's sky `.RAW`, or by weather `DUSKSKY` (Dusk), `NITESKY` (Night),
@@ -495,6 +498,10 @@ Exactly (`0x41b330`, from the code):
   follow the course, and in the three stock Rumbles they stay outside the zone and only lose
   points. The human player is the only one who scores.
 - Places are by score, highest first.
+- **The start** is the SIT's slots, shuffled (`0x4195d0`), as in every race. An add-on Rumble can put them all far
+  from its zone: Scream3 Cemetery's eight stand on the high ground at (3550 to 3610, 3573 to 3648), outside the ring of
+  stands round its pit, 800 ft from the zone at (4139.5, 4301.5). The port (`src/game/race-setup.js` `rumbleGrid`)
+  then starts the trucks in a ring inside the zone instead: its own correction, not the game's.
 - **A level with fewer than two type 6 boxes** (add-on Rumbles such as The Sumo Pit have one):
   mode 4 still skips the checkpoint tests, so the port scores it as a Rumble with the one box as
   the zone and no summit (no box at all: neither). What the game reads for a missing box was not
@@ -1435,15 +1442,58 @@ stereo separation, `UseRedBook` and `UseModMusic`.
   - The player's truck is not positioned; the other trucks play at 0.9 of the scale and their engine idle at 0.85.
   The port's `audio-engine.js` does the same: its own distance fade by `soundRange(weather)`, only the loudest 16 mixed,
   and a compressor on the master standing in for the game's master smoothing. The effects bus sits at 0.65 under the music.
-- **Skids by surface** (0x41d2b0): concrete `skid-c2`, dirt `skid-d%d`, grass and gravel
-  `skid-g%d`, ice and snow `spinice`/`snwskid%d`, rocks `spinroc%d`/`cornroc%d`.
+- **Skids** (`0x41bbd0` each frame per truck, the physics triggers `0x47c480` and `0x477520`). Every name below is
+  MTM2's own; `SOUND.POD` also carries MTM1's skid set (`corncem%d`, `corndir%d`, `cornice%d`, `spincem%d`,
+  `spindir%d`, `skidcem%d`, `skiddir%d`, `skidice%d`, `skidroc%d`, picked by MTM1's `0x43cac0`, `0x43cd60`,
+  `0x43d050`), which MTM2 never plays.
+  - Only the **rear tires** (RR and RL, `+0x2bc` and `+0x3d0`) have skid voices: three loops each, a corner skid
+    (`0x41db00`), a wheelspin (`0x41d2b0`) and a brake skid (`0x41d6d0`). A tire's surface is its value's
+    `type * 100`, -1 in the air; in Snow every surface but 1400 counts as 900 (Snow), and 1300 as 800 (Ice).
+  - **Samples by surface** (the variant is random and never the one the routine played last, up to ten tries):
+
+    | Surface | Corner (`0x41db00`) | Wheelspin (`0x41d2b0`) | Gain |
+    |---|---|---|---|
+    | 200, 400, 500, 600 (Dirt, Mud, Sand, Grass) | `skid-d1`/`2` | `skid-d1`/`2` | 1.1 |
+    | 700, 1200 (Gravel, Rocks) | `skid-g1`..`3` | `skid-g1`..`3` | 1.3 |
+    | 300, 800, 900, 1300 (Water, Ice, Snow, Deep water) | `snwskid5`..`7` (x0.35) | `spinice` (x1) | |
+    | 1000, 1100, 1400 (Metal, Wood) | `cornroc1` (absent from `SOUND.POD`: silent) | `spinroc1`..`3` (x1) | |
+    | anything else (Cement, Default) | `skid-c2` | `skid-c2` | 0.7 |
+
+    The gain is that times the truck's scale (1 for the truck the camera follows, 0.9 for the others); the pitch is the
+    truck's pitch scale plus a uniform `+-0.1`. They loop (`skid-c2` and `spinice` on their KLP, the rest whole) until
+    stopped.
+  - **Corner skid** (`0x47c480`, every step): with the truck's speed above 29.34 ft/s, each tire on the ground is
+    *sliding* while its lateral coefficient `C(alpha)` (tire `+0x88`, MTM2_PHYSICS.md 14.5) is past 0.975 in size, and
+    stops at below 0.95 (between, it keeps its state); slower, or in the air, none slides. When the first of the four
+    starts sliding, both rear corner loops start (each only if not already playing, `0x4297a0`); when the last stops,
+    both stop (`0x4296e0`).
+  - **Wheelspin** (`0x477520`, every step): at full throttle (exactly 1.0) with the forward speed `|v_z|` between 1 and
+    58.68 ft/s, every tire on the ground whose surface has the dust flag (8 in `0x4de180`'s low byte: Cement, Dirt and
+    Sand) throws dust, and if any did both rear spin loops start (if not playing, `0x429840`). Letting go of full
+    throttle, or full throttle at `|v_z|` of 1 or less or above 102.69 ft/s, stops all six skid loops (`0x429680`).
+  - **Brake skid**: `0x41d6d0` (`skid-c2`, `skid-d%d`, `snwskid%d`, `skid-g%d`) is reached only through `0x4298e0`,
+    which nothing calls in 2.00.42: braking makes no skid sound.
+  - **A rear tire changing surface** (`0x41bbd0`) stops each of its three loops that is playing and starts it again with
+    the new surface's sample; loops that are not playing stay off.
+- **Water** (`0x41bbd0`): a truck is *in water* (not in Snow) when a tire's hub is under the water level, a tire stands
+  on surface 300 or 1300, or a hull point is under the water. On going in, `splash1.wav` (one-shot) at
+  `0.1 - v_y / 9` (`v_y` the world vertical speed, ft/s), played only when that is above 0 and at most 1.7. While in
+  water (and the camera above it) `Wtr-abv1.wav` loops (KLP) at `0.1 + |v| / 10`, at most 1.2; it stops on leaving the
+  water. `SOUND\SPLASH.WAV` (`MUSIC.POD`) is never a sound effect: only `0x4207f0` names it, as the menu music.
+- **Bridges** (`0x41ec90`, from `0x41bbd0`, once for surface 1100 (Wood) and once for 1400): while the truck moves
+  faster than 2 ft/s and any of its four tires on the ground stands on that surface, `bridge1.wav` loops (KLP) from the
+  middle of those tires' contact points, at `speed / 60` (at most 1.4) times the truck's scale and at a pitch of
+  `speed / 90` held to 0.3..1.0; otherwise it stops.
+- **Winner's Circle crowd** (`0x519212`): when the race's first place is the player's own truck, the Results window
+  shows the art with the first frame lit (`ResWin1.bmp`) and starts `crowd.wav` looping on its KLP (flags 0x1f, as
+  the interface sounds); with the player second it shows `ResWin2.bmp` and no crowd.
 - **Hull impacts** (`0x429080`, called from the contact response at `0x46ba80`): `suspen5` or
   `suspen6` (random) while the truck is undamaged (`damageCode` 0), `suspen1` or `suspen3` once
   it is not, at x1.8 from the truck's emitter, and only when the truck's previous impact sound
   has finished (`0x464450` asks whether a handle still plays). The exe has no other truck crash
   sample: `crash_01`, `05`, `08` and `11` are announcer voice clips (referenced at `0x42452c`),
   so they must never play as impact sounds.
-- **World**: crashes, suspension, rollover, horn, YeeHaw, splash, underwater, trains
+- **World**: crashes, suspension, rollover, horn, YeeHaw, splash (`splash1` only), underwater, trains
   (`tr-horn`, `train22.wav`), helicopter (`huey`), blimp, crowd, and object-specific hits by
   model name (`strike`, `hickz`, `flush`, `barn1`, `cowpain`, `doctor`, `coffin`).
 - **MOD music** (`UseModMusic`, the "%u-channel MOD" player at 0x5580f0): `MUSIC\SEX.MOD` in
@@ -1911,6 +1961,26 @@ unused art. The port draws tracks on soft ground as an addition.
 
 **Sparks**: `0x531e40` throws two scrape sparks every eighth of a second from a hull zone in contact while the truck moves. The port draws
 them (and a burst with dust on a hard hit) as points under gravity; it is an addition, as the game shows none.
+
+## Reflections
+
+`MONSTER.INI` `[Graphics]` has two switches, read at 0x44d350: `reflectionFlag` (`0x640750`) and
+`truckReflectionFlag` (`0x64075c`). Both work only with a 3D card (`0x644664`); the software renderer has neither.
+
+**Water** (`reflectionFlag`; the frame routine `0x52f3a0`). When the level has water, the camera is above it and
+`0x5036e0` finds the water in view, the frame is drawn twice. First mirrored in the water's plane: the camera's height
+becomes `2 x level - y` and its roll and pitch are turned over, and the sky, the objects, the trucks, the terrain (flat
+shaded, `flatShadeFlag` held on for it) and the weather are drawn, but not the water itself (`0x64cfb8` marks the pass).
+Then the frame as always over it: the translucent water shows the world mirrored.
+
+**Trucks** (`truckReflectionFlag`, which needs `reflectionFlag` too; `0x5225d0`, `core/ENVMAP.CPP`). After a truck's
+body is drawn, unless the weather is Foggy, Dense Fog or Pitch Black and never in the water's mirrored pass, each of its
+textured faces that faces the camera (`0x4eda10`) is drawn again in `ART\CLOUDENV.RAW` (256 x 256, `STARTUP.POD`),
+translucent at 128 of 255. A vertex's texel: `e` the unit direction from the eye to it, `n` the camera's unit view axis,
+`r = 2 (e . n) e - n`, and `(u, v) = (128 + 128 r.x, 128 + 128 r.z)`. It is a reflection of the view and not of the
+face: no normal is read, so the clouds slide over the body as it crosses the screen. In Rain, Dusk and Night
+(`0x522ee0`) the texture's indices become `(i >> 4) - 26`: the sixteen sky colours at palette entries 230 to 245, so the
+body mirrors that weather's sky.
 
 ## The wrapping world
 

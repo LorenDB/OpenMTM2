@@ -25,7 +25,9 @@ test("every part of the scenery has a switch, off by default, that Options shows
   // Custom is the only list of switches in Display's Enhanced graphics section, and it is this same list.
   const panel = readFileSync(new URL("../src/ui/options-panel.js", import.meta.url), "utf8");
   assert.match(panel, /el\("h3", \{\}, "Enhanced graphics"\)/);
-  assert.match(panel, /choice === "custom"[\s\S]*VISUAL_OPTIONS\.map\(\(option\) => toggle\(option\.label, option\.key, option\.hint\)\)/);
+  // A part with an amount (Volumetric weather) shows a slider in place of its switch.
+  assert.match(panel, /choice === "custom"[\s\S]*VISUAL_OPTIONS\.map\(\(option\) => \(option\.amountKey \? slider\([\s\S]*?: toggle\(option\.label, option\.key, option\.hint\)\)\)/);
+  assert.deepEqual(VISUAL_OPTIONS.filter((option) => option.amountKey).map((option) => option.key), ["volumetricWeather"]);
 });
 
 test("the track is built with what the switches ask for: the puddle map only where it may rain, the snow's depth only for a race in Snow", () => {

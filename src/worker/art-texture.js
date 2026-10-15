@@ -43,10 +43,11 @@ export async function loadPlainImage(vfs, stem) {
  * `{ width, height, rgba, source }` for a texture name, or null. `cutout` keys the legacy art's black out; HD art keeps
  * its own alpha, which the material uses or ignores by the face's rules.
  */
-export async function loadArtTexture(vfs, name, palettes, { cutout = false, kind = "model", hdOnly = false } = {}) {
+export async function loadArtTexture(vfs, name, palettes, { cutout = false, kind = "model", hdOnly = false, legacyOnly = false } = {}) {
   const stem = artStem(name);
   if (!stem) return null;
-  const hd = await hdImage(vfs, stem);
+  // `legacyOnly`: the game's own RAW, an HD file of the same stem passed over (an original backdrop, worker/track-build.js).
+  const hd = legacyOnly ? null : await hdImage(vfs, stem);
   if (hd || hdOnly) return hd;
   const source = await loadTextureSource(vfs, `${stem}.RAW`, palettes, kind);
   if (!source?.palette || !rawTextureSide(source.raw.length)) return null;

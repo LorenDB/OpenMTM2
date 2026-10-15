@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hornSample, objectHitSound, impactSound, engineVoices, gearSound, loopRegion, nextDelay, skidAmount, skidSample, surfaceFamily } from "../src/game/sound-model.js";
+import {
+  hornSample, objectHitSound, impactSound, engineVoices, gearSound, loopRegion, nextDelay, skidAmount, surfaceFamily,
+  skidSurface, cornerSample, spinSample, variantPicker, tireSliding, spinAction, splashGain, wadeGain, bridgeVoice,
+} from "../src/game/sound-model.js";
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} != ${b}`);
 
@@ -45,18 +48,82 @@ test("engine: the throttle crossfades the mid loop into the accel loop, and the 
   near(engineVoices({ rpm: 800, throttle: 0, player: false }).idle.gain, 0.85);
 });
 
-test("skids: the families follow the game's ground types and choose their samples", () => {
+test("skids: the families follow the game's ground types; a tire's slip measure", () => {
   assert.deepEqual([1, 2, 3, 7, 10, 12].map(surfaceFamily), ["cement", "dirt", "ice", "gravel", "rock", "gravel"]);
-  assert.equal(skidSample({ type: 1, spinning: false, speed: 20 }), "SKID-C2");
-  assert.equal(skidSample({ type: 1, spinning: false, speed: 60 }), "CORNCEM1");
-  assert.equal(skidSample({ type: 2, spinning: true, speed: 5, pick: () => 2 }), "SPINDIR2");
-  assert.equal(skidSample({ type: 9, spinning: false, speed: 20, pick: () => 1 }), "SNWSKID5");
-  assert.equal(skidSample({ type: 7, spinning: false, speed: 20, pick: () => 3 }), "SKID-G3");
   const gripping = { onGround: true, grip: 1000, force: [300, 0, 300] };
   const sliding = { onGround: true, grip: 1000, force: [900, 0, 700] };
   assert.equal(skidAmount(gripping), 0);
   assert.ok(skidAmount(sliding) > 0.3);
   assert.equal(skidAmount({ onGround: false, grip: 1000, force: [9999, 0, 0] }), 0);
+});
+
+test("skid samples are MTM2's own by surface (0x41db00, 0x41d2b0), never MTM1's", () => {
+  const one = () => 1;
+  assert.deepEqual(cornerSample(100, one), { name: "SKID-C2", gain: 0.7 });
+  assert.deepEqual(cornerSample(0, one), { name: "SKID-C2", gain: 0.7 });
+  assert.deepEqual(cornerSample(500, () => 2), { name: "SKID-D2", gain: 1.1 });
+  assert.deepEqual(cornerSample(1200, () => 3), { name: "SKID-G3", gain: 1.3 });
+  assert.deepEqual(cornerSample(1300, one), { name: "SNWSKID5", gain: 0.35 });
+  assert.equal(cornerSample(1100, one).name, "CORNROC1");
+  assert.equal(cornerSample(-1, one), null);
+  assert.deepEqual(spinSample(900, one), { name: "SPINICE", gain: 1 });
+  assert.deepEqual(spinSample(1400, () => 2), { name: "SPINROC2", gain: 1 });
+  assert.deepEqual(spinSample(600, one), { name: "SKID-D1", gain: 1.1 });
+  assert.deepEqual(spinSample(100, one), { name: "SKID-C2", gain: 0.7 });
+  const mtm1 = /^(CORN(CEM|DIR|ICE)|SPIN(CEM|DIR)|SKID(CEM|DIR|ICE|ROC))/;
+  for (let code = 0; code <= 1400; code += 100) {
+    for (const pick of [() => 1, () => 2, () => 3]) {
+      assert.doesNotMatch(cornerSample(code, pick).name, mtm1);
+      assert.doesNotMatch(spinSample(code, pick).name, mtm1);
+    }
+  }
+});
+
+test("a skid's surface is the rear tire's type, -1 in the air, and snow in Snow but for 1400", () => {
+  assert.equal(skidSurface(214), 200);
+  assert.equal(skidSurface(214, false), -1);
+  assert.equal(skidSurface(100, true, 5), 900);
+  assert.equal(skidSurface(1300, true, 5), 800);
+  assert.equal(skidSurface(1400, true, 5), 1400);
+});
+
+test("a variant is never the one played last", () => {
+  const values = [0.1, 0.1, 0.1, 0.9];
+  const pick = variantPicker(() => values.shift() ?? 0.5);
+  assert.equal(pick("d", 2), 1);
+  assert.equal(pick("d", 2), 2);
+});
+
+test("a tire slides past 0.975 of the curve, stops below 0.95, and only above 29.34 ft/s", () => {
+  assert.equal(tireSliding(false, { onGround: true, lateral: 0.98 }, 40), true);
+  assert.equal(tireSliding(false, { onGround: true, lateral: -0.96 }, 40), false);
+  assert.equal(tireSliding(true, { onGround: true, lateral: -0.96 }, 40), true);
+  assert.equal(tireSliding(true, { onGround: true, lateral: 0.9 }, 40), false);
+  assert.equal(tireSliding(true, { onGround: true, lateral: 1 }, 20), false);
+  assert.equal(tireSliding(true, { onGround: false, lateral: 1 }, 40), false);
+});
+
+test("wheelspin: full throttle on dust between 1 and 58.68 ft/s starts it; letting go stops every skid; braking has none", () => {
+  const dirt = [{ onGround: true, surface: 200 }], grass = [{ onGround: true, surface: 600 }];
+  assert.equal(spinAction({ throttle: 1, wasThrottle: 1, forward: 20, tires: dirt }), "start");
+  assert.equal(spinAction({ throttle: 1, wasThrottle: 1, forward: 20, tires: grass }), null);
+  assert.equal(spinAction({ throttle: 0.9, wasThrottle: 0.9, forward: 20, tires: dirt }), null);
+  assert.equal(spinAction({ throttle: 0, wasThrottle: 1, forward: 20, tires: dirt }), "stop");
+  assert.equal(spinAction({ throttle: 1, wasThrottle: 1, forward: 0.5, tires: dirt }), "stop");
+  assert.equal(spinAction({ throttle: 1, wasThrottle: 1, forward: 80, tires: dirt }), null);
+  assert.equal(spinAction({ throttle: 1, wasThrottle: 1, forward: 110, tires: dirt }), "stop");
+});
+
+test("water: the splash by how fast the truck comes down, the wading loop by its speed; bridges by speed", () => {
+  near(splashGain(-9), 1.1);
+  assert.equal(splashGain(-30), 1.7);
+  assert.equal(splashGain(2), null);
+  near(wadeGain(5), 0.6);
+  assert.equal(wadeGain(50), 1.2);
+  assert.equal(bridgeVoice(1), null);
+  near(bridgeVoice(30).gain, 0.5);
+  near(bridgeVoice(18).rate, 0.3);
+  assert.equal(bridgeVoice(200).gain, 1.4);
 });
 
 test("crashes, landings, gears, ambience timers and loop points", () => {

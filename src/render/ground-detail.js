@@ -211,3 +211,55 @@ export function createGroundDetail({ world, atlas, textureValues = null, rendere
     },
   };
 }
+
+/* The tiles alone, for the ground without "Ground detail": the stack's read in place of the atlas's, nothing over it. */
+const TILES_PARS = /* glsl */ `
+uniform highp sampler2DArray uGndTiles;
+// the atlas's width and height in texels, a slot's pitch, the padding round a tile
+uniform vec4 uGndAtlas;
+// a tile's side in texels, slots a row
+uniform vec2 uGndTile;
+`;
+const TILES_MAP = /* glsl */ `
+#ifdef USE_MAP
+  vec2 gndPx = vMapUv * uGndAtlas.xy;
+  vec2 gndCell = floor( gndPx / uGndAtlas.z );
+  vec2 gndLocal = ( gndPx - gndCell * uGndAtlas.z - uGndAtlas.w ) / uGndTile.x;
+  vec4 sampledDiffuseColor = textureGrad( uGndTiles, vec3( gndLocal, gndCell.y * uGndTile.y + gndCell.x ),
+    dFdx( gndPx ) / uGndTile.x, dFdy( gndPx ) / uGndTile.x );
+  diffuseColor *= sampledDiffuseColor;
+#endif
+`;
+
+/**
+ * Mipmapped ground for every picture (docs/VISUALS.md, "Ground"): the atlas cannot be shrunk for the distance without
+ * its tiles' neighbours running in, so its tiles are read from a stack, each filtered down by itself, and far ground
+ * stops shimmering. What "Ground detail" does with the grain left out; null where the atlas has no layout (a level of
+ * another game) or the graphics card cannot hold the stack, and the ground keeps its atlas.
+ */
+export function createGroundTiles({ world, atlas, renderer, look = "classic" }) {
+  const stack = tileStack(atlas, renderer, look);
+  if (!stack) return null;
+  const pitch = atlas.tileSide + (atlas.padding ?? 0) * 2;
+  const uniforms = {
+    uGndTiles: { value: stack },
+    uGndAtlas: { value: new THREE.Vector4(atlas.width, atlas.height, pitch, atlas.padding ?? 0) },
+    uGndTile: { value: new THREE.Vector2(atlas.tileSide, Math.max(1, Math.round(atlas.width / pitch))) },
+  };
+  const dressed = new Set();
+  function dress(material) {
+    if (!material?.map || dressed.has(material)) return material;
+    dressed.add(material);
+    return addShaderHook(material, "ground-tiles", 20, (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", `#include <common>\n${TILES_PARS}`)
+        .replace("#include <map_fragment>", TILES_MAP);
+    });
+  }
+  world.traverse((object) => { if ((object.name === "terrain" || object.name === "groundBoxes") && object.material) dress(object.material); });
+  return {
+    dress,
+    dispose() { stack.dispose(); dressed.clear(); },
+  };
+}

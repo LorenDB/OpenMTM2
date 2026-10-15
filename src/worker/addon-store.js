@@ -6,7 +6,7 @@
     addons/manifest.json       what is there, and the mount order of every archive
 
   OpenMTM2 reads tracks of Monster Truck Madness 1 and 2, CART Precision Racing and 4x4 Evolution
-  1 and 2. A player may own a whole install (Add game folder: its POD.INI is read) or a few
+  1 and 2. A player may own a whole install (Add POD.INI: its POD.INI is read) or a few
   archives (the POD manager). Each archive is tagged with the game it comes from, read from the
   first track script it holds; an archive without one takes the game of the folder it came with.
   The tag sets the lookup family (worker/vfs.js), so same-named files of two games stay apart.
@@ -16,7 +16,7 @@
 */
 import { readFile, readTextFile, removePath, writeBytesToFile } from "../shared/opfs.js";
 import { detectSitOrigin, isEvoSit, parseEvoSit, parseTruckManifest, parseTvLvl, podPathTitle } from "../vendor/openphotex/index.js";
-import { copyFile, installMounts } from "./install-store.js";
+import { copyFile, installMounts, reapplyPodIni, unmountInstallArchive } from "./install-store.js";
 import { indexPodFile, readPodEntryBytes } from "./pod-index.js";
 import { createVfs, gameFamily } from "./vfs.js";
 
@@ -44,6 +44,8 @@ export async function removeAddons() {
 }
 
 const isTrackScript = (entry) => /\.SI[T2]$/.test(entry.normalizedName);
+/** A vehicle's manifest: an MTM or 4x4 Evolution truck (`TRUCK\*.TRK`) or a CART Precision Racing car (`VEHICLE\*.CAR`). */
+const isVehicle = (entry) => /^(?:TRUCK[\\/][^\\/]+\.TRK|VEHICLE[\\/][^\\/]+\.CAR)$/.test(entry.normalizedName);
 
 /** The game a track script comes from: "MTM1", "MTM2", "CPR", "EVO1" or "EVO2"; null when it cannot be told. */
 export function sitGame(bytes, title) {
@@ -154,8 +156,12 @@ export async function addPods({ files }, onProgress = () => {}) {
   return { added: added.map((a) => a.name), skipped: files.length - fresh.length, failed };
 }
 
-/** Remove an added archive by its mount key. */
+/**
+ * Remove an archive by its mount key: an added one is deleted, one of the install's is taken out of the mounts until
+ * Reload POD.INI (worker/install-store.js `unmountInstallArchive`).
+ */
 export async function removePod(key) {
+  if (key.startsWith("install:")) return unmountInstallArchive(key.slice("install:".length));
   const manifest = await readAddons();
   const archive = manifest.archives.find((a) => a.key === key);
   if (!archive) throw new Error("Only archives added to the install can be removed here.");
@@ -164,6 +170,18 @@ export async function removePod(key) {
   manifest.order = manifest.order.filter((k) => k !== key);
   await writeAddons(manifest);
   return true;
+}
+
+/**
+ * Reload POD.INI (worker/install-store.js `reapplyPodIni`): the install's archives all mounted again, first and in the
+ * file's order; the added archives keep their order after them. Returns the archives that came back.
+ */
+export async function reloadPodIni() {
+  const { keys, restored } = await reapplyPodIni();
+  const manifest = await readAddons();
+  manifest.order = [...keys, ...manifest.order.filter((key) => !key.startsWith("install:"))];
+  await writeAddons(manifest);
+  return { archives: keys.length, restored };
 }
 
 /** Store the mount order: every mount key, first mounted first. */
@@ -209,6 +227,7 @@ export async function mountAll(installManifest) {
 export function describeMounts(vfs) {
   return vfs.allMounts.map((m) => ({
     key: m.key, name: m.name, game: m.game ?? null, source: m.source ?? "", format: m.archive.format ?? "",
-    entries: m.archive.entries.length, tracks: m.archive.entries.filter(isTrackScript).length, size: m.size ?? null, removable: !!m.removable,
+    entries: m.archive.entries.length, tracks: m.archive.entries.filter(isTrackScript).length,
+    trucks: m.archive.entries.filter(isVehicle).length, size: m.size ?? null, removable: !!m.removable, install: !!m.install,
   }));
 }

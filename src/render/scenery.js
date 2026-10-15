@@ -9,6 +9,7 @@
 import { aaChoice } from "../game/aa.js";
 import { createDrawnGround } from "../game/drawn-ground.js";
 import { createDecks } from "../game/ground-boxes.js";
+import { FOG_AMOUNTS, weatherLevel } from "../game/atmosphere.js";
 import { buildFogFloor } from "../game/fog-floor.js";
 import { DEFAULT_GROUND, meanTone, tileTones } from "../game/lighting.js";
 import { groundDust } from "../game/particles.js";
@@ -18,7 +19,7 @@ import { visualSettings } from "../game/visuals.js";
 import { createAntiAlias } from "./aa.js";
 import { createContactShade } from "./contact-shade.js";
 import { createGloss } from "./gloss.js";
-import { createGroundDetail } from "./ground-detail.js";
+import { createGroundDetail, createGroundTiles } from "./ground-detail.js";
 import { createGroundSurface } from "./ground-surface.js";
 import { createGroundTexture, createPuddleTexture, createShelterTexture } from "./ground-textures.js";
 import { createLens } from "./lens.js";
@@ -61,7 +62,8 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
   const shelterTexture = on.puddles || on.snow ? createShelterTexture(build.cover ?? null) : null;
   // Where the fog lies: on the land taken broadly, and along the course on the course's own height (game/fog-floor.js).
   const fogFloor = on.weather && ground ? buildFogFloor({ heightAt: ground, segments: build.sim?.course ?? [] }) : null;
-  const volume = on.weather ? createWeatherVolume({ scene, camera, sun, ground, groundTexture, random, indoor: !!build.stadium, fogFloor }) : null;
+  // As thick as the Volumetric weather slider asks (game/atmosphere.js `FOG_AMOUNTS`).
+  const volume = on.weather ? createWeatherVolume({ scene, camera, sun, ground, groundTexture, random, indoor: !!build.stadium, fogFloor, amount: FOG_AMOUNTS[weatherLevel(settings)] }) : null;
   // The waves the trucks stir, in the level's water and in the puddles alike (render/water-ripples.js).
   const levelFt = build.waterLevelFt ?? null;
   const hasWater = on.water && levelFt !== null && world.getObjectByName("water");
@@ -85,6 +87,8 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
   const groundSurface = on.puddles || on.snow ? createGroundSurface({ world, puddleTexture, shelterTexture, puddles: on.puddles, snow: on.snow, sun, ripples, puddleMap: build.puddles ?? null }) : null;
   const groundDetail = on.detail && renderer && build.terrain?.atlas
     ? createGroundDetail({ world, atlas: build.terrain.atlas, textureValues: build.sim?.textureValues ?? null, renderer, sun, look }) : null;
+  // Without the detail the ground is still mipmapped, in either picture: its tiles from a stack, each filtered down by itself.
+  const groundTiles = !groundDetail && renderer && build.terrain?.atlas ? createGroundTiles({ world, atlas: build.terrain.atlas, renderer, look }) : null;
   // MSAA is what the picture already did, so that choice makes nothing more. The others draw one sample and a pass.
   const mode = aaChoice(settings.aa);
   const aa = renderer && mode !== "msaa" ? createAntiAlias({ renderer, mode }) : null;
@@ -226,6 +230,7 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
     dressGround(material) {
       groundSurface?.dress(material);
       groundDetail?.dress(material);
+      groundTiles?.dress(material);
       water?.dressBed(material);
       return material;
     },
@@ -257,6 +262,7 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
       ripples?.dispose();
       lightRig?.dispose();
       groundDetail?.dispose();
+      groundTiles?.dispose();
       water?.dispose();
       groundTexture?.texture.dispose();
       puddleTexture?.dispose();

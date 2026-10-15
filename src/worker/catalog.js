@@ -12,6 +12,7 @@
 import { isEvoSit, parseEvoSit, parseMtmSit, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
 import { courseLengthFt } from "./cpr-road.js";
 import { FOREIGN_TRUCK_GAMES, foreignTruckId } from "./foreign-truck-build.js";
+import { mtm1TruckId } from "./truck-build.js";
 import { drivableTvLevel } from "./tv-track-build.js";
 
 /**
@@ -159,6 +160,38 @@ async function foreignTrucks(vfs, problems) {
   return trucks;
 }
 
+/**
+ * MTM1 trucks that an MTM2 truck of the same file name shadows (worker/truck-build.js `mtm1TruckId`), each listed as
+ * `MTM1:<file>`, "Bigfoot (MTM1)", marked `apart`: the catalogue offers them only with "Keep MTM1 trucks apart" on.
+ */
+async function mtm1ApartTrucks(vfs, problems) {
+  const trucks = [];
+  const seen = new Set();
+  // By each manifest's own dialect, not the archive's game: an MTM1 TRUCK.POD may be mounted with the MTM2 install's
+  // own archives (listed in its POD.INI), which are all taken for MTM2's.
+  for (const mount of vfs.allMounts ?? vfs.mounts) {
+    if (!["MTM", ""].includes(mount.family ?? "MTM")) continue;
+    for (const entry of mount.archive.entries) {
+      const path = entry.normalizedName;
+      if (!/^TRUCK[\\/][^\\/]+\.TRK$/.test(path)) continue;
+      const file = podPathTitle(path).toUpperCase();
+      if (seen.has(file) || vfs.find(path)?.mount === mount) continue;
+      seen.add(file);
+      try {
+        const parsed = parseTruckManifest(await mount.readEntry(entry), file);
+        if (parsed.kind !== "mtm" || parsed.manifest.dialect !== "MTM1") continue;
+        trucks.push({
+          path, pod: mount.name, file: mtm1TruckId(file), name: `${parsed.manifest.truckName || file} (MTM1)`,
+          dialect: "MTM1", game: "MTM1", apart: true, waves: parsed.manifest.waveFiles ?? [], hidden: HIDDEN_TRUCKS.includes(file),
+        });
+      } catch (err) {
+        problems.push(`${path}: ${err.message}`);
+      }
+    }
+  }
+  return trucks;
+}
+
 export const HIDDEN_TRACKS = Object.freeze(["WAR.SIT", "GRAVEY.SIT"]);
 export const HIDDEN_TRUCKS = Object.freeze(["CHUCK.TRK"]);
 
@@ -262,6 +295,7 @@ export async function buildCatalog(vfs) {
       problems.push(`${path}: ${err.message}`);
     }
   }
+  trucks.push(...await mtm1ApartTrucks(vfs, problems));
   trucks.push(...await foreignTrucks(vfs, problems));
   return { tracks, trucks, problems };
 }

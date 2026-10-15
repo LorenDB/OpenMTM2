@@ -29,6 +29,15 @@ browser and reads the player's own install. `docs/PLAN.md` holds the milestones;
   x right, y up, z forward. `src/render/world-frame.js` is the only place that converts to
   scene units.
 
+## Navigating the code (graphify)
+
+- A local knowledge graph lives in `graphify-out/` (git-ignored). For codebase questions run
+  `graphify query "<question>"` first; use `graphify path "<A>" "<B>"` for relationships and
+  `graphify explain "<concept>"` for a focused concept. Read `graphify-out/GRAPH_REPORT.md`
+  only for broad architecture review.
+- After modifying code, run `graphify update .` to keep the graph current (AST only, no API
+  cost).
+
 ## Tests
 
 - `node --test tests/` (Node 22.18 or newer). Use `tests/helpers/stock.mjs` for anything that

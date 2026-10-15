@@ -160,7 +160,10 @@ export function createWaterSurface(water, art, look = "enhanced") {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(8192 / 32, 8192 / 32);
-    texture.magFilter = texture.minFilter = look === "classic" ? THREE.NearestFilter : THREE.LinearFilter;
+    // Mipmapped in either picture: repeated 256 times over the level, unfiltered it shimmers off into the distance.
+    texture.magFilter = look === "classic" ? THREE.NearestFilter : THREE.LinearFilter;
+    texture.minFilter = look === "classic" ? THREE.NearestMipmapLinearFilter : THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
     texture.needsUpdate = true;
     return texture;
   });
@@ -169,6 +172,8 @@ export function createWaterSurface(water, art, look = "enhanced") {
   for (const mesh of meshes) mesh.material = material;
   let clock = 0;
   return {
+    /** The water's one material (render/water-mirror.js dresses it). */
+    material,
     update(dt, weather) {
       // Held still in Snow.
       if (weather !== 5) clock += dt;

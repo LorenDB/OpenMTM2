@@ -6,8 +6,10 @@
   turns each SIT box into a scene transform. Pure apart from the VFS reads; the result is
   plain data with typed arrays, listed by `transferablesOf` for postMessage.
 */
+import { rumbleGrid } from "../game/race-setup.js";
+import { loadWeatherArt } from "./weather-art.js";
 import { weatherSkyStem } from "../game/weather.js";
-import { BOX_LIGHT, BOX_MOVING, decodeActPalette, decodeRawTexture, isEvoSit, mtm2Sim, podPathTitle, rawTextureSide } from "../vendor/openphotex/index.js";
+import { BOX_LIGHT, BOX_MOVING, decodeActPalette, decodeRawTexture, isEvoSit, mtm2Sim, normalizePodPath, podPathTitle, rawTextureSide } from "../vendor/openphotex/index.js";
 import { buildEvoSky, buildEvoTrackRender } from "./evo-track-build.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { loadLevel, loadTextureSource } from "./level-load.js";
@@ -37,10 +39,11 @@ import { createPaletteResolver } from "./palette-resolver.js";
 import { buildCprRoadLayer, cprLapCheckpointBoxes } from "./cpr-road.js";
 
 /**
- * How a Monster Truck Madness 1 track is drawn (Options, Display): `sky` its own flat sky in place of MTM2's dome,
- * `overlap` MTM2's two-pixel overlap of the ground tiles, which MTM1 does not have.
+ * MTM1's choices for drawing a track (Options, Advanced): `sky` MTM1's flat sky in place of MTM2's dome (an MTM1 track's
+ * own, any other track EARTHSKY: `loadSky`), `overlap` MTM2's two-pixel overlap of an MTM1 track's ground tiles, which
+ * MTM1 does not have.
  */
-const MTM1_DEFAULTS = Object.freeze({ sky: true, overlap: false });
+const MTM1_DEFAULTS = Object.freeze({ sky: false, overlap: false });
 /** The sky art's palette slots (240 to 255) and where a level's sky .ACT keeps their sixteen colours (192 to 207). */
 const SKY_FIRST_SLOT = 240, SKY_GRADIENT_AT = 192, SKY_GRADIENT_COLOURS = 16;
 
@@ -63,6 +66,25 @@ async function loadFlatSky(vfs, level) {
     name: level.sky.name.replace(/\.RAW$/, ""), width: image.width, height: image.height, rgba: image.rgba,
     flat: { horizon: Array.from(gradient.subarray((SKY_GRADIENT_COLOURS - 1) * 3, SKY_GRADIENT_COLOURS * 3)) },
   };
+}
+
+/** MTM1's EARTHSKY: ALIENSKY.RAW in EARTHSKY.ACT's colours, the sky of most of MTM1's tracks (GAME.POD). */
+const EARTH_SKY = Object.freeze({ name: "ALIENSKY.RAW", actName: "EARTHSKY.ACT" });
+
+/**
+ * EARTHSKY for a track of any game, from whichever mounted archive has it, or null without its files. The sky art uses
+ * only the slots its .ACT fills, so no level's palette is needed.
+ */
+async function loadEarthSky(vfs) {
+  return loadFlatSky(vfs.scoped?.("MTM") ?? vfs, { sky: EARTH_SKY, palette: new Uint8Array(256 * 3) });
+}
+
+/** A track of another kind (Terminal Velocity's, 4x4 Evolution's) under MTM1's sky, when Options asks for it. */
+async function withMtm1Sky(vfs, render, weather, mtm1) {
+  if (!render || mtm1?.sky !== true || weatherSkyStem(weather, null)) return render;
+  const sky = await loadEarthSky(vfs);
+  if (sky) render.sky = sky;
+  return render;
 }
 
 /**
@@ -110,16 +132,50 @@ const CPR_TREE_TYPE = 3;
 const CHECKPOINT_TYPE = 6;
 const OLD_MTM_LEVEL = 4;
 
+/** Whether a checkpoint's model is a CKBOX-style marker (fourth letter O): only the gate it stands for, neither seen nor met. */
+const isCheckpointMarker = (modelName) => podPathTitle(modelName)[3] === "O";
+
 /**
  * Whether the game draws a box (MONSTER.EXE 0x54ec00, MONSTER_EXE_ANALYSIS.md section 4): it
  * needs a model and a priority within the detail level; a checkpoint only on an old MTM level,
- * and not a CKBOX-style marker (fourth letter O).
+ * and not a CKBOX-style marker.
  */
 export function boxIsDrawn(box, { levelType, raceType, detailLevel }) {
   if (!box.modelName || (box.priority ?? 0) > detailLevel) return false;
   if (box.type !== CHECKPOINT_TYPE) return true;
-  const name = podPathTitle(box.modelName);
-  return levelType === OLD_MTM_LEVEL && raceType !== "drag" && name[3] !== "O";
+  return levelType === OLD_MTM_LEVEL && raceType !== "drag" && !isCheckpointMarker(box.modelName);
+}
+
+/**
+ * The solid parts of a model, game frame: each connected piece of its faces that are not cut-outs, as `{ min, max }`
+ * (faces meet where they share a corner). An MTM1 checkpoint banner's are its two poles; the banner is a cut-out.
+ */
+export function solidParts(model) {
+  const parts = [];
+  for (const mesh of model?.meshes ?? []) {
+    if (mesh.cutout) continue;
+    const p = mesh.positions, corners = p.length / 3, triangles = Math.floor(corners / 3);
+    const parent = Array.from({ length: triangles }, (_, i) => i);
+    const find = (i) => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+    const owner = new Map();
+    for (let v = 0; v < triangles * 3; v++) {
+      const key = `${Math.round(p[v * 3] * 64)},${Math.round(p[v * 3 + 1] * 64)},${Math.round(p[v * 3 + 2] * 64)}`;
+      const t = Math.floor(v / 3);
+      if (owner.has(key)) parent[find(t)] = find(owner.get(key));
+      else owner.set(key, t);
+    }
+    const pieces = new Map();
+    for (let v = 0; v < triangles * 3; v++) {
+      const root = find(Math.floor(v / 3));
+      let piece = pieces.get(root);
+      if (!piece) pieces.set(root, piece = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] });
+      // The scene's z is the game's mirrored (worker/models.js).
+      const g = [p[v * 3], p[v * 3 + 1], -p[v * 3 + 2]];
+      for (let k = 0; k < 3; k++) { piece.min[k] = Math.min(piece.min[k], g[k]); piece.max[k] = Math.max(piece.max[k], g[k]); }
+    }
+    parts.push(...pieces.values());
+  }
+  return parts;
 }
 
 /** An object wider than this holds no more ground to the game's than this, feet: something that size is scenery, not something standing on the ground. */
@@ -193,12 +249,12 @@ export async function loadRex(mtm, truckPalettes) {
  *   and the weather, `puddles` the map of where rain stands, `snow` the depth of settled snow
  *   on every vertex of the terrain.
  */
-export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {}, smoothTiles = false } = {}) {
+export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {}, smoothTiles = false, hdWeather = false, originalBackdrops = false } = {}) {
   // A Terminal Velocity, Fury3 or Hellbender level has no SIT: it is named by its LVL (worker/tv-track-build.js).
-  if (/\.LVL$/i.test(sitPath)) return buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap });
+  if (/\.LVL$/i.test(sitPath)) return withMtm1Sky(vfs, await buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap }), weather, mtm1);
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
   const sitBytes = await vfs.read(sitPath);
-  if (sitBytes && isEvoSit(sitBytes)) return buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, tileOverlap });
+  if (sitBytes && isEvoSit(sitBytes)) return withMtm1Sky(vfs, await buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, tileOverlap }), weather, mtm1);
   const level = await loadLevel(vfs, sitPath);
   const { sit } = level;
   // A CART Precision Racing track (docs/PLAN.md F3): its own art and palettes, a finer heightfield and a road layer.
@@ -213,7 +269,8 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   // CP3's HD ground art (ART\<stem>.PNG or .TGA) replaces a tile, scaled to TERRAIN_HD_SIDE so the atlas stays in reach.
   const decodedTerrain = await Promise.all(level.textureNames.map(async (n, i) => {
     const hd = await loadArtTexture(vfs, n, null, { hdOnly: true, kind: "terrain" });
-    return hd ? shrinkImage(hd, TERRAIN_HD_SIDE) : legacy[i];
+    // The overlap crops two pixels of the legacy tile, so an HD tile remembers how wide that was.
+    return hd ? { ...shrinkImage(hd, TERRAIN_HD_SIDE), legacyWidth: legacy[i]?.width ?? 0 } : legacy[i];
   }));
   // `smoothTiles` (the enhanced look's smooth textures): a small tile scaled up to the widest is blended, not blocky.
   const atlas = buildTerrainAtlas(decodedTerrain, 0, { smooth: smoothTiles });
@@ -291,10 +348,12 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     models[title] = await resolveKeyframeModel(model, decodeNamed);
     return models[title];
   };
+  // MTM1 draws its ramps' models, where MTM2 leaves them unseen; its checkpoint banners it draws as an old MTM level's.
+  const mtm1Track = sit.origin === "MTM1";
   const objects = [];
   for (const [sitIndex, box] of sit.boxes.entries()) {
     const name = box.modelName ? podPathTitle(box.modelName) : "";
-    if (!name || box.type === RAMP_TYPE) continue;
+    if (!name || (box.type === RAMP_TYPE && !mtm1Track)) continue;
     if (!boxIsDrawn(box, { levelType: level.lvl.levelType, raceType, detailLevel })) continue;
     if (!(name in models)) await loadModel(name);
     if (!models[name] || !box.positionFt) continue;
@@ -310,7 +369,16 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
 
   // Backdrops are ordinary BIN assets with a special camera-centred draw policy.
   const backdrops = (sit.backdropModelNames ?? []).map(podPathTitle).filter(Boolean);
-  for (const name of backdrops) await loadModel(name);
+  // "Original backdrops" (Options, Advanced): the game's own backdrop, passed over an HD one (a model naming PNG art,
+  // Community Patch 3) wherever an archive later in the order still has the original, and drawn in its RAW art.
+  const legacyArt = new Set();
+  for (const name of backdrops) {
+    const original = originalBackdrops ? await originalBackdrop(vfs, name) : null;
+    if (original) {
+      models[name] = original;
+      for (const mesh of original.meshes ?? []) if (mesh.textureName) legacyArt.add(mesh.textureName);
+    } else await loadModel(name);
+  }
 
   // Collision boxes (MTM2_PHYSICS.md 14.15): every solid box, sized by its model's vertex
   // bounds when it has one. Drawn or not does not matter; the same priority rule applies.
@@ -333,6 +401,25 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
       bvel: (box.type === 10 || box.type === BOX_MOVING) && box.bvel ? [...box.bvel] : null,
       hitSound: box.hitSound ?? null, modelName: name,
     });
+  }
+
+  // An MTM1 checkpoint's banner stands on two solid poles (as MTM1 plays; MTM2 makes a checkpoint no collision box at
+  // all): each solid part of its model is an immovable box, the banner between them a cut-out the trucks pass under.
+  // A CKBOX-style marker (CIRC1's CKBOX.BIN) is not drawn, and is passed through too.
+  for (const [sitIndex, box] of mtm1Track ? sit.boxes.entries() : []) {
+    if (box.type !== CHECKPOINT_TYPE || !box.modelName || !box.positionFt || isCheckpointMarker(box.modelName)) continue;
+    if (!mtm2Sim.levelBoxCollides({ type: 0, priority: box.priority ?? 0 }, detailLevel)) continue;
+    const name = podPathTitle(box.modelName);
+    const model = name in models ? models[name] : await loadModel(name);
+    const m = mtm2Sim.eulerToMatrix(box.theta, box.phi, box.psi, new Array(9));
+    for (const part of solidParts(model)) {
+      const c = [0, 1, 2].map((k) => (part.min[k] + part.max[k]) / 2), half = [0, 1, 2].map((k) => (part.max[k] - part.min[k]) / 2);
+      const at = [0, 1, 2].map((r) => box.positionFt[r] + m[r * 3] * c[0] + m[r * 3 + 1] * c[1] + m[r * 3 + 2] * c[2]);
+      collisionBoxes.push({
+        positionFt: at, theta: box.theta, phi: box.phi, psi: box.psi, sizeFt: null, mass: 0, type: 0, priority: box.priority ?? 0,
+        bounds: { min: half.map((v) => -v), max: half }, sitIndex, bvel: null, hitSound: null, modelName: name,
+      });
+    }
   }
 
   const topCrush = [];
@@ -469,7 +556,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   // By stem, HD art first (worker/art-texture.js); a normal map rides along as `<stem>_N`.
   for (const [name, cutout] of textureUse) {
     try {
-      const image = await loadArtTexture(vfs, name, palettes, { cutout });
+      const image = await loadArtTexture(vfs, name, palettes, { cutout, legacyOnly: legacyArt.has(name) });
       if (image) modelTextures[name] = image;
       else missing.add(`ART\\${name}`);
       const normal = await loadNormalMap(vfs, name);
@@ -482,7 +569,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   const { blimp, heli } = await loadRaceVehicles(mtm, truckPalettes);
 
   // A CPR track takes MTM2's sky and weathers.
-  const sky = await loadSky(mtm, level, weather, mtm1);
+  const sky = await loadSky(mtm, level, weather, mtm1, { hdWeather });
 
   // The SIT's start grid, as a preview of where the trucks stand.
   const truckModels = {};
@@ -506,6 +593,11 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     gridSlots = gridSlots.map((t) => ({ ...t, positionFt: [t.positionFt[0], cprGround.height(t.positionFt[0], t.positionFt[2]) + GRID_RIDE_FT, t.positionFt[2]] }));
   }
   const course = sit.primaryCourse?.segments ?? [];
+  const grid = gridSlots.map((t) => ({ file: podPathTitle(t.name).toUpperCase(), pos: t.positionFt, heading: t.psi }));
+  const checkpoints = mtm2Sim.buildCheckpoints(cpr ? cprLapCheckpointBoxes(sit.boxes, sit.primaryCourse?.segments ?? []) : sit.boxes, (name) => {
+    const b = boundsOf[podPathTitle(name)];
+    return b ? [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]] : null;
+  });
   return {
     problems: [...missing].sort(),
     title: level.title,
@@ -583,14 +675,10 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
       /** CPR: the road's triangles with their surface values, and its walls as boxes (worker/cpr-road.js). */
       road: road?.sim.road ?? null,
       walls: road?.sim.walls ?? null,
-      grid: gridSlots.map((t) => ({
-        file: podPathTitle(t.name).toUpperCase(), pos: t.positionFt, heading: t.psi,
-      })),
+      // A Summit Rumble whose slots all stand far from its zone starts inside the zone (game/race-setup.js `rumbleGrid`).
+      grid: sit.trackTypeCode === 4 && !cpr ? rumbleGrid(grid, checkpoints[0]?.gate) : grid,
       /** The checkpoints, gate and detector (MONSTER_EXE_ANALYSIS.md 6.2), sized by their models. */
-      checkpoints: mtm2Sim.buildCheckpoints(cpr ? cprLapCheckpointBoxes(sit.boxes, sit.primaryCourse?.segments ?? []) : sit.boxes, (name) => {
-        const b = boundsOf[podPathTitle(name)];
-        return b ? [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]] : null;
-      }),
+      checkpoints,
       start: trucks.length ? {
         file: trucks[0].file,
         pos: sit.trucks.find((t) => !t.playerSlot && t.positionFt)?.positionFt ?? null,
@@ -604,13 +692,30 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
 
 const OLD_MTM_SKY = "CLOUDY2";
 
+/** Whether a model's art is HD (a face naming a PNG or TGA): Community Patch 3's backdrops are. */
+const hdArt = (model) => (model?.meshes ?? []).some((mesh) => /\.(PNG|TGA)$/i.test(mesh.textureName ?? ""));
+
+/** The first `MODELS\<name>` in the lookup order whose art is not HD, decoded, or null when every one is. */
+export async function originalBackdrop(vfs, name) {
+  const path = normalizePodPath(`MODELS\\${podPathTitle(name)}`);
+  for (const mount of vfs.mounts ?? []) {
+    const entry = mount.archive.entries.find((e) => e.normalizedName === path);
+    if (!entry) continue;
+    try {
+      const model = decodeModel(await mount.readEntry(entry), podPathTitle(name));
+      if (model && !hdArt(model)) return model;
+    } catch { /* not a model: the next */ }
+  }
+  return null;
+}
+
 /** Just a track's sky for a weather, when the weather changes in a race (GOLD mode). */
-export async function buildSky(vfs, sitPath, weather, mtm1 = MTM1_DEFAULTS) {
-  if (/\.LVL$/i.test(sitPath)) return buildTvSky(vfs, sitPath);
+export async function buildSky(vfs, sitPath, weather, mtm1 = MTM1_DEFAULTS, { hdWeather = false } = {}) {
+  if (/\.LVL$/i.test(sitPath)) return (await withMtm1Sky(vfs, { sky: await buildTvSky(vfs, sitPath) }, weather, mtm1)).sky;
   const sitBytes = await vfs.read(sitPath);
-  if (sitBytes && isEvoSit(sitBytes)) return buildEvoSky(vfs, sitPath, sitBytes, weather);
+  if (sitBytes && isEvoSit(sitBytes)) return (await withMtm1Sky(vfs, { sky: await buildEvoSky(vfs, sitPath, sitBytes, weather) }, weather, mtm1)).sky;
   const level = await loadLevel(vfs, sitPath);
-  return loadSky(level.sit.origin === "CPR" ? vfs.scoped?.("MTM") ?? vfs : vfs, level, weather, mtm1);
+  return loadSky(level.sit.origin === "CPR" ? vfs.scoped?.("MTM") ?? vfs : vfs, level, weather, mtm1, { hdWeather });
 }
 
 /**
@@ -619,10 +724,11 @@ export async function buildSky(vfs, sitPath, weather, mtm1 = MTM1_DEFAULTS) {
  * palette, which is where the sky art's indices point. Cloudy weather greys them (the game's
  * weights are not traced; a plain average here).
  */
-export async function loadSky(vfs, level, weather = 0, mtm1 = MTM1_DEFAULTS) {
-  // An MTM1 track's own sky, in the weathers that bring no sky of their own (Rain, Dusk and Night do).
-  if (level.sit.origin === "MTM1" && mtm1?.sky !== false && !weatherSkyStem(weather, null)) {
-    const flat = await loadFlatSky(vfs, level);
+export async function loadSky(vfs, level, weather = 0, mtm1 = MTM1_DEFAULTS, { hdWeather = false, weatherArt = loadWeatherArt } = {}) {
+  // "MTM1 sky", in the weathers that bring no sky of their own (Rain, Dusk and Night do): an MTM1 track's own, and
+  // EARTHSKY on any other track (or an MTM1 track whose sky is not of that kind), where an archive has its files.
+  if (mtm1?.sky === true && !weatherSkyStem(weather, null)) {
+    const flat = (level.sit.origin === "MTM1" ? await loadFlatSky(vfs, level) : null) ?? await loadEarthSky(vfs);
     if (flat) return flat;
   }
   let stem = level.sky ? level.sky.name.replace(/\.RAW$/, "") : null;
@@ -630,8 +736,9 @@ export async function loadSky(vfs, level, weather = 0, mtm1 = MTM1_DEFAULTS) {
   if (level.lvl.levelType === OLD_MTM_LEVEL || level.sit.origin === "CPR") stem = OLD_MTM_SKY;
   stem = weatherSkyStem(weather, stem);
   if (!stem || !level.palette) return null;
-  // Community Patch 3 HD sky art (AUTHORING_HD_ART.md §4): ART\<stem>.PNG or .TGA wins; Cloudy greys it, as the engine does.
-  const hd = await loadArtTexture(vfs, `${stem}.PNG`, null, { hdOnly: true });
+  // Community Patch 3 HD sky art (AUTHORING_HD_ART.md §4): with "CP3 HD weather" the WeatherArt folder's, or the port's
+  // own copy (worker/weather-art.js); then an archive's ART\<stem>.PNG or .TGA. Cloudy greys it, as the engine does.
+  const hd = (await weatherArt(stem, { on: hdWeather })) ?? await loadArtTexture(vfs, `${stem}.PNG`, null, { hdOnly: true });
   if (hd) {
     if (weather === 1) for (let i = 0; i < hd.rgba.length; i += 4) {
       const grey = Math.trunc((hd.rgba[i] + hd.rgba[i + 1] + hd.rgba[i + 2]) / 3);

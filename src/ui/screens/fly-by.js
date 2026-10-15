@@ -56,7 +56,7 @@ export default async function mount(container, context, params) {
   };
 
   let weatherId = resolveWeather(params.weather ?? context.settings.weather ?? 0, track.weatherMask);
-  const mtm1Options = { sky: context.settings.mtm1EarthSky !== false, overlap: !!context.settings.mtm1TerrainOverlap };
+  const mtm1Options = { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap };
   let build;
   try {
     build = await context.assets.call("trackRender", {

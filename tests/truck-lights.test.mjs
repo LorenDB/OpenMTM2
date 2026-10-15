@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   BEAM_AIR, TAIL_RUNNING, beamAir, beamShows, blinkOn, headlightReach, lampHeading, lampLevel, lampTone, lampsAtStart, lensFacesViewer, lensGlow,
-  START_LAMPS, lightIntensity, placeHeadlightPools, startLampCount, startLampGlow, startLampsLit, throwsBeam, toggleLamps,
+  START_LAMPS, headlightPool, lightIntensity, placeHeadlightPools, startLampCount, startLampGlow, startLampsLit, throwsBeam, toggleLamps,
 } from "../src/game/truck-lights.js";
 import { WEATHER_LOOK } from "../src/game/weather.js";
 
@@ -182,8 +182,12 @@ test("the race builds the shaders for the pools shown and for the pools hidden b
   assert.match(weather, /warmPools\(build\)/);
   // Without "Truck lamps" the pools' state is the weather's: the scene is still built once, for what is not drawn yet.
   assert.match(weather, /for \(const on of env\.richLamps \? \[!shown, shown\] : \[shown\]\)/);
-  // Once the trucks are in the scene, and with them what waits unseen: the helicopters.
-  assert.match(read("../src/ui/screens/race.js"), /if \(!poolsWarmed && latest\) \{ poolsWarmed = true; weatherScene\.warmPools\(\(\) => scenery\.compile\(camera\)\); \}/);
+  // On the first frame, with the trucks in the scene and what waits unseen (the helicopters), and before the race's clock
+  // starts: the loading screen stays until the warm-up is done and the frames come steadily.
+  const race = read("../src/ui/screens/race.js");
+  assert.match(race, /if \(!poolsWarmed\) \{ poolsWarmed = true; weatherScene\.warmPools\(\(\) => scenery\.compile\(camera\)\); \}/);
+  assert.match(race, /if \(\(poolsWarmed && steadyFrames >= WARM_FRAMES\) \|\| now - warmStart > WARM_LIMIT_MS\) \{/);
+  assert.match(race, /if \(ready && !busy && !paused && !finishing\) \{/);
   // A shader is built for the picture the scene is drawn into as well as for its lights.
   assert.match(read("../src/render/scenery.js"), /const into = lens \? lens\.target : aa \? aa\.flat : null;/);
 });
@@ -209,4 +213,31 @@ test("a start lamp bar is a row of round lamps, lit past white, glowing less by 
   assert.equal(startLampGlow(0, 0), 0);
   // In the dark, their light reaches the trucks on the grid under the gantry.
   assert.ok(START_LAMPS.light > 0 && START_LAMPS.reachFt >= 50);
+});
+
+test("a truck's pool is its own lamps': from its headlights' middle, along their aim, as wide and far as their cones", () => {
+  const lamp = (type, x, extra = {}) => ({ type, pos: [x, 2, 8.7], heading: 0, pitch: -0.1745, coneLength: 75, coneBase: 0.7, coneRim: 11, ...extra });
+  const lights = [lamp(0, -2.4), lamp(0, 2.4), lamp(3, 0, { pos: [0, 5, -0.5], coneLength: 40, coneRim: 3 }), lamp(1, 3, { coneLength: 0 })];
+  const pool = headlightPool(lights);
+  // The headlights alone: the roof lamp counts only on a truck without headlights, a tail lamp never.
+  assert.deepEqual(pool.pos.map((v) => +v.toFixed(3)), [0, 2, 8.7]);
+  assert.ok(Math.abs(pool.dir[1] - Math.sin(-0.1745)) < 1e-9 && pool.dir[2] > 0.98);
+  assert.ok(Math.abs(pool.angle - Math.atan2(11 + 2.4, 75)) < 1e-9);
+  assert.equal(pool.reach, 150);
+  assert.equal(headlightPool([lights[2]]).reach, 80);
+  assert.equal(headlightPool([lights[3]]), null);
+  assert.equal(headlightPool([]), null);
+  // Placed by the truck's rotation: a truck turned to face +x throws it along +x, from its own lamps.
+  const slots = [poolSlot()];
+  const turned = [0, 0, 1, 0, 1, 0, -1, 0, 0];
+  placeHeadlightPools(slots, [{ x: 100, y: 10, z: 50, heading: Math.PI / 2, lit: true, pool, matrix: turned }],
+    { rich: true, headlights: false, daylight: 0, strength: 2.4, cameraX: 0, cameraZ: 0 });
+  assert.ok(Math.abs(slots[0].position.x - 108.7) < 1e-9 && Math.abs(slots[0].position.y - 12) < 1e-9 && Math.abs(slots[0].position.z + 50) < 1e-9);
+  assert.ok(slots[0].target.position.x > 200);
+  assert.equal(slots[0].angle, pool.angle);
+  assert.equal(slots[0].distance, 150);
+  // A lit truck whose lamps throw no beam lights no ground.
+  placeHeadlightPools(slots, [{ x: 0, y: 0, z: 0, heading: 0, lit: true, pool: null, matrix: turned }],
+    { rich: true, headlights: false, daylight: 0, strength: 2.4, cameraX: 0, cameraZ: 0 });
+  assert.equal(slots[0].intensity, 0);
 });

@@ -39,7 +39,10 @@ const DROP = Object.freeze({
 
 function flagSet(off) {
   const drop = new Set(off);
-  return Object.freeze(Object.fromEntries(VISUAL_OPTIONS.map((option) => [option.key, !drop.has(option.key)])));
+  const flags = Object.fromEntries(VISUAL_OPTIONS.map((option) => [option.key, !drop.has(option.key)]));
+  // A part with a slider (Volumetric weather) is set to its default amount where the preset has it on, None where not.
+  for (const option of VISUAL_OPTIONS) if (option.amountKey) flags[option.amountKey] = flags[option.key] ? option.defaultLevel : 0;
+  return Object.freeze(flags);
 }
 
 /** The switches each named tier writes. Auto and Custom are not here: Auto copies one of these, Custom writes nothing. */
@@ -57,7 +60,8 @@ export const GRAPHICS_NOTES = Object.freeze({
   low: "The water, puddles, snow, paint, lamps and rich dust. No smoothed ground, volumetric weather, ground detail, natural light or lens.",
   high: "Every part but the lens, the pass the picture can spare first.",
   max: "Every part, including the lens.",
-  custom: "Each part is its own switch.",
+  // Custom shows each part's switch under it, which says as much.
+  custom: "",
 });
 
 /** Shown on the Options screen's Display page, on the Enhanced graphics preset row. */

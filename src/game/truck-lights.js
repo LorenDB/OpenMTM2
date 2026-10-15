@@ -128,6 +128,32 @@ export const beamAir = (weather) => BEAM_AIR[weather] ?? BEAM_AIR[0];
  */
 export const headlightReach = (daylight = 1) => Math.min(1, Math.max(0.06, 1.2 - 1.15 * daylight));
 
+/** How far past its drawn cone a lamp's light still reaches the ground, as a share of the cone's length. */
+export const POOL_REACH = 2;
+
+/**
+ * The light a truck's own lamps throw on the ground ("Truck lamps"), as its TRK defines them: from its headlights (type 0),
+ * or its roof lamps (type 3) when it has none, every one of them that throws a beam. `pos` is their middle and `dir`
+ * their mean aim, body game axes; `angle` the half-angle of a cone that holds all their cones (each cone's own, widened
+ * by how far apart the lamps stand); `reach` how far it lights, feet. Null for a truck whose lamps throw no beam.
+ */
+export function headlightPool(lights = []) {
+  const beams = lights.filter(throwsBeam);
+  const lamps = beams.some((l) => l.type === 0) ? beams.filter((l) => l.type === 0) : beams;
+  if (!lamps.length) return null;
+  const pos = [0, 1, 2].map((k) => lamps.reduce((sum, l) => sum + l.pos[k], 0) / lamps.length);
+  const dir = [0, 0, 0];
+  for (const l of lamps) {
+    dir[0] += Math.sin(l.heading) * Math.cos(l.pitch); dir[1] += Math.sin(l.pitch); dir[2] += Math.cos(l.heading) * Math.cos(l.pitch);
+  }
+  const length = Math.hypot(...dir) || 1;
+  for (let k = 0; k < 3; k++) dir[k] /= length;
+  const spread = Math.max(...lamps.map((l) => Math.hypot(l.pos[0] - pos[0], l.pos[1] - pos[1])));
+  const coneLength = Math.max(...lamps.map((l) => l.coneLength));
+  const angle = Math.max(...lamps.map((l) => Math.atan2(Math.max(l.coneRim, l.coneBase) + spread, l.coneLength)));
+  return { pos, dir, angle: Math.min(angle, Math.PI / 3), reach: coneLength * POOL_REACH };
+}
+
 /**
  * Aim the headlight pools and say how strongly each one lights the ground.
  *
@@ -143,11 +169,13 @@ export const headlightReach = (daylight = 1) => Math.min(1, Math.max(0.06, 1.2 -
  *
  * As the game has it, a weather that lights the lamps lights every truck. With "Truck lamps"
  * (`rich`) each truck follows its own switch (`lit`), in any weather, as strongly as the day
- * leaves it to be seen (`headlightReach`). `strength` is a pool's strength in the dark.
+ * leaves it to be seen (`headlightReach`), and its pool is its own lamps' (`pool`, `headlightPool`, placed by the truck's
+ * rotation `matrix`): a truck whose lamps throw no beam lights no ground. `strength` is a pool's strength in the dark.
  * `cameraX` and `cameraZ` are the scene camera's (the world's z is mirrored, so a truck's game z
  * is `-cameraZ`). The nearest trucks take the slots.
  * @param {Array<{ intensity: number, visible: boolean, position: { set: Function }, target: { position: { set: Function } } }>} slots
- * @param {Array<{ x: number, y: number, z: number, heading: number, lit: boolean }>} trucks game feet, heading in radians
+ * @param {Array<{ x: number, y: number, z: number, heading: number, lit: boolean, pool?: object, matrix?: number[] }>} trucks
+ *   game feet, heading in radians, `matrix` the body's rotation (row-major, body to world, game axes)
  * @param {{ rich: boolean, headlights: boolean, daylight: number, strength: number, cameraX: number, cameraZ: number }} env
  */
 export function placeHeadlightPools(slots, trucks, { rich, headlights, daylight, strength, cameraX, cameraZ }) {
@@ -156,7 +184,7 @@ export function placeHeadlightPools(slots, trucks, { rich, headlights, daylight,
   const reach = rich ? strength * headlightReach(daylight) : strength;
   const nearest = on
     ? trucks
-      .filter((t) => !rich || t.lit)
+      .filter((t) => !rich || (t.lit && t.pool !== null))
       .map((t) => ({ t, d: Math.hypot(t.x - cameraX, t.z + cameraZ) }))
       .sort((a, b) => a.d - b.d)
       .slice(0, slots.length)
@@ -165,11 +193,27 @@ export function placeHeadlightPools(slots, trucks, { rich, headlights, daylight,
     const near = nearest[i]?.t;
     if (!near) { light.intensity = 0; return; }
     light.intensity = reach;
+    if (rich && near.pool && near.matrix) {
+      // The truck's own lamps: from their middle, along their aim, as wide and as far as their cones.
+      const m = near.matrix, { pos, dir } = near.pool;
+      const at = [0, 1, 2].map((r) => m[r * 3] * pos[0] + m[r * 3 + 1] * pos[1] + m[r * 3 + 2] * pos[2]);
+      const way = [0, 1, 2].map((r) => m[r * 3] * dir[0] + m[r * 3 + 1] * dir[1] + m[r * 3 + 2] * dir[2]);
+      const x = near.x + at[0], y = near.y + at[1], z = near.z + at[2], far = near.pool.reach;
+      light.position.set(x, y, -z);
+      light.target.position.set(x + way[0] * far, y + way[1] * far, -(z + way[2] * far));
+      light.angle = near.pool.angle;
+      light.distance = far;
+      return;
+    }
     const fx = Math.sin(near.heading), fz = Math.cos(near.heading);
     light.position.set(near.x + fx * 6, near.y + 3, -(near.z + fz * 6));
     light.target.position.set(near.x + fx * 90, near.y - 2, -(near.z + fz * 90));
+    if (light.angle !== undefined) { light.angle = DEFAULT_POOL.angle; light.distance = DEFAULT_POOL.distance; }
   });
 }
+
+/** The pool of the game's own lamps, the same for every truck: its half-angle (rad) and reach (feet). */
+export const DEFAULT_POOL = Object.freeze({ angle: 0.55, distance: 300 });
 
 /** Whether a lamp is one that throws light ahead of the truck: a headlight or a roof lamp, with a cone. */
 export const throwsBeam = (light) => (light.type === 0 || light.type === 3) && light.coneLength > 0;

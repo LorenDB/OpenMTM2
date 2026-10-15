@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CLASSIC_SPARK_MIN_SPEED, CLASSIC_TRACK_POOL, SPARK_HIT_SPEED, SPARK_MIN_SPEED, TRACK_FADE_PIECES, TRACK_FADE_S, TRACK_LIFE_S, TRACK_FADE_SHARE, TRACK_LEDGE_FT, TRACK_LONGEST_FT, TRACK_ORDER, TRACK_POOL, TRACK_PRESS_SAME, TRACK_STEP_FT, TRACK_TRUE_FT,
-  dustPuffs, edgeHolds, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, trackLevel, trackOpacity, trackShown,
+  dustPuffs, edgeHolds, keepsTread, puffFrame, puffHalfSize, puffProgress, puffLife, puffSize, raisesDust, scrapeSparks, sparksForHit, sparkLevel, sparkRules, manySparksForHit, dustLevel, CLASSIC_DUST, RICH_DUST, trackLevel, trackOpacity, trackShown,
 } from "../src/game/tire-effects.js";
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) < e, `${a} is not ${b}`);
@@ -147,4 +147,32 @@ test("with Rich particles off, tracks and sparks are as the port first had them"
   const always = () => 0;
   assert.ok(scrapeSparks(0.1, 0.5, 7, always, 1, CLASSIC_SPARK_MIN_SPEED).sparks > 0);
   assert.equal(scrapeSparks(0.1, 0.5, 5, always, 1, CLASSIC_SPARK_MIN_SPEED).sparks, 0);
+});
+
+test("the Sparks slider: None, Few, Normal and Many; Many is the rate before 0.5.0", () => {
+  assert.equal(sparkLevel({}), 2);
+  assert.equal(sparkLevel({ sparks: false, sparkAmount: 3 }), 0);
+  assert.equal(sparkLevel({ sparkAmount: 1 }), 1);
+  assert.equal(sparkLevel({ sparkAmount: 9 }), 2);
+  assert.deepEqual(sparkRules(0), { share: 0, many: false });
+  assert.deepEqual(sparkRules(1), { share: 0.5, many: false });
+  assert.deepEqual(sparkRules(2), { share: 1, many: false });
+  assert.deepEqual(sparkRules(3), { share: 1, many: true });
+  // Before 0.5.0: two sparks every eighth of a second of scrape, and bursts of 6 + force / 250, 28 at most, from 600.
+  assert.equal(scrapeSparks(0, 0.5, 30, () => 0.99, 1, 6, true).sparks, 8);
+  assert.equal(manySparksForHit(500), 0);
+  assert.equal(manySparksForHit(1000), 10);
+  assert.equal(manySparksForHit(99999), 28);
+});
+
+test("the Dust slider: Few is the game's own puffs, Normal the port's, Many larger and longer", () => {
+  assert.equal(dustLevel({}), 2);
+  assert.equal(dustLevel({ dustEffects: false, dustAmount: 3 }), 0);
+  assert.equal(dustLevel({ dustAmount: 1 }), 1);
+  // The game: its own size, a foot of growth, its own life, a pool of 96 (MONSTER_EXE_ANALYSIS.md "Dust puffs").
+  assert.deepEqual(CLASSIC_DUST[1].dust, { scale: 1, growth: 1, life: 1 });
+  assert.equal(CLASSIC_DUST[1].pool, 96);
+  assert.deepEqual(CLASSIC_DUST[2].dust, { scale: 2.8, growth: 14, life: 2.2 });
+  for (const key of ["scale", "growth", "life"]) assert.ok(CLASSIC_DUST[3].dust[key] > CLASSIC_DUST[2].dust[key]);
+  for (const key of ["scale", "life", "count"]) assert.ok(RICH_DUST[1][key] < RICH_DUST[2][key] && RICH_DUST[3][key] > RICH_DUST[2][key]);
 });

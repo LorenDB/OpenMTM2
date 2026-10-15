@@ -3,13 +3,43 @@
 
   TRUCK\<name>.TRK names the parts: the body MODELS\<truckModelBaseName>.BIN, the tires
   MODELS\<tireModelBaseName>16L.BIN and 16R.BIN (the full-detail left and right tires; 10 and 08
-  are the lower levels of detail), and the axle model. The four wheel anchors are the TRK's
+  are the lower levels of detail; an MTM1 TRK names one whole model, MODELS\<tireModelName>, for every
+  corner), and the axle model. The four wheel anchors are the TRK's
   `static_bpos` values in body feet (FR, FL, RR, RL); a tire model is drawn with its origin there.
 */
-import { MTM_WHEEL_KEYS, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
+import { MTM_WHEEL_KEYS, normalizePodPath, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
 import { decodeModel } from "./models.js";
 import { artStem, loadAoMap, loadArtTexture, loadNormalMap } from "./art-texture.js";
 import { buildForeignTruckRender, parseForeignTruckId } from "./foreign-truck-build.js";
+import { createPaletteResolver } from "./palette-resolver.js";
+
+/*
+  Monster Truck Madness 1's trucks share their file names with MTM2's (BIGFOOT.TRK, BIGFOOT.BIN), and a name goes to the
+  first archive mounted, MTM2's. With "Keep MTM1 trucks apart" (Options, Advanced) an MTM1 truck that MTM2 shadows is
+  listed again as `MTM1:<file>`, and built from MTM1's archives first: its own manifest, body, tires, art and palettes.
+  No file is renamed; only the lookup order changes for that truck.
+*/
+/** `MTM1:<file>` for an MTM1 truck kept apart. */
+export const mtm1TruckId = (file) => `MTM1:${podPathTitle(file).toUpperCase()}`;
+/** The file of an `MTM1:<file>` id, or null. */
+export function parseMtm1TruckId(id) {
+  const match = /^MTM1:(.+)$/i.exec(String(id ?? ""));
+  return match ? podPathTitle(match[1]).toUpperCase() : null;
+}
+
+/** The first mounted archive whose `TRUCK\<file>` is an MTM1 manifest, or null. */
+export async function mtm1Home(vfs, file) {
+  const path = normalizePodPath(`TRUCK\\${file}`);
+  for (const mount of vfs.allMounts ?? vfs.mounts ?? []) {
+    const entry = mount.archive.entries.find((e) => e.normalizedName === path);
+    if (!entry) continue;
+    try {
+      const parsed = parseTruckManifest(await mount.readEntry(entry), file);
+      if (parsed.kind === "mtm" && parsed.manifest.dialect === "MTM1") return mount;
+    } catch { /* not a truck */ }
+  }
+  return null;
+}
 
 async function model(vfs, name) {
   if (!name) return null;
@@ -27,6 +57,15 @@ async function model(vfs, name) {
 export async function buildTruckRender(vfs, trkName, paletteResolver) {
   // A CPR car or a 4x4 Evolution truck (`<GAME>:<file>`) is built from its own game's files.
   if (parseForeignTruckId(trkName)) return buildForeignTruckRender(vfs, trkName);
+  const mtm1 = parseMtm1TruckId(trkName);
+  if (mtm1) {
+    // The archive that holds the MTM1 manifest first, then MTM1's other archives, then the rest.
+    const home = await mtm1Home(vfs, mtm1);
+    let view = vfs.preferGame?.("MTM1") ?? vfs;
+    if (home) view = view.preferMount?.(home.name) ?? view;
+    const built = await buildTruckRender(view, mtm1, createPaletteResolver(view, "MTM1", null));
+    return built ? { ...built, file: mtm1TruckId(mtm1), name: `${built.name} (MTM1)` } : null;
+  }
   const title = podPathTitle(trkName).toUpperCase();
   const bytes = await vfs.read(`TRUCK\\${title.endsWith(".TRK") ? title : `${title}.TRK`}`);
   if (!bytes) return null;
@@ -42,6 +81,11 @@ export async function buildTruckRender(vfs, trkName, paletteResolver) {
     axle: await model(vfs, manifest.axleModelName),
     driveshaft: await model(vfs, "DRVSHAFT"),
   };
+  // Monster Truck Madness 1's TRK names the whole tire model (`tireModelName wheel13.bin`), one for every corner, where
+  // MTM2's names a base that takes the level of detail and the side. Its wheels are centred and even, so one serves both.
+  if (!parts.tireLeft && !parts.tireRight && !parts.tireFR && tireBase) {
+    parts.tireLeft = parts.tireRight = await model(vfs, tireBase);
+  }
   // The suspension parts drawn between the axles and the body (game/suspension.js).
   const suspension = manifest.axlebarOffset && manifest.driveshaftPos ? {
     axlebar: manifest.axlebarOffset, driveshaft: manifest.driveshaftPos,

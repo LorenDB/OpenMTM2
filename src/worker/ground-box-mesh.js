@@ -16,6 +16,7 @@
     4 = top, 5 = bottom.
 */
 import { decodeGroundBoxes } from "../vendor/openphotex/index.js";
+import { tileCropTexels } from "./terrain-mesh.js";
 
 const CELL_FT = 32;
 const STEP_FT = 2;
@@ -101,8 +102,9 @@ export function buildGroundBoxMesh({ ra0, ra1, cl0 }, atlas, lte = null, heights
       indices.set([v, v + 2, v + 1, v + 2, v + 3, v + 1], i);
 
       const slot = box.faceTexture[FACE_TO_CL0[face]];
-      const rect = atlas.rects[Math.max(0, Math.min(slot, atlas.rects.length - 1))];
-      const inset = Math.min(2, Math.max(0, (Math.min(rect[2], rect[3]) - 1) / 2));
+      const at = Math.max(0, Math.min(slot, atlas.rects.length - 1));
+      const rect = atlas.rects[at];
+      const inset = tileCropTexels(atlas, at);
       const u0 = (rect[0] + inset) / atlas.width, u1 = (rect[0] + rect[2] - inset) / atlas.width;
       const t0 = (rect[1] + inset) / atlas.height, t1 = (rect[1] + rect[3] - inset) / atlas.height;
       const cu = [u0, u1, u1, u0], cv = [t1, t1, t0, t0];

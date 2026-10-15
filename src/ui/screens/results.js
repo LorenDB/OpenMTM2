@@ -8,7 +8,6 @@ import { formatRaceTime, ordinal } from "../../game/race-setup.js";
 import { currentDriver, getHall, getProfiles, saveHall, saveProfiles } from "../../app/profile-store.js";
 import { addEntry } from "../../game/hall-of-fame.js";
 import { recordRace } from "../../game/profile.js";
-import { goRace } from "../../app/flow.js";
 import { raceFromBoard } from "../../app/vr-lobby.js";
 import { createMenu } from "../../game/vr/menu.js";
 import { racePoints } from "../../game/race-points.js";
@@ -25,6 +24,14 @@ export function winnerCells(row, { summit = false, laps = 1, difficulty = 1, poi
     summit ? formatRaceTime(laps * 60) : row.rerun ? "Rerun" : row.dq ? "DQ" : (row.finished ? formatRaceTime(row.raceTime) : `${row.laps}/${laps}`),
     row.best ? formatRaceTime(row.best) : "",
   ];
+}
+
+/**
+ * Whether the Winner's Circle plays the crowd (0x519212): only when the player's own truck is the one placed first, as
+ * the art lights the first frame (RESWIN1) for, and finished the race.
+ */
+export function crowdCheers(me, summit = false) {
+  return !!me && me.place === 1 && !me.dq && !me.rerun && (summit || !!me.finished);
 }
 
 /**
@@ -94,11 +101,13 @@ export default async function mount(container, context, { track, laps, difficult
   }));
   const ui = await frame(container, context, {
     title: "Winner's Circle", backdrop: "RESULTS", bar: tournament && context.tournament ? "tournament" : "results",
-    labels: [["First", [24, 196, 140, 18]], ["Second", [476, 291, 140, 18]]],
-    // Without the art's frames: each place is a preview and its two columns of data side by side, first above, second below.
+    labels: [["First", [24, 62, 140, 16]], ["Second", [328, 62, 140, 16]]],
+    // Without the art's frames: first on the left and second on the right, each a label over its preview with the
+    // names and the figures beside it, and the whole list under both.
     modernRegions: {
-      firstPreview: [24, 86, 140, 106], firstName: [176, 90, 230, 80], firstStats: [412, 90, 190, 80],
-      secondPreview: [476, 182, 140, 106], secondName: [176, 200, 160, 80], secondStats: [340, 200, 132, 80],
+      firstPreview: [24, 80, 140, 106], firstName: [172, 80, 144, 54], firstStats: [172, 134, 144, 54],
+      secondPreview: [328, 80, 140, 106], secondName: [476, 80, 144, 54], secondStats: [476, 134, 144, 54],
+      table: [24, 200, 592, 198],
     },
     regions: {
       lit: [7, 78, 631, 187],
@@ -107,6 +116,8 @@ export default async function mount(container, context, { track, laps, difficult
       table: [32, 287, 572, 95],
     },
   });
+  // The crowd cheers while the player's win is shown (0x519212): CROWD.WAV looping on its KLP, until the screen closes.
+  const crowd = crowdCheers(me, summit) && !context.settings.sound?.muted ? context.menuAudio?.play("CROWD", { loop: true, gain: 1 }) : null;
   const slots = [];
   const info = (row) => {
     if (!row) return [null, null];
@@ -143,11 +154,9 @@ export default async function mount(container, context, { track, laps, difficult
         });
         return el("tr", { class: r.player ? "player" : null }, placeCell, ...cells.slice(1).map((cell) => el("td", {}, cell)));
       }))));
-  if (!ui.art) ui.regions.table.append(el("div", { class: "screen-actions" },
-    el("button", { "data-menu-sound": "STARTOFF", onclick: toStart }, "Main menu"),
-    el("button", { class: "primary", "data-menu-sound": "GOOFF", onclick: () => goRace(context) }, "Race again")));
   return {
     unmount() {
+      crowd?.then((voice) => voice?.stop());
       slots.forEach((slot) => slot.dispose());
       context.xr?.setBoard(null);
       ui.unmount?.();

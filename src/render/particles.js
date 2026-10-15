@@ -298,12 +298,12 @@ export function createParticles({ scene, ground, random = Math.random, over = nu
      * ground's), `scale` its size against the kind's and `thick` how much it hides against the
      * kind's.
      */
-    puff(kind, x, y, z, vx = 0, vy = 0, vz = 0, { tone: colour = kind.tone, scale = 1, thick = 1 } = {}) {
+    puff(kind, x, y, z, vx = 0, vy = 0, vz = 0, { tone: colour = kind.tone, scale = 1, thick = 1, life = 1 } = {}) {
       if (puffs.length >= PUFF_POOL) return;
       const p = sparePuffs.pop() ?? {};
       p.x = x; p.y = y; p.z = z; p.vx = vx; p.vy = vy; p.vz = vz; p.x0 = x; p.y0 = y; p.z0 = z; p.gx = null;
       p.size = between(kind.sizeFt, random()) * scale; p.grow = kind.growFt * scale * (0.75 + 0.5 * random());
-      p.life = between(kind.lifeS, random()); p.age = 0; p.squash = kind.squash ?? 1;
+      p.life = between(kind.lifeS, random()) * life; p.age = 0; p.squash = kind.squash ?? 1;
       p.opacity = kind.opacity * thick; p.rise = kind.riseFtPerS; p.drag = kind.drag;
       p.r = colour[0]; p.g = colour[1]; p.b = colour[2];
       puffs.push(p);

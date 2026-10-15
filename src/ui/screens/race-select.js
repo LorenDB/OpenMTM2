@@ -192,7 +192,7 @@ export default async function mount(container, context) {
 
   opponentsButton.addEventListener("click", async () => {
     // A drag strip has two lanes, the other tracks a grid of eight.
-    const picked = await chooseOpponents(trucks, driver.lastTruck, opponentsNow(), onDragStrip() ? 2 : 8, spectator);
+    const picked = await chooseOpponents(trucks, driver.lastTruck, opponentsNow(), onDragStrip() ? 2 : 8, spectator, settings);
     if (onDragStrip()) dragOpponents = picked.files; else selectedOpponents = picked.files;
     spectator = picked.spectator;
     remember();
@@ -284,9 +284,10 @@ async function chooseField() {
 /**
  * The Computer Opponents dialog. `full` is the grid (eight; a drag strip's two lanes): the player drives against up to
  * `full - 1` trucks, or with Spectator mode ticked watches up to `full` of them, their own truck among them if picked.
- * Filling the grid ticks Spectator mode by itself. Returns `{ files, spectator }`.
+ * Filling the grid ticks Spectator mode by itself. The default number of opponents (Options, Game) is set here too, and
+ * Fill tops the list up to it with trucks at random. Returns `{ files, spectator }`.
  */
-async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching = false) {
+async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching = false, settings = {}) {
   return new Promise((resolve) => {
     let selected = [...initial], spectator = !!watching;
     const before = { selected: [...initial], spectator };
@@ -295,6 +296,7 @@ async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching 
     const limit = () => (spectator ? full : full - 1);
     const availableList = el("select", { multiple: true, size: 10, "aria-label": "Available trucks" });
     const selectedList = el("select", { multiple: true, size: 10, "aria-label": "Selected opponents" });
+    const availableHead = el("span", {}), selectedHead = el("span", {});
     const draw = () => {
       const picked = new Set(selected);
       spectatorBox.checked = spectator;
@@ -307,6 +309,8 @@ async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching 
         const item = trucks.find((truck) => truck.file === file);
         return el("option", { value: file }, item?.name ?? file);
       }));
+      availableHead.textContent = `Available trucks: ${availableList.options.length}`;
+      selectedHead.textContent = `Selected opponents: ${selected.length}`;
     };
     const add = () => {
       for (const option of availableList.selectedOptions) {
@@ -321,13 +325,31 @@ async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching 
       selected = selected.filter((file) => !removed.has(file));
       draw();
     };
+    // The default number of computer opponents, as on the Options' Game page.
+    const defaultCount = el("select", { "aria-label": "Default computer opponents", onchange: () => {
+      settings.defaultOpponents = Number(defaultCount.value);
+      saveSettings(settings);
+    } }, ...[0, 1, 2, 3, 4, 5, 6, 7].map((n) => el("option", { value: n, selected: n === (settings.defaultOpponents ?? 3) }, String(n))));
+    // Fill: random trucks added, the ones picked kept, until the list holds the default number (as many as the grid allows).
+    const fill = () => {
+      const want = Math.min(limit(), Number(defaultCount.value));
+      const pool = trucks.filter((item) => (spectator || item.file !== playerTruck) && !selected.includes(item.file)).map((item) => item.file);
+      while (selected.length < want && pool.length) selected.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+      draw();
+    };
     const dialog = el("dialog", { class: "opponents-modal", "aria-label": "Computer Opponents" },
       el("h1", {}, "Computer Opponents"),
       el("div", { class: "opponent-lists" },
-        el("label", {}, "Available trucks", availableList),
-        el("div", { class: "opponent-moves" }, el("button", { onclick: add }, "Add >"), el("button", { onclick: remove }, "< Remove"),
-          el("button", { onclick: () => { selected = []; draw(); } }, "Remove all")),
-        el("label", {}, "Selected opponents", selectedList)),
+        el("label", {}, availableHead, availableList),
+        el("div", { class: "opponent-moves" },
+          el("div", { class: "opponent-moves-group" }, el("button", { onclick: add }, "Add >"), el("button", { onclick: remove }, "< Remove"),
+            el("button", { onclick: () => { selected = []; draw(); } }, "Remove all")),
+          el("button", {
+            class: "opponent-fill", onclick: fill,
+            title: "Add trucks at random, keeping the ones already picked, until the list holds the default number of computer opponents",
+          }, "Fill")),
+        el("label", {}, selectedHead, selectedList)),
+      el("label", { class: "form-row" }, "Default computer opponents ", defaultCount),
       el("label", { class: "form-row opponent-spectator" }, spectatorBox, " Spectator mode"),
       note,
       el("div", { class: "screen-actions" },

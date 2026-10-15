@@ -2,8 +2,8 @@
   What the trucks sound like. The engine follows the game's per-frame routine at 0x41e030: three
   looping samples play at once, `startidl` (idle), `m1-2-m2` (the mid revs) and `accel3b` (under
   throttle), and each frame the engine speed and throttle set how loud and how fast each plays
-  (MONSTER_EXE_ANALYSIS.md 12). The skid, crash and ambience choices are the port's reading of
-  the game's sample names and routines (0x41d2b0, 0x41d6d0, 0x41db00). Pure, so it runs under Node.
+  (MONSTER_EXE_ANALYSIS.md 12). The skids follow 0x41bbd0, 0x47c480, 0x477520, 0x41d2b0 and 0x41db00, the water and
+  the bridges 0x41bbd0 and 0x41ec90. Pure, so it runs under Node.
 */
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -46,23 +46,133 @@ export function surfaceFamily(type) {
   return "cement";
 }
 
-/**
- * The sample for a tire that is losing grip: wheelspin, or a skid or hard corner. `pick(n)` is a
- * random 1..n. Names are the stock `SOUND\*.WAV`.
- */
-export function skidSample({ type, spinning, speed, pick = () => 1 }) {
-  const family = surfaceFamily(type);
-  if (spinning) {
-    return { cement: `SPINCEM${pick(3)}`, dirt: `SPINDIR${pick(3)}`, ice: "SPINICE", gravel: `SPINDIR${pick(3)}`, rock: `SPINROC${pick(3)}` }[family];
-  }
-  if (speed > 45 && family === "cement") return "CORNCEM1";
-  if (speed > 45 && family === "dirt") return "CORNDIR1";
-  if (speed > 45 && family === "ice") return "CORNICE1";
-  return {
-    cement: "SKID-C2", dirt: `SKID-D${pick(2)}`, gravel: `SKID-G${pick(3)}`,
-    ice: type === 9 ? `SNWSKID${4 + pick(3)}` : "SPINICE", rock: `SPINROC${pick(3)}`,
-  }[family];
+/*
+  Skids (MONSTER_EXE_ANALYSIS.md 12, "Skids"). Only the rear tires sound, each with a corner loop and a wheelspin loop
+  chosen by the surface under it; braking makes no skid sound in MTM2. Every name is MTM2's: SOUND.POD also holds MTM1's
+  skid set (CORNCEM1, SPINDIR1, SKIDCEM0 ...), which MTM2 never plays.
+*/
+
+/** The skids' surface code of a tire: its value's `type * 100`, -1 in the air; in Snow all but 1400 are snow, deep water ice. */
+export function skidSurface(value, onGround = true, weather = 0) {
+  if (!onGround || !(value >= 0)) return -1;
+  const code = Math.floor(value / 100) * 100;
+  if (weather !== 5 || code === 1400) return code;
+  return code === 1300 ? 800 : 900;
 }
+
+const DIRT = [200, 400, 500, 600], GRAVEL = [700, 1200], ICE = [300, 800, 900, 1300], ROCK = [1000, 1100, 1400];
+
+/**
+ * A variant picker that never gives the one it gave last (the game tries ten times): `pick(n)` is 1..n. One per routine,
+ * as the game keeps one last variant per sample family and routine.
+ */
+export function variantPicker(random = Math.random) {
+  const last = new Map();
+  return (family, n) => {
+    let v = 1 + Math.floor(random() * n);
+    for (let tries = 0; tries < 10 && v === last.get(family) && n > 1; tries++) v = 1 + Math.floor(random() * n);
+    last.set(family, v);
+    return v;
+  };
+}
+
+/** The corner skid's sample and gain for a surface code (0x41db00), or null (in the air, or rocks: `cornroc1` is not in SOUND.POD). */
+export function cornerSample(code, pick = () => 1) {
+  if (code < 0) return null;
+  if (DIRT.includes(code)) return { name: `SKID-D${pick("d", 2)}`, gain: 1.1 };
+  if (GRAVEL.includes(code)) return { name: `SKID-G${pick("g", 3)}`, gain: 1.3 };
+  if (ICE.includes(code)) return { name: `SNWSKID${4 + pick("snw", 3)}`, gain: 0.35 };
+  if (ROCK.includes(code)) return { name: "CORNROC1", gain: 1 };
+  return { name: "SKID-C2", gain: 0.7 };
+}
+
+/** The wheelspin's sample and gain for a surface code (0x41d2b0), or null in the air. */
+export function spinSample(code, pick = () => 1) {
+  if (code < 0) return null;
+  if (DIRT.includes(code)) return { name: `SKID-D${pick("d", 2)}`, gain: 1.1 };
+  if (GRAVEL.includes(code)) return { name: `SKID-G${pick("g", 3)}`, gain: 1.3 };
+  if (ICE.includes(code)) return { name: "SPINICE", gain: 1 };
+  if (ROCK.includes(code)) return { name: `SPINROC${pick("roc", 3)}`, gain: 1 };
+  return { name: "SKID-C2", gain: 0.7 };
+}
+
+/*
+  MTM1's skid sounds ("MTM1 sounds" in Options; MTM1_MONSTER_EXE_ANALYSIS.md 6.7): the same triggers, MTM1's samples,
+  and the brake skid MTM2 left unused. Null where MTM1 plays nothing.
+*/
+const MTM1_FAMILY = (code) => (code === 0 || code === 100 ? "CEM" : [200, 400, 500, 600].includes(code) ? "DIR"
+  : [300, 800, 900].includes(code) ? "ICE" : [700, 1000, 1100, 1200].includes(code) ? "ROC" : null);
+/** MTM1's corner skid (0x43cac0): `corncem1`, `corndir1` (rocks too) or `cornice1`. */
+export function mtm1CornerSample(code) {
+  const family = MTM1_FAMILY(code);
+  return family ? { name: `CORN${family === "ROC" ? "DIR" : family}1`, gain: 1 } : null;
+}
+/** A variant as MTM1 draws it: `(rand << 2) / 0x7fff`, 0 to 3. */
+export const mtm1Variant = (random = Math.random) => Math.min(3, Math.floor(random() * 4));
+/** MTM1's wheelspin (0x43cd60): `spin<family><variant>`, none for variant 0 (MTM1 has no such file). */
+export function mtm1SpinSample(code, variant) {
+  const family = MTM1_FAMILY(code);
+  return family && variant > 0 ? { name: `SPIN${family}${variant}`, gain: 1 } : null;
+}
+/** MTM1's brake skid (0x43d050), once a rear tire: `skidcem` and `skiddir` 0 to 3; MTM1 has no ice or rock ones. */
+export function mtm1SkidSample(code, variant) {
+  const family = MTM1_FAMILY(code);
+  return family === "CEM" || family === "DIR" ? { name: `SKID${family}${variant}`, gain: 1 } : null;
+}
+/** The brake skid starts when the brake goes on from fully off faster than this, ft/s (0x43d580). */
+export const MTM1_SKID_SPEED = 29.34;
+
+/** A skid loop's pitch: the truck's own, plus or minus a tenth at random. */
+export const skidRate = (random = Math.random, scale = 1) => scale + (2 * random() - 1) * 0.1;
+
+/** Corner skids need the truck faster than this, ft/s (0x47c480). */
+export const CORNER_MIN_SPEED = 29.34;
+
+/**
+ * Whether a tire slides (0x47c480): its lateral coefficient past 0.975 in size starts it, below 0.95 ends it, and between
+ * it keeps what it was. A tire in the air, or a truck slower than `CORNER_MIN_SPEED`, does not slide.
+ */
+export function tireSliding(was, { onGround, lateral }, speed) {
+  if (speed <= CORNER_MIN_SPEED || !onGround) return false;
+  const c = Math.abs(lateral ?? 0);
+  if (c > 0.975) return true;
+  if (c < 0.95) return false;
+  return !!was;
+}
+
+/** The surface types whose value carries the dust flag (8 in 0x4de180): Cement, Dirt, Sand. Only these spin audibly. */
+export const DUST_TYPES = new Set([1, 2, 5]);
+
+/**
+ * What the wheelspin does this step (0x477520): "start" (both rear spin loops, if not playing), "stop" (all the skid
+ * loops) or null. Full throttle is 1.0 exactly; `forward` the body's forward speed, ft/s.
+ */
+export function spinAction({ throttle, wasThrottle, forward, tires }) {
+  const full = throttle >= 1, wasFull = wasThrottle >= 1;
+  const v = Math.abs(forward);
+  if (!full) return wasFull ? "stop" : null;
+  if (v <= 1) return wasFull ? "stop" : null;
+  if (v < 58.68) return tires.some((t) => t.onGround && DUST_TYPES.has(Math.floor(t.surface / 100))) ? "start" : null;
+  return v > 102.69 ? "stop" : null;
+}
+
+/** The splash on going into water (0x41bbd0): `splash1` at `0.1 - v_y / 9`, at most 1.7; null when that is not above 0. */
+export function splashGain(vy) {
+  const gain = 0.1 - vy / 9;
+  return gain > 0 ? Math.min(1.7, gain) : null;
+}
+
+/** The loop of a truck in water (`Wtr-abv1`): `0.1 + speed / 10`, at most 1.2. */
+export const wadeGain = (speed) => Math.min(1.2, 0.1 + speed / 10);
+
+/** The bridge loop (0x41ec90): its gain (`speed / 60`, at most 1.4) and pitch (`speed / 90`, 0.3..1); null at 2 ft/s or slower. */
+export function bridgeVoice(speed) {
+  if (!(speed > 2)) return null;
+  return { gain: Math.min(1.4, speed / 60), rate: Math.min(1, Math.max(0.3, speed / 90)) };
+}
+
+/** The surfaces that sound as a bridge (0x41bbd0 calls 0x41ec90 for these two). */
+export const BRIDGE_SURFACES = [1100, 1400];
 
 /** How hard a tire is skidding, 0 (gripping) to 1: the share of its friction limit in use, past 85%. */
 export function skidAmount(tire) {

@@ -24,7 +24,8 @@ browser's private storage.
 OpenMTM2 contains **no game data**. It needs your own retail Monster Truck Madness 2 install
 (version 2.0.41 or 2.00.42), or one with Community Patch 3. `POD.INI` and the archives it lists
 are read, and `MONSTER.EXE` only for its version number (a community patch starts with the modern
-menus).
+menus). It needs at least `STARTUP.POD`, `MUSIC.POD`, `SOUND.POD`, `COCKPIT.POD`, `TRUCK2.POD` and
+`UI.POD`; every other archive is optional.
 
 - **Races:** Circuit, Rally and Summit Rumble against CPU trucks, with laps, checkpoints,
   results, driver profiles and a Hall of Fame. Professional puts every truck on the track's second
@@ -35,8 +36,9 @@ menus).
 - **Tracks of other Terminal Reality games:** CART Precision Racing (the road layer, its walls and
   catch fences), 4x4 Evolution 1 and 2 (their terrain, models, trees and every checkpoint) and
   Monster Truck Madness 1 (its own sky and its stadium drags), raced with MTM2's trucks and
-  physics, eight trucks at most. Add a game's folder, or single POD files, in Options, Data: the
-  POD manager lists every mounted archive and the game it was read as.
+  physics, eight trucks at most. Add another game's `POD.INI`, or single POD files, in Options,
+  Data: the POD manager lists every mounted archive, the game it was read as and its tracks and
+  trucks.
 - **Free roam:** any track with no race on it, the player alone; 4x4 Evolution's mission tracks,
   which have no checkpoints, are driven this way.
 - **Community Patch 3:** its MTM1 tracks, `.SI2` tracks, HD art for models, trucks, sky and ground
@@ -82,7 +84,7 @@ The milestones and what is still to do are in [docs/PLAN.md](docs/PLAN.md).
    one holding `POD.INI`). The archives are copied once into the browser's private storage.
 3. Check in, pick a track and truck, and race.
 
-The install stays in the browser until you use **Use a different install** or **Clear browser game
+The install stays in the browser until you use **Change base install** or **Clear browser game
 data** in the Options.
 
 ## Controls

@@ -1,8 +1,9 @@
 /* Shared contents of the Options screen and the Options modal opened from every menu screen. */
+import { DUST_LEVEL_NAMES, SPARK_LEVEL_NAMES, dustLevel, sparkLevel } from "../game/tire-effects.js";
 import { FLY_SCHEMES, FLY_SCHEME_NAMES } from "../game/fly-camera.js";
 import { buildKind, defaultSkin } from "../install/exe-version.js";
 import { el } from "./dom.js";
-import { PHYSICS_MODELS, clearSettings, optionsFile, physicsModel, readOptionsFile, saveSettings } from "../app/settings.js";
+import { PHYSICS_MODELS, applyMtm1Classic, applyMtm2Classic, applyOpenMtm2, clearSettings, optionsFile, physicsModel, readOptionsFile, saveSettings } from "../app/settings.js";
 import { offlineStatusText } from "../app/offline.js";
 import { loadStrings } from "../app/strings-store.js";
 import { locName } from "../game/strings.js";
@@ -88,21 +89,26 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
 
   // Every option is one row of the same height: its name on the left, its control on the right.
   const row = (label, control, title = null) => el("label", { class: "opt-row", title }, el("span", { class: "opt-label" }, label), el("span", { class: "opt-control" }, control));
-  const toggle = (label, key, title = null) => row(label, el("input", {
-    type: "checkbox", class: "opt-switch", checked: !!settings[key], "aria-label": label,
-    onchange: (event) => { settings[key] = event.target.checked; save(); },
-  }), title);
+  // Which setting each switch shows, for the controls to follow a preset (`showDraft`).
+  const toggleKeys = new Map();
+  const toggle = (label, key, title = null) => {
+    toggleKeys.set(label, key);
+    return row(label, el("input", {
+      type: "checkbox", class: "opt-switch", checked: !!settings[key], "aria-label": label,
+      onchange: (event) => { settings[key] = event.target.checked; save(); },
+    }), title);
+  };
   const choose = (label, key, names, values = names.map((_, index) => index)) => row(label,
     el("select", { "aria-label": label, onchange: (event) => {
       settings[key] = typeof values[0] === "number" ? Number(event.target.value) : event.target.value;
       save();
     } }, ...names.map((name, index) => el("option", { value: values[index], selected: values[index] === settings[key] }, name))));
-  const slider = (label, { min, max, step, value, format, set }) => {
+  const slider = (label, { min, max, step, value, format, set, title = null }) => {
     const out = el("output", { class: "opt-value" }, format(value));
     return row(label, el("span", { class: "opt-slider" }, el("input", {
       type: "range", min, max, step, value, "aria-label": label,
       oninput: (event) => { const v = Number(event.target.value); out.textContent = format(v); set(v); },
-    }), out));
+    }), out), title);
   };
   const percent = (v) => `${Math.round(v * 100)}%`;
   const sound = (label, key) => slider(label, {
@@ -160,10 +166,13 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
   const showScenery = () => {
     const choice = graphicsChoice(settings.graphics);
     scenerySwitches.replaceChildren(...(choice === "custom"
-      ? VISUAL_OPTIONS.map((option) => toggle(option.label, option.key, option.hint))
+      ? VISUAL_OPTIONS.map((option) => (option.amountKey ? slider(option.label, {
+        min: 0, max: option.levels.length - 1, step: 1, value: option.level(settings), format: (v) => option.levels[v], title: option.hint,
+        set: (v) => { settings[option.amountKey] = v; settings[option.key] = v > 0; save(); },
+      }) : toggle(option.label, option.key, option.hint)))
       : []));
     const machine = choice === "auto" ? ` This machine: ${graphicsLabel(detected)}.` : "";
-    sceneryNote.textContent = `${GRAPHICS_NOTES[choice]}${machine} Takes effect from the next race.`;
+    sceneryNote.textContent = [GRAPHICS_NOTES[choice], machine.trim(), "Takes effect from the next race."].filter(Boolean).join(" ");
   };
   showScenery();
 
@@ -176,7 +185,14 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ...[["auto", `Automatic (${defaultSkin(context.exeVersion) === "classic" ? "classic" : "modern"})`], ["classic", "Classic (game art)"], ["modern", "Modern"]]
       .map(([value, text]) => el("option", { value, selected: (settings.skin ?? "auto") === value }, text))),
     `MONSTER.EXE ${context.exeVersion ?? "(not found)"}, ${kind}.`);
-  const button = (label, onclick, cls = null) => el("button", { class: cls, "data-menu-sound": "STARTOFF", onclick }, label);
+  const button = (label, onclick, cls = null, title = null) => el("button", { class: cls, "data-menu-sound": "STARTOFF", onclick, title }, label);
+  /** A preset button (Options, Advanced): `apply` writes its settings over the draft, and every control shows them. */
+  const preset = (label, apply, title) => button(label, () => {
+    apply(settings);
+    applyGraphics(settings, hardware);
+    showDraft();
+    save();
+  }, null, title);
 
   /**
    * A small dialog over the options: `body` its controls, `ok()` what OK does with them. Escape or Cancel leaves the
@@ -221,16 +237,16 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       if (ids.length) { settings.shortViews = ids; save(); }
     });
   };
-  /** The stored options as a JSON file, with the format's version, for keeping or for another browser. */
+  /** The stored settings as a JSON file, with the format's version, for keeping or for another browser. */
   const exportOptions = () => {
     const data = optionsFile(JSON.parse(stored));
-    const link = el("a", { href: URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: "application/json" })), download: "openmtm2-options.json" });
+    const link = el("a", { href: URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: "application/json" })), download: "openmtm2-settings.json" });
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   };
   /**
-   * Options from an exported file, any version up to this one: they replace the stored options at once, and the dialog
-   * closes, since its controls show the options it was opened with.
+   * Settings from an exported file, any version up to this one: they replace the stored settings at once, and the dialog
+   * closes, since its controls show the settings it was opened with.
    */
   const importOptions = () => {
     const input = el("input", { type: "file", accept: ".json,application/json" });
@@ -239,11 +255,11 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       if (!file) return;
       const read = readOptionsFile(await file.text());
       if (read.error) { window.alert(read.error); return; }
-      if (!window.confirm(`Replace the options with those in ${file.name}?${unsaved() ? "\n\nThe changes not saved here are lost." : ""}`)) return;
+      if (!window.confirm(`Replace the settings with those in ${file.name}?${unsaved() ? "\n\nThe changes not saved here are lost." : ""}`)) return;
       use(read.settings);
       saveSettings(live);
       stored = JSON.stringify(live);
-      window.alert("Options imported.");
+      window.alert("Settings imported.");
       closeNow();
     });
     input.click();
@@ -300,7 +316,20 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       toggle("Backdrops", "backdrops"),
       menus,
       el("h3", {}, "Effects"),
-      toggle("Dust", "dustEffects"), toggle("Tire tracks", "tireTracks"), toggle("Sparks", "sparks"), toggle("Water splashes", "waterSplash"),
+      toggle("Tire tracks", "tireTracks"), toggle("Water splashes", "waterSplash"),
+      // MTM2's own two (MONSTER.INI reflectionFlag and truckReflectionFlag), for the game's water and every truck.
+      toggle("Water reflections", "waterReflections", "MTM2's: the world mirrored in the game's water (\"Reflective water\" has its own). From the next race"),
+      toggle("Truck reflections", "truckReflections", "MTM2's: the clouds mirrored on the trucks' bodies, or the sky in Rain, Dusk and Night; none in fog or Pitch Black. From the next race"),
+      // One amount for both pictures (game/tire-effects.js `CLASSIC_DUST`, `RICH_DUST`): Few is the game's own puffs.
+      slider("Dust", {
+        min: 0, max: 3, step: 1, value: dustLevel(settings), format: (v) => DUST_LEVEL_NAMES[v],
+        set: (v) => { settings.dustAmount = v; settings.dustEffects = v > 0; save(); },
+      }),
+      // One amount for both pictures (game/tire-effects.js `sparkRules`).
+      slider("Sparks", {
+        min: 0, max: 3, step: 1, value: sparkLevel(settings), format: (v) => SPARK_LEVEL_NAMES[v],
+        set: (v) => { settings.sparkAmount = v; settings.sparks = v > 0; save(); },
+      }),
       // The port's own scenery (docs/VISUALS.md): one preset, and on Custom each part on its own switch.
       el("h3", {}, "Enhanced graphics"),
       row("Preset", el("select", {
@@ -330,15 +359,28 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     }))]],
     // What a newcomer can leave alone: other games' tracks, the patch's materials, the computer trucks and the cameras.
     ["Advanced", [
+      // Each preset sets the draft; Save keeps it.
+      el("div", { class: "opt-actions opt-presets" },
+        preset("MTM1 Classic preset", applyMtm1Classic, "Monster Truck Madness 1 as it was: MTM1 sky, trucks apart, original backdrops, MTM1 particles and sounds, the 1996 physics, tiles edge to edge, and the enhanced graphics off. Save to keep it."),
+        preset("MTM2 Classic preset", applyMtm2Classic, "Monster Truck Madness 2 as it was: no MTM1 option, original backdrops, MTM2 classic dust (the game's few puffs), no sparks or water splashes, no CP3 HD weather or reflections, MTM2's water and truck reflections, backdrops, and the enhanced graphics off. Save to keep it."),
+        preset("OpenMTM2 preset", applyOpenMtm2, "The port's own picture: no MTM1 or MTM2 option, tire tracks, water splashes, many dust puffs and normal sparks, every enhanced part but the glossy paint, and CP3 terrain detail, HD weather and reflections. Save to keep it.")),
       el("h3", {}, "Display"),
-      toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1 tracks: the track's own flat sky (EARTHSKY) in place of MTM2's"),
-      toggle("MTM1 terrain overlap", "mtm1TerrainOverlap", "Monster Truck Madness 1 tracks: overlap the ground tiles by two pixels, as MTM2 does"),
+      toggle("MTM1 particles", "mtm1Particles", "Monster Truck Madness 1's own particles and tracks: single points of the ground's colour thrown by the tires, which mark the ground where they land, and tracks darkened into the ground, in place of the dust, the spray and the tire tracks. From the next race"),
+      toggle("Original backdrops", "originalBackdrops", "The game's own backdrops in place of HD ones (Community Patch 3's backdropsHD.pod), wherever an archive still has the original. From the next race"),
+      toggle("MTM1 sounds", "mtm1Sounds", "Monster Truck Madness 1's skids from MTM2's SOUND.POD: its corner, wheelspin and brake skids. MTM1's engine is not in MTM2's archives; the engine stays MTM2's"),
+      toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1's flat sky on every track: an MTM1 track's own, and EARTHSKY on the others, in the weathers without a sky of their own. Needs MTM1's sky files mounted (EARTHSKY.ACT and ALIENSKY.RAW, in MTM1's GAME.POD). From the next race"),
+      row("MTM1 no terrain overlap", el("input", { type: "checkbox", class: "opt-switch", checked: !settings.mtm1TerrainOverlap, "aria-label": "MTM1 no terrain overlap", onchange: (event) => { settings.mtm1TerrainOverlap = !event.target.checked; save(); } }),
+        "Monster Truck Madness 1 tracks: the ground tiles meet edge to edge, as MTM1 draws them. Off, they overlap by two pixels, as MTM2 does"),
+      toggle("MTM2 classic dust", "greyDust", "Wheels' dust and collisions' smoke in the game's own grey puff colour, as MTM2 draws them, in place of the port's earth-coloured dust and dark smoke. From the next race"),
       toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
+      row("CP3 HD weather", el("input", { type: "checkbox", class: "opt-switch", checked: settings.hdWeather !== false, "aria-label": "CP3 HD weather", onchange: (event) => { settings.hdWeather = event.target.checked; save(); } }),
+        "Community Patch 3's HD skies for Rain, Dusk and Night and the older levels' clouds: the pictures in the game folder's WeatherArt folder, or the port's own copy of the community's set. Off: the game's own sky art"),
       toggle("CP3 Reflections", "reflections", "Community Patch 3 materials: the sky reflected in glass and paint (Enhanced look)"),
       el("h3", {}, "Game"),
       row("Opponent frame rate", el("select", { "aria-label": "Opponent frame rate", onchange: (event) => { settings.opponentFps = Number(event.target.value); save(); } },
         ...[15, 20, 24, 30, 45, 60].map((n) => el("option", { value: n, selected: n === (settings.opponentFps ?? 30) }, `${n} FPS`))),
       "The frame rate the computer trucks drive as if the game ran at: they steer by the frame, so it changes how they handle. 30 is the standard"),
+      toggle("Keep MTM1 trucks apart", "mtm1TrucksApart", "Monster Truck Madness 1 trucks named like MTM2's (BIGFOOT.TRK and the rest) are listed too, as \"Bigfoot (MTM1)\", and drawn from MTM1's own files. Off, a name goes to the archive mounted first, MTM2's, as in the game"),
       toggle("Sonic trucks", "sonicTrucks", "Professional only: the computer trucks drive as on a Sonic track, on every track"),
       row("Computer drivers", button("Names...", () => editDriverNames()), "The names of the computer drivers"),
       toggle("Full Autopilot", "fullAutopilot", "The truck drives itself"),
@@ -356,86 +398,108 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ]],
     ["Data", [
       el("p", { class: "muted" },
-        "OpenMTM2 reads Monster Truck Madness 2, CART Precision Racing and 4x4 Evolution 1 and 2 tracks, and their vehicles in the future. "
-        + "Add game folder reads the folder's POD.INI and mounts every archive it lists. "
+        "OpenMTM2 reads the tracks and vehicles of Monster Truck Madness 1 and 2, CART Precision Racing and 4x4 Evolution 1 and 2. "
+        + "Add POD.INI reads another game folder's POD.INI and mounts every archive it lists. Reload POD.INI mounts again every archive "
+        + "the base install's POD.INI lists, in its order. Change base install picks the Monster Truck Madness 2 folder again, or another one. "
         + "The POD manager shows what is mounted, and adds single POD files from any game without the game being installed."),
+      el("h3", {}, "POD.INI"),
       el("div", { class: "opt-actions opt-data" },
-      button("Add game folder", async (event) => {
-        const target = event.currentTarget;
-        const [{ pickInstallFolder }, { inspectGameFolder }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
-        const source = await pickInstallFolder();
-        if (!source) return;
-        const found = await inspectGameFolder(source);
-        if (!found.ok) { window.alert(found.message); return; }
-        const label = target.textContent;
-        target.disabled = true;
-        const off = context.assets.on("install-progress", ({ copied, total, name }) => {
-          target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
-        });
-        try {
-          const done = await context.assets.call("addGameFolder", { label: found.label, files: found.files });
-          const lines = [`${done.added.length} archives added from ${found.label}${done.game ? ` (${done.game})` : ""}.`];
-          if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
-          window.alert(lines.join("\n"));
-          window.location.reload();
-        } catch (error) {
-          window.alert(`Could not add the folder: ${error.message}`);
-          target.textContent = label;
-          target.disabled = false;
-        } finally {
-          off();
-        }
-      }),
-      button("POD manager", async () => { (await import("./pod-manager.js")).openPodManager(context); }),
-      button("Export options", () => exportOptions()),
-      button("Import options", () => importOptions()),
-      button("Reload POD.INI", async (event) => {
-        // The browser keeps no handle on the folder, so it is picked again; only new or changed archives are copied.
-        const target = event.currentTarget;
-        const [{ pickInstallFolder }, { inspectSource }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
-        const source = await pickInstallFolder();
-        if (!source) return;
-        const found = await inspectSource(source);
-        if (!found.files?.length) { window.alert(found.message); return; }
-        const label = target.textContent;
-        target.disabled = true;
-        const off = context.assets.on("install-progress", ({ copied, total, name }) => {
-          target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
-        });
-        try {
-          const done = await context.assets.call("reloadInstall", { files: found.files, podIni: found.podIni, exeVersion: found.exeVersion ?? null });
-          const lines = [`${done.archives.length} archives mounted, in POD.INI order.`];
-          if (done.added.length) lines.push(`Copied: ${done.added.join(", ")}.`);
-          if (done.removed.length) lines.push(`Removed: ${done.removed.join(", ")}.`);
-          if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
-          window.alert(lines.join("\n"));
-          window.location.reload();
-        } catch (error) {
-          window.alert(`Could not reload POD.INI: ${error.message}`);
-          target.textContent = label;
-          target.disabled = false;
-        } finally {
-          off();
-        }
-      }),
-      button("Use a different install", async () => { if (!close()) return; await context.assets.call("uninstall"); await context.router.go("install", {}, { replace: true }); }),
-      el("button", { class: "danger", onclick: async (event) => {
-        if (!window.confirm(
-          "Clear all OpenMTM2 data from this browser? This permanently removes the copied install, "
-          + "drivers, Hall of Fame entries and settings.",
-        )) return;
-        event.currentTarget.disabled = true;
-        try {
-          // The copy of the app goes too; a page that is opened again with a server makes a new one.
-          await context.offline?.remove();
-          await context.assets.call("clearGameData");
-          clearSettings();
-          window.location.reload();
-        } catch (error) {
-          event.currentTarget.disabled = false;
-          window.alert(`Could not clear the browser data: ${error.message}`);
-        }
-      } }, "Clear browser game data")),
+        button("Add POD.INI", async (event) => {
+          const target = event.currentTarget;
+          const [{ pickInstallFolder }, { inspectGameFolder }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
+          const source = await pickInstallFolder();
+          if (!source) return;
+          const found = await inspectGameFolder(source);
+          if (!found.ok) { window.alert(found.message); return; }
+          const label = target.textContent;
+          target.disabled = true;
+          const off = context.assets.on("install-progress", ({ copied, total, name }) => {
+            target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
+          });
+          try {
+            const done = await context.assets.call("addGameFolder", { label: found.label, files: found.files });
+            const lines = [`${done.added.length} archives added from ${found.label}${done.game ? ` (${done.game})` : ""}.`];
+            if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
+            window.alert(lines.join("\n"));
+            window.location.reload();
+          } catch (error) {
+            window.alert(`Could not add the folder: ${error.message}`);
+            target.textContent = label;
+            target.disabled = false;
+          } finally {
+            off();
+          }
+        }, null, "Pick another game's folder: its POD.INI is read and every archive it lists is added beside the base install"),
+        button("Reload POD.INI", async (event) => {
+          // The POD.INI picked with the base install, from its copy: no folder is picked.
+          if (!close()) return;
+          const target = event.currentTarget;
+          target.disabled = true;
+          try {
+            const done = await context.assets.call("reloadPodIni");
+            const lines = [`${done.archives} archives of the base install mounted, in POD.INI order.`];
+            if (done.restored.length) lines.push(`Mounted again: ${done.restored.join(", ")}.`);
+            window.alert(lines.join("\n"));
+            window.location.reload();
+          } catch (error) {
+            window.alert(`Could not reload POD.INI: ${error.message}`);
+            target.disabled = false;
+          }
+        }, null, "Mount again every archive the base install's POD.INI lists, those taken out in the POD manager included, in the file's order"),
+        button("Change base install", async (event) => {
+          // The browser keeps no handle on the folder, so it is picked again; only new or changed archives are copied.
+          const target = event.currentTarget;
+          const [{ pickInstallFolder }, { inspectSource }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
+          const source = await pickInstallFolder();
+          if (!source) return;
+          const found = await inspectSource(source);
+          if (!found.files?.length) { window.alert(found.message); return; }
+          const label = target.textContent;
+          target.disabled = true;
+          const off = context.assets.on("install-progress", ({ copied, total, name }) => {
+            target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
+          });
+          try {
+            const done = await context.assets.call("reloadInstall", { files: found.files, podIni: found.podIni, exeVersion: found.exeVersion ?? null, weatherArt: found.weatherArt ?? [] });
+            const lines = [`${done.archives.length} archives mounted, in POD.INI order.`];
+            if (done.added.length) lines.push(`Copied: ${done.added.join(", ")}.`);
+            if (done.removed.length) lines.push(`Removed: ${done.removed.join(", ")}.`);
+            if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
+            window.alert(lines.join("\n"));
+            window.location.reload();
+          } catch (error) {
+            window.alert(`Could not change the base install: ${error.message}`);
+            target.textContent = label;
+            target.disabled = false;
+          } finally {
+            off();
+          }
+        }, null, "Pick the Monster Truck Madness 2 folder again, or another one: its POD.INI is read, and only new or changed archives are copied")),
+      el("h3", {}, "POD mounting"),
+      el("div", { class: "opt-actions opt-data" },
+        button("POD manager", async () => { (await import("./pod-manager.js")).openPodManager(context); })),
+      el("h3", {}, "Settings"),
+      el("div", { class: "opt-actions opt-data" },
+        button("Export settings", () => exportOptions()),
+        button("Import settings", () => importOptions())),
+      el("div", { class: "opt-actions opt-data" },
+        el("button", { class: "danger", onclick: async (event) => {
+          if (!window.confirm(
+            "Clear all OpenMTM2 data from this browser? This permanently removes the copied install, "
+            + "drivers, Hall of Fame entries and settings.",
+          )) return;
+          event.currentTarget.disabled = true;
+          try {
+            // The copy of the app goes too; a page that is opened again with a server makes a new one.
+            await context.offline?.remove();
+            await context.assets.call("clearGameData");
+            clearSettings();
+            window.location.reload();
+          } catch (error) {
+            event.currentTarget.disabled = false;
+            window.alert(`Could not clear the browser data: ${error.message}`);
+          }
+        } }, "Clear browser game data")),
     ]],
   ];
   // One category at a time, chosen from the tabs; the last one shown is remembered for the session.
@@ -455,6 +519,25 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     tabs[headsetIndex].hidden = !yes;
     if (!yes && context.optionsTab === headsetIndex) pick(0);
   });
+  /** Every control shows the draft again, after a preset has changed it. */
+  function showDraft() {
+    const shown = {
+      "Physics": () => physicsModel(settings.physics).id, "Smooth textures": () => settings.look === "enhanced",
+      "Enhanced graphics": () => graphicsChoice(settings.graphics), "MTM1 no terrain overlap": () => !settings.mtm1TerrainOverlap,
+      "CP3 HD weather": () => settings.hdWeather !== false, "Dust": () => dustLevel(settings), "Sparks": () => sparkLevel(settings),
+    };
+    // A slider's figure beside it, in its own words.
+    const named = { "Dust": DUST_LEVEL_NAMES, "Sparks": SPARK_LEVEL_NAMES };
+    for (const control of container.querySelectorAll("input[aria-label], select[aria-label]")) {
+      const label = control.getAttribute("aria-label");
+      const value = toggleKeys.has(label) ? !!settings[toggleKeys.get(label)] : shown[label]?.();
+      if (value === undefined) continue;
+      if (control.type === "checkbox") control.checked = !!value; else control.value = String(value);
+      if (control.type === "range" && named[label] && control.nextElementSibling) control.nextElementSibling.textContent = named[label][value];
+    }
+    showScenery();
+  }
+
   container.append(
     el("div", { class: "opt-tabs" }, ...tabs),
     el("div", { class: "opt-pages" }, ...pages),

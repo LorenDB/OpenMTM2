@@ -58,10 +58,14 @@ export function buildTerrainAtlas(decoded, forcedSide = 0, { smooth = false } = 
   const width = cols * tile, height = rows * tile;
   const rgba = new Uint8Array(width * height * 4);
   const rects = [];
+  // Atlas texels to one of the tile's legacy pixels: a slot is `side` wide whatever its tile, so a 64 px tile in an
+  // atlas of 256 px slots spans four texels a pixel. An HD tile counts the legacy tile it replaces (`legacyWidth`).
+  const texelsPerPixel = [];
   for (let s = 0; s < slots; s++) {
     const image = decoded[s] ?? null;
     const ox = (s % cols) * tile, oy = Math.floor(s / cols) * tile;
     rects.push([ox + ATLAS_PADDING, oy + ATLAS_PADDING, side, side]);
+    texelsPerPixel.push(image ? side / (image.legacyWidth || image.width || side) : 1);
     for (let y = 0; y < tile; y++) {
       for (let x = 0; x < tile; x++) {
         const sx = Math.max(0, Math.min(side - 1, x - ATLAS_PADDING));
@@ -83,7 +87,7 @@ export function buildTerrainAtlas(decoded, forcedSide = 0, { smooth = false } = 
       }
     }
   }
-  return { rgba, width, height, rects, tileSide: side, padding: ATLAS_PADDING };
+  return { rgba, width, height, rects, texelsPerPixel, tileSide: side, padding: ATLAS_PADDING };
 }
 
 /** An image's colour at texel coordinates (x, y), blended from the four texels about it, clamped at its edges, into `out` at `at`. */
@@ -100,6 +104,16 @@ function sampleBilinear(image, x, y, out, at) {
 }
 
 /**
+ * How many atlas texels a tile in `slot` is cropped by at each edge for an overlap of `tileInset` legacy pixels,
+ * kept under half the tile.
+ */
+export function tileCropTexels(atlas, slot, tileInset = 2) {
+  const [, , rw, rh] = atlas.rects[slot];
+  const scale = atlas.texelsPerPixel?.[slot] ?? 1;
+  return Math.min(tileInset * scale, Math.max(0, (Math.min(rw, rh) - 1) / 2));
+}
+
+/**
  * A cell's texture coordinates from its .CLR word: u, v for its four corners v0..v3, that is
  * (row, col), (row, col + 1), (row + 1, col + 1), (row + 1, col), into `out`. The tile is turned
  * and mirrored as the word says (corner order as JSTrackViewer and JTraxx map it).
@@ -108,10 +122,11 @@ export function cellTileUvs(word, atlas, out, tileInset = 2) {
   const slot = Math.min(word & 0x0fff, atlas.rects.length - 1);
   const mirror = (word >> 12) & 3, rot = (word >> 14) & 3;
   const [rx, ry, rw, rh] = atlas.rects[slot];
-  // MTM2 overlaps neighbouring terrain tiles by cropping two legacy pixels at each edge.
+  // MTM2 overlaps neighbouring terrain tiles by cropping two legacy pixels at each edge: two of the tile's own
+  // pixels, however many atlas texels that is (a track that mixes 64 and 256 px tiles scales the small ones up).
   // The atlas skirt outside this rectangle remains available to linear filtering.
   // (`tileInset`: 4x4 Evolution cuts its tiles from one painted map with no border ring, and crops nothing.)
-  const inset = Math.min(tileInset, Math.max(0, (Math.min(rw, rh) - 1) / 2));
+  const inset = tileCropTexels(atlas, slot, tileInset);
   const u0 = (rx + inset) / atlas.width, u1 = (rx + rw - inset) / atlas.width;
   const t0 = (ry + inset) / atlas.height, t1 = (ry + rh - inset) / atlas.height;
   for (let k = 0; k < 4; k++) {

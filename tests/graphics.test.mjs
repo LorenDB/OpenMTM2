@@ -15,7 +15,8 @@ test("the presets are Auto, Off, Low, High, Max and Custom, and the default is O
   assert.deepEqual(GRAPHICS_PRESETS.map((preset) => preset.id), ["auto", "off", "low", "high", "max", "custom"]);
   for (const preset of GRAPHICS_PRESETS) {
     assert.ok(preset.label);
-    assert.ok(GRAPHICS_NOTES[preset.id]);
+    assert.equal(typeof GRAPHICS_NOTES[preset.id], "string");
+    if (preset.id !== "custom") assert.ok(GRAPHICS_NOTES[preset.id]);
   }
   assert.equal(graphicsChoice("nope"), "off");
   assert.equal(graphicsChoice("high"), "high");
@@ -153,6 +154,6 @@ test("boot, the race and the replay apply the preset before the track is built, 
   const panel = read("../src/ui/options-panel.js");
   assert.match(panel, /GRAPHICS_PRESETS\.map\(\(preset\) => el\("option"/);
   assert.match(panel, /choice === "custom"/);
-  assert.match(panel, /VISUAL_OPTIONS\.map\(\(option\) => toggle\(option\.label, option\.key, option\.hint\)\)/);
+  assert.match(panel, /VISUAL_OPTIONS\.map\(\(option\) => \(option\.amountKey \? slider\([\s\S]*?: toggle\(option\.label, option\.key, option\.hint\)\)\)/);
   assert.match(panel, /"Enhanced graphics"/);
 });

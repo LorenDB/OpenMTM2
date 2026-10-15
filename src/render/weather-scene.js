@@ -19,7 +19,7 @@ import { setBackdropWeather } from "./track-scene.js";
 import { UNDERWATER_FOG_FT, WEATHER_LOOK } from "../game/weather.js";
 import { UNDERWATER } from "../game/water.js";
 import { BACKDROP_DARK } from "../game/atmosphere.js";
-import { placeHeadlightPools } from "../game/truck-lights.js";
+import { DEFAULT_POOL, placeHeadlightPools } from "../game/truck-lights.js";
 import { atmosphere } from "./atmosphere.js";
 import { joinSheets } from "../game/sheets.js";
 import { createBillboards } from "./billboards.js";
@@ -124,7 +124,7 @@ export function createWeatherScene(env) {
   // Shown and hidden all together, as any of them is lit or none (game/truck-lights.js `placeHeadlightPools`): every lit
   // shader sums each spot light shown, lit or put out, and is built anew for another number of them.
   const spots = Array.from({ length: SPOTS }, () => {
-    const light = new THREE.SpotLight(0xfff2d8, 0, 300, 0.55, 0.65, 0);
+    const light = new THREE.SpotLight(0xfff2d8, 0, DEFAULT_POOL.distance, DEFAULT_POOL.angle, 0.65, 0);
     light.visible = false;
     root.add(light, light.target);
     return light;

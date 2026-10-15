@@ -36,6 +36,13 @@ takes effect from the next race.
 | `richParticles` | Rich particles | the game's puff sprites for dust and smoke, points for drops and sparks, and a tread printed flat on the ground that fades after 70 s; tracks and dust follow the ground, not a bridge's deck |
 | `replayEffects` | Replay effects | a replay with no dust, tracks or sparks, and no sun shadows |
 
+Volumetric weather is a slider rather than a switch: None (off), Few, Default or Max. The
+setting `weatherAmount` (1 to 3) holds the level while `volumetricWeather` is on, and the
+level scales the fog's thickness and the share of it overhead by `FOG_AMOUNTS` in
+`src/game/atmosphere.js` (0.3, 0.55 and 1). Max is the fog as the Weather section describes
+it; the lower levels thin it, and the picture still fades out at the same distance. A preset
+that turns the part on sets Default.
+
 Volumetric weather also decides whether the light the port drew from the start (lamp lenses and
 cones, sparks, the game's sprites added to the picture) is dimmed by the fog. Off, it shows
 through the fog as it always did (`src/render/atmosphere.js` `setLightsInFog`).
@@ -242,6 +249,13 @@ and across a slant (16 samples, or what the card has) by itself. A cell's place 
 and in its tile is worked out from the same texture coordinates the mesh always had. A card
 that cannot hold a layer a tile keeps the atlas and still takes what follows.
 
+**Mipmapped without it.** The stack is not only "Ground detail"'s: with that switch off, in
+either picture (the game's own look and the enhanced one), the ground still reads its tiles
+from the stack (`createGroundTiles`), with nothing over them, so far ground is filtered down
+and stops shimmering. Close up the game's look keeps its square texels. A level with no atlas
+layout (another game's) keeps its atlas. The game's own water sheet, repeated 256 times over
+the level, is mipmapped too (`src/render/water-effects.js`).
+
 **Grain.** A field of clods and grit of the port's own (`detailNoise`,
 `src/render/noise-textures.js`) is laid over the tiles at two scales. Each makes the ground
 lighter and darker by its height, and by how its slopes face the sun, as much as the weather's
@@ -304,6 +318,10 @@ port keeps the plane, its level and its bob, and draws it with a shader of its o
   art's last rows, which are the horizon's own line of haze (a pale strip in the Dusk art): a
   hand's breadth above it. The sun adds a glint. Fog veils the mirrored sky as it veils the sky
   itself, and in the dark weathers their darkness veils its horizon as it veils the backdrop.
+- **Shadows.** With the enhanced look's sun shadows the water reads the same cascades as the
+  ground (`sunReaches`, the finest one that covers the point): where the hills or anything
+  standing shade it, it loses the sun's share of the daylight it sends back and the sun's glint,
+  and keeps what it mirrors of the sky, as water in a shadow does.
 - **A body of water.** How deep the water is at a point is its level less the ground under it,
   read from the ground map (below), and what the eye sees there is light that has come through
   that depth (`src/game/water.js`). The line of sight bends toward the upright at the surface,
@@ -652,11 +670,15 @@ the fog's lit top.
 
 **The backdrop.** A SIT lists models that the game draws behind the world, round the camera:
 canyon walls, a range of hills. Options, Track backdrops draws them, off by default, and
-with the volume on they are seen through it like everything else, as standing 9000 ft off,
-beyond the next copy of the world. The fog thins as the line of sight climbs out of it, so on
-a clear day a range is three quarters in the haze at its foot, two thirds a few degrees up and
-a third at a high peak; at the horizon itself it is wholly in the haze the ground fades into,
-clearing over the first 1.7 degrees, so the ground's far edge is never seen against it. Fog proper, Rain and Snow hide it. The dark weathers have no
+with the volume on they stand 9000 ft off, beyond the next copy of the world. At the horizon
+itself a backdrop is wholly in the haze the ground fades into, clearing over the first 1.7
+degrees, so the ground's far edge is never seen against it. Above that, only a weather with fog
+of its own (Foggy, Dense Fog, Rain, Snow; `BACKDROP_HAZED`) is seen between the eye and it, thinning as
+the line of sight climbs out of it, and in fog proper, Rain and Snow it is hidden. On a clear or
+cloudy day it stands clear: the day's haze is the ground's distance, and an HD backdrop, the
+picture of a far range in its own air already, was washed out by it. An HD backdrop (a PNG with
+its own alpha) is drawn first of the see-through things, before the trees' cut-out leaves,
+which write no depth and would otherwise be painted over. The dark weathers have no
 fog to do it, and their darkness takes it by a share: 0.62 at Dusk, 0.84 at Night, all of it in
 Pitch Black. Before, drawing the backdrops switched the scene's fog off in every weather but
 the two fogs; with the volume off that is still so. The darkness is the colour of the scene's
@@ -946,6 +968,12 @@ surface: the glint is scaled by the direct light the surface got against what th
 in the open, so a truck in a cliff's shadow has none. In Rain everything shines 1.5 times as
 much.
 
+**Nothing in a shadow shines.** What a surface mirrors is scaled the same way as the glint: a
+surface turned to the sun mirrors as far as the sun reaches it, so the underside, the inside of
+a wheel arch and a truck in a cliff's shadow mirror nothing. A surface turned from the sun
+mirrors the open sky it faces, at most half as much and less the further it faces down, and the
+running gear, which sits under the body, mirrors only where the sun is on it.
+
 **Panels are not flat.** The trucks are a few flat faces each, and a flat face mirrors one
 thing all over: seen from the chase camera a whole side panel took on the ground's colour, or
 the sky's, at once, and the sun's glint lit a whole face. So the direction a face mirrors along
@@ -964,9 +992,10 @@ on a face as large as a monster truck's tire read as a wet shine.)
 sit and when each is lit (the lamp switch, the brakes, the gear) are the TRK's and the game's
 (`MONSTER_EXE_ANALYSIS.md` 11b). How a lit lamp is drawn is the port's.
 
-**A lens** is a small hot middle in a wide soft glow, in the lamp's own colour: a headlight's
-warm white, a tail or brake lamp's deep red (the game's lamp art is a pink no tail lamp is), a
-reversing lamp's white; a lamp of another kind keeps its art's colour. It glows several times
+**A lens** is the lamp's own bitmap (the TRK's source bitmap), in its own shape and colours and
+at the TRK's size, as the game draws it; a lamp without one is a small hot middle in a wide soft
+glow, in the lamp's colour (a headlight's warm white, a tail lamp's red, a reversing lamp's
+white). It glows several times
 brighter than the screen's white, so the lens makes it flare: a headlight 7 times, a tail lamp
 4.5, others 3, and by day 0.45 of that, since there is a bright picture round it. It fades in
 as the lamp turns to face the eye and is dimmed by the fog in front of it.
@@ -1002,6 +1031,12 @@ the lamps at the start, and the Headlights key, L, switched the lenses and the b
 the light on the ground as it was. Now a headlight lights the ground whenever it is lit, in any
 weather, by each truck's own switch, as strongly as the day leaves it to be seen: fully in the
 dark, under a tenth of that in the sun (`headlightReach`).
+
+The light on the ground is the truck's own lamps' (`headlightPool`): from the middle of its
+headlights (its roof lamps when it has none), along their mean aim, pitch and all, in a cone
+that holds each lamp's own cone widened by how far apart the lamps stand, and reaching twice
+the cones' length. A truck whose lamps throw no beam lights no ground. (It was once the same
+round pool for every truck, 6 ft ahead of it.)
 
 The light on the ground is four spot lights, given to the lit trucks nearest the eye
 (`placeHeadlightPools`). They are in the scene only while a truck's lamps are lit: all four
@@ -1220,8 +1255,23 @@ against each other, burning as it flies (`sparkVelocity`, `sparkFlight`, `sparkG
   two trucks. It is scattered from there every way off the surface it was struck from (up off
   the ground; off a wall, out from it toward the truck), by 4 ft/s and up to a fifth of how fast
   the two meet, twice that for a blow, and kicked off the surface by up to 4 ft/s more.
-- *How many.* Each of the game's sparks is 2 dots at a standstill to 5 at 60 ft/s (`sparkShower`),
-  and each spark of a blow 1 or 2.
+- *How many.* With the Sparks slider on Many, each of the game's sparks is 2 dots at a standstill
+  to 5 at 60 ft/s (`sparkShower`), and each spark of a blow 1 or 2; below Many each is one dot.
+
+**The Dust slider** (Options, Display; `dustLevel`, `CLASSIC_DUST` and `RICH_DUST` in
+`src/game/tire-effects.js`) does the same for dust and a collision's smoke: 0 None, 1 Few (the
+game's own puffs: its size, a foot of growth, 1.5 to 3.5 s, at most 96 at once), 2 Normal (the
+port's 2.8 times the size, swelling 14 ft, 2.2 times as long), 3 Many (3.8 times, 22 ft, 3.4 times
+as long); with "Rich particles" Few is fewer, smaller and shorter, Many more, larger and longer.
+"MTM2 classic dust" (Options, Advanced) draws a wheel's dust and a collision's smoke alike in the
+puff art's own grey, as the game does.
+
+**The Sparks slider** (Options, Display; `sparkLevel` and `sparkRules` in
+`src/game/tire-effects.js`) sets how many for both pictures: 0 None, 1 Few (half the chances of
+Normal), 2 Normal (the rates above, one streak a spark with "Rich particles"), 3 Many (the rates
+before 0.5.0, two sparks every eighth of a second of scrape and bursts of `6 + force / 250`, 28
+at most, from 600 lbf, and with "Rich particles" each spark a shower). The older Sparks switch
+off reads as None.
 - *The air* brakes it a little, toward a terminal speed of 30 to 50 ft/s (the smaller, the lower).
 - *Its heat.* It leaves white hot (fourteen times white, and yellow), cools as it flies through
   orange (seven times) to a dull red, by 1/e every half of its time, which is 0.3 to 1 s, and goes
@@ -1553,6 +1603,22 @@ move with the film, and only forward: played backward, or jumped about in, nothi
 thrown. The game records neither the brakes nor the lamp switch: in a replay the lamps are what
 the weather gave them, and no tail lamp brakes.
 
+## MTM2's reflections
+
+The game's two (MONSTER_EXE_ANALYSIS.md "Reflections"), each a switch on the Display page, for
+the game's own picture and the enhanced one alike:
+
+- **Water reflections** (`src/render/water-mirror.js`): with the eye above the water the world is
+  drawn mirrored in the water's plane into a picture of its own, half the screen's size, cut at
+  the plane, without the water and the trucks' reflections; the game's water is laid over it at
+  its own opacity. The game draws the mirrored world first and its frame over it; this is the same
+  picture. Only on the game's water: "Reflective water" mirrors in its own way. None in Snow,
+  where the water is ice.
+- **Truck reflections** (`src/render/truck-reflection.js`): each body face that faces the eye drawn
+  again in CLOUDENV at half opacity, its texel from the view, as the game works it out; the sky's
+  sixteen colours in Rain, Dusk and Night (`src/worker/env-map.js`), none in Foggy, Dense Fog and
+  Pitch Black. The game draws them only with the water's switch on as well; here they are apart.
+
 ## Lens
 
 `src/render/lens.js`, with "Lens effects": bright lights glow. The scene is drawn into a
@@ -1660,7 +1726,9 @@ the default. Off, FXAA, SMAA and TAA take its place when chosen and were not mea
   shadow maps: about 650 more draw calls on Breakneck Ridge from the start line, most of them
   far ground of few triangles. With Natural light those calls fill a copy kept for each cascade
   (32 MB each, 128 MB for the four) and run again when that copy is redrawn, not on every frame.
-  A frame draws the trucks, the keyframed models and the camera-facing trees over the copy. A
+  A frame draws the trucks and the keyframed models over the copy. The camera-facing models
+  (types 8 and 9) are in the copy: their shadows are cast square to the sun, as the classic
+  look's are, and never turn toward the camera. A
   cascade a truck's shadow cannot reach skips that truck. Without Natural light the maps are
   drawn in full, as before.
 - **Ground detail.** The stack is the atlas again in memory, with its smaller copies a third

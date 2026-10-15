@@ -214,11 +214,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .opponent-lists { display: grid; grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr); gap: 14px; align-items: center; }
 .opponent-lists label { display: grid; gap: 6px; }
 .opponent-lists select { min-height: 260px; }
-.opponent-moves { display: grid; gap: 10px; }
+/* Add, Remove and Remove all in the middle of the column, Fill at its foot. */
+.opponent-moves { display: flex; flex-direction: column; justify-content: center; gap: 10px; align-self: stretch; padding-top: 22px; }
+.opponent-moves-group { display: grid; gap: 10px; margin: auto 0; }
 
 @media (max-width: 620px) {
   .opponent-lists { grid-template-columns: 1fr; }
-  .opponent-moves { grid-template-columns: 1fr 1fr; }
+  .opponent-moves { flex-direction: row; flex-wrap: wrap; gap: 10px; padding-top: 0; }
+  .opponent-moves-group { grid-template-columns: 1fr 1fr 1fr; margin: 0; flex: 1 1 100%; }
 }
 .gold-overlay { position: absolute; image-rendering: pixelated; background: rgba(0, 0, 0, 0.35); }
 .gold-overlay[hidden] { display: none; }
@@ -348,8 +351,10 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .stage-modern .garage-dot { border: 2px solid #6c7fb3; background: rgba(10, 14, 24, 0.7); }
 .stage-modern .garage-dot.on { background: #f2c14e; }
 /* Winner's Circle on the modern stage: the data stands on its own, and the list is light on dark. */
-.stage-modern :is(.stage-panel-firstName, .stage-panel-firstStats, .stage-panel-secondName, .stage-panel-secondStats) { background: none; border: 0; }
-.stage-modern :is(.stage-panel-firstName, .stage-panel-secondName) { overflow: hidden; text-overflow: ellipsis; }
+.stage-modern :is(.stage-panel-firstName, .stage-panel-firstStats, .stage-panel-secondName, .stage-panel-secondStats) { background: none; border: 0; font-size: 13px; line-height: 18px; }
+.stage-modern :is(.stage-panel-firstName, .stage-panel-secondName) .winner-line { overflow: hidden; text-overflow: ellipsis; }
+/* The Hall of Fame's selected entry stands on the stage too, with no box behind it. */
+.stage-modern :is(.stage-panel-hallInfo, .stage-panel-hallStats, .stage-panel-hallPreview) { background: none; border: 0; }
 .stage-modern .stage-panel-table .winners-table { color: #fff; }
 .stage-modern .stage-panel-table .winners-table tr.player td { color: #f2c14e; }
 .stage-modern .stage-panel-table .winners-table th { color: #f2c14e; font-size: 9px; text-align: left; padding: 2px 3px; border-bottom: 1px solid rgba(160, 180, 230, 0.35); }
@@ -437,3 +442,6 @@ input.race-off { background: #777; color: #222; }
 /* A name tag in the game's bitmap font is a canvas (render/name-tags.js); without the font, lines of plain text. */
 .name-tag-font { image-rendering: pixelated; text-shadow: none; }
 .name-tag-line { display: block; text-align: center; }
+
+/* Tournament: the button that races sits at the far right of its row. */
+.tournament .screen-actions .tournament-race { margin-left: auto; }

@@ -7,12 +7,12 @@
 */
 
 import { AA_MODES } from "../game/aa.js";
-import { GRAPHICS_PRESETS } from "../game/graphics.js";
+import { GRAPHICS_FLAGS, GRAPHICS_PRESETS } from "../game/graphics.js";
 import { VISUAL_OPTIONS } from "../game/visuals.js";
 
 const KEY = "openmtm2.settings";
 /** The settings' format, stored with them and with an export (Options, Data). */
-export const SETTINGS_VERSION = 7;
+export const SETTINGS_VERSION = 10;
 
 /**
  * The physics a race can run under, as Options (Game) and the console's `physics` list them. A model is one more entry
@@ -49,7 +49,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   crashDamage: true,          // MONSTER.INI allowCrashDamage (the game's own default is off): collisions dent the bodies
   autoShift: true,            // automatic gears (the game's default)
   bindings: Object.freeze({}), // key code overrides by action, see game/input/bindings.js
-  mtm1EarthSky: true,         // MTM1 tracks: their own flat sky (EARTHSKY and the like) in place of MTM2's dome
+  hdWeather: true,            // Community Patch 3's HD skies: the install's WeatherArt folder, else the port's copy (worker/weather-art.js)
+  mtm1TrucksApart: true,      // MTM1 trucks that MTM2's shadow by file name listed too, as "Bigfoot (MTM1)" (worker/truck-build.js)
+  mtm1Particles: false,       // MTM1's particles and tracks in place of the dust, spray and tire tracks (render/mtm1-particles.js)
+  originalBackdrops: false,   // the game's own backdrops over HD ones (worker/track-build.js originalBackdrop)
+  mtm1Sounds: false,          // MTM1's skid sounds (game/sound-model.js mtm1CornerSample and the rest)
+  mtm1EarthSky: false,        // MTM1's flat sky on every track: an MTM1 track's own, any other EARTHSKY (worker/track-build.js loadSky)
   mtm1TerrainOverlap: false,  // MTM1 tracks: MTM2's two-pixel overlap of the ground tiles
   vsync: true,                // draw with the display's refresh; off draws as fast as the browser allows
   aa: "msaa",                 // anti-aliasing (game/aa.js): off, msaa, fxaa, smaa or taa. The next race takes it up
@@ -60,7 +65,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   fpsCounter: false,          // the frames per second in the corner (the FPS counter key switches it)
   shortViewCycle: false,      // the Camera key steps through `shortViews` only
   shortViews: Object.freeze([0, 1, 2]), // the short cycle's views (game/cameras.js `shortViews`): the cockpit, Chase Near and Chase Far
-  cameraClearance: false,     // the chase camera keeps a few feet over the ground, where the game lets it touch it (game/cameras.js)
+  cameraClearance: true,      // the chase camera keeps a few feet over the ground, where the game lets it touch it (game/cameras.js)
   aiNames: Object.freeze([]), // the computer drivers' own names, by place; an empty one is the game's (game/race-setup.js `cpuNames`)
   zModeCameras: false,        // Z mode's zoom and cameras in any race, without GOLD or slew mode, and the Inertia view
   fullAutopilot: false,       // the game's "Full Autopilot": the player's truck drives itself
@@ -68,7 +73,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   dustEffects: true,          // MONSTER.INI smokeEffectFlag: dust puffs behind the wheels on soft ground
   tireTracks: true,           // MONSTER.INI tireTrackFlag: treads left on soft ground (the game reads it but never draws them)
   waterSplash: true,          // drops thrown up where wheels run through water, more with speed (not in the game)
-  sparks: true,               // sparks from hull contacts (not in the game)
+  waterReflections: false,    // MONSTER.INI reflectionFlag: the world mirrored in the game's water (render/water-mirror.js)
+  truckReflections: false,    // MONSTER.INI truckReflectionFlag: CLOUDENV over the trucks' bodies (render/truck-reflection.js)
+  sparks: true,               // sparks from hull contacts (not in the game); false is the slider's None
+  dustAmount: 2,              // the Dust slider, both pictures: 0 None, 1 Few (the game's own), 2 Normal, 3 Many (game/tire-effects.js)
+  greyDust: false,            // MTM2's own grey for wheels' dust and collisions' smoke
+  sparkAmount: 2,             // the Sparks slider, both pictures: 0 None, 1 Few, 2 Normal, 3 Many (game/tire-effects.js)
   sonicTrucks: false,         // Professional only: the computer trucks drive as on a Sonic track, whatever the SIT's fly-by line says
   defaultOpponents: 3,        // computer trucks in a race until the player picks their own (MONSTER.INI defaultOpponents)
   drawCells: 128,             // terrain cells (32 ft each): how far the world is drawn (the camera's far plane and the fog)
@@ -80,6 +90,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   terrainSmoothing: false,    // the ground's facets rounded and cliffs given relief (game/terrain-relief.js; docs/VISUALS.md)
   enhancedWater: false,       // water with waves, reflections and a shore, and solid ice in Snow (render/water-surface.js)
   volumetricWeather: false,   // fog in drifting layers, rain and snow falling through the air (render/atmosphere.js, precipitation.js)
+  weatherAmount: 2,           // the Volumetric weather slider while it is on: 1 Few, 2 Default, 3 Max, the fog's thickness (game/atmosphere.js FOG_AMOUNTS)
   rainPuddles: false,         // wet ground and standing water in Rain (game/ground-maps.js)
   snowCover: false,           // snow settling on the ground in Snow (render/ground-surface.js)
   groundDetail: false,        // grain over the ground's textures, which are filtered for the distance (render/ground-detail.js)
@@ -123,6 +134,13 @@ export function migrateSettings(stored) {
     if (VISUAL_OPTIONS.some((option) => stored[option.key] === false)) stored.graphics = "custom";
     else delete stored.graphics;
   }
+  // Version 8 keeps MTM1's trucks apart by default; the "off" saved before it was the old default, not a choice.
+  if (!(stored.version >= 8)) delete stored.mtm1TrucksApart;
+  // Version 9 turns MTM2's water and truck reflections off by default, and makes MTM1's sky one for every track, off by
+  // default; what was saved before them was the old defaults.
+  if (!(stored.version >= 9)) { delete stored.waterReflections; delete stored.truckReflections; delete stored.mtm1EarthSky; }
+  // Version 10 keeps the chase camera clear of the ground by default; the "off" saved before it was the old default.
+  if (!(stored.version >= 10)) delete stored.cameraClearance;
   stored.version = SETTINGS_VERSION;
   delete stored.showHiddenTrucks;
   // A value that is not one of the choices draws the default.
@@ -145,12 +163,12 @@ export function optionsFile(settings, now = new Date()) {
  */
 export function readOptionsFile(text) {
   let data;
-  try { data = JSON.parse(text); } catch { return { error: "That file is not an options file (it is not JSON)." }; }
+  try { data = JSON.parse(text); } catch { return { error: "That file is not a settings file (it is not JSON)." }; }
   if (data?.format !== OPTIONS_FILE_FORMAT || !data.settings || typeof data.settings !== "object" || Array.isArray(data.settings)) {
-    return { error: "That file is not an OpenMTM2 options file." };
+    return { error: "That file is not an OpenMTM2 settings file." };
   }
   const version = Number.isInteger(data.version) ? data.version : 0;
-  if (version > SETTINGS_VERSION) return { error: `Those options are from a newer OpenMTM2 (version ${version}; this one reads up to ${SETTINGS_VERSION}).` };
+  if (version > SETTINGS_VERSION) return { error: `Those settings are from a newer OpenMTM2 (version ${version}; this one reads up to ${SETTINGS_VERSION}).` };
   return { settings: migrateSettings({ ...data.settings, version }) };
 }
 
@@ -168,4 +186,50 @@ export function clearSettings(storage = globalThis.localStorage) {
   } catch {
     // The OPFS data can still be cleared when local storage is unavailable.
   }
+}
+
+/**
+ * The "MTM1 Classic preset" (Options, Advanced): every MTM1 choice on, the 1996 physics, and the enhanced graphics off,
+ * the game's own sharp texels with them. Changes `settings` in place.
+ */
+export function applyMtm1Classic(settings) {
+  Object.assign(settings, {
+    mtm1EarthSky: true, mtm1TerrainOverlap: false, mtm1TrucksApart: true, originalBackdrops: true, mtm1Particles: true, mtm1Sounds: true,
+    physics: "mtm1", graphics: "off", look: "classic", hdWeather: false, cameraClearance: true,
+  });
+  return settings;
+}
+
+/** Every MTM1 choice off: MTM2's sky, tile overlap, particles, sounds and physics, and a truck name to the archive mounted first. */
+const NO_MTM1 = Object.freeze({
+  mtm1EarthSky: false, mtm1TerrainOverlap: true, mtm1TrucksApart: false, mtm1Particles: false, mtm1Sounds: false, physics: "mtm2",
+});
+
+/**
+ * The "MTM2 Classic preset" (Options, Advanced): the 1998 game's own picture. No MTM1 choice, the original backdrops and
+ * grey dust, the game's few puffs, no sparks or splashes, MTM2's water and truck reflections and the backdrops, none of
+ * Community Patch 3's weather or reflections, and the enhanced graphics off. Changes `settings` in place.
+ */
+export function applyMtm2Classic(settings) {
+  Object.assign(settings, NO_MTM1, {
+    originalBackdrops: true, greyDust: true, hdWeather: false, reflections: false, waterSplash: false,
+    dustAmount: 1, dustEffects: true, sparkAmount: 0, sparks: false,
+    waterReflections: true, truckReflections: true, backdrops: true, graphics: "off", cameraClearance: true,
+  });
+  return settings;
+}
+
+/**
+ * The "OpenMTM2 preset" (Options, Advanced): the port's own picture. No MTM1 or MTM2 choice (MTM1's trucks stay listed
+ * apart, which hides nothing), tire tracks, splashes, many dust puffs and the normal sparks, every enhanced part but the
+ * glossy paint (Custom), and Community Patch 3's terrain detail, HD weather and reflections. Changes `settings` in place.
+ */
+export function applyOpenMtm2(settings) {
+  Object.assign(settings, NO_MTM1, {
+    mtm1TrucksApart: true, originalBackdrops: false, greyDust: false, waterReflections: false, truckReflections: false, backdrops: false,
+    tireTracks: true, waterSplash: true, dustAmount: 3, dustEffects: true, sparkAmount: 2, sparks: true,
+    ...GRAPHICS_FLAGS.max, glossyPaint: false, graphics: "custom", look: "enhanced",
+    terrainDetail: true, hdWeather: true, reflections: true, cameraClearance: true,
+  });
+  return settings;
 }

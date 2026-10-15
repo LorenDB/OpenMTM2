@@ -13,6 +13,10 @@
      scaled by the direct light the surface got against what it would get in the open, so a
      truck in a cliff's shadow has none.
 
+  Nothing in a shadow mirrors anything: a surface turned to the sun mirrors as far as the sun
+  reaches it (a wheel arch, the underside, a truck under a cliff, none), one turned from it the
+  sky it faces, less the further it faces down, and the running gear only where the sun is on it.
+
   In Rain everything is wet and shines the more for it. Nothing is drawn twice and there is no
   picture of the surroundings to keep, so a headset can afford it.
 */
@@ -56,7 +60,11 @@ const shine = (amount) => /* glsl */ `
   float glossReached = clamp( dot( reflectedLight.directDiffuse, vec3( 0.3333 ) ) / max( dot( glossOpen, vec3( 0.3333 ) ), 1e-4 ), 0.0, 1.0 ) * step( 1e-3, glossFacing );
   float glossToSun = max( dot( glossBack, uGlossSun.xyz ), 0.0 );
   vec3 glossGlint = uGlossSunLight * ( pow( glossToSun, 260.0 ) * 1.6 + pow( glossToSun, 18.0 ) * ${PAINT.broadGlint.toFixed(3)} ) * glossReached;
-  outgoingLight += ${amount.toFixed(3)} * uGlossSun.w * ( ( ${FACE_ON.toFixed(3)} + ${(GLANCING - FACE_ON).toFixed(3)} * glossGlance ) * glossSky + ${amount.toFixed(3)} * glossGlint );
+  // What it mirrors, only where it is in the light: as far as the sun reaches a surface turned to it; for one turned
+  // away, the open sky it faces${amount < 1 ? " (none for the running gear, which sits under the body)" : ""}.
+  float glossOpenSky = ${amount < 1 ? "0.0" : "0.5 * pow( clamp( glossUp.y * 0.5 + 0.5, 0.0, 1.0 ), 2.0 )"};
+  float glossLit = glossFacing > 1e-3 ? glossReached : glossOpenSky;
+  outgoingLight += ${amount.toFixed(3)} * uGlossSun.w * ( ( ${FACE_ON.toFixed(3)} + ${(GLANCING - FACE_ON).toFixed(3)} * glossGlance ) * glossSky * glossLit + ${amount.toFixed(3)} * glossGlint );
 }
 `;
 

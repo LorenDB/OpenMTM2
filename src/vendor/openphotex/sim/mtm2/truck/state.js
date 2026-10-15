@@ -18,7 +18,7 @@ export function autopilotGain(difficulty) {
 function tire() {
     return {
         compression: 0, extensionRate: 0, penetration: -9999, lever: 0, normal: [0, 1, 0], onGround: false,
-        spin: 0, angle: 0, pitchG: 0, rollG: 0, load: 0, grip: 0, mu: 0,
+        spin: 0, angle: 0, pitchG: 0, rollG: 0, load: 0, grip: 0, mu: 0, surface: -1, lateral: 0,
         hub: [0, 0, 0], contact: [0, 0, 0], velocity: [0, 0, 0], force: [0, 0, 0],
         waterDepth: 0, waterPoint: [0, 0, 0],
     };

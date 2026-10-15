@@ -27,7 +27,7 @@ test("the track backdrops stay off by default, and a saved choice sticks", async
   const first = loadSettings();
   assert.equal(first.backdrops, false);
   assert.equal(first.look, "classic", "what an earlier version settled is left alone");
-  assert.equal(first.version, 7);
+  assert.equal(first.version, 10);
   saveSettings({ ...first, backdrops: true });
   assert.equal(loadSettings().backdrops, true);
   delete globalThis.localStorage;
@@ -40,7 +40,7 @@ test("a save from before the scenery presets takes Off, and one that turned a pa
   store.set("openmtm2.settings", JSON.stringify({ version: 6, aa: "taa", look: "classic" }));
   const plain = loadSettings();
   assert.equal(plain.graphics, "off");
-  assert.equal(plain.version, 7);
+  assert.equal(plain.version, 10);
   assert.equal(plain.lensEffects, false);
   assert.equal(plain.aa, "taa");
   assert.equal(plain.look, "classic");
@@ -116,6 +116,75 @@ test("an exported options file reads back, older ones brought up to date, and an
   // A version 4 file: the draw distance in feet is dropped, as for a stored one.
   assert.equal(readOptionsFile(JSON.stringify({ format: OPTIONS_FILE_FORMAT, version: 4, settings: { drawDistance: 900 } })).settings.drawDistance, undefined);
   assert.match(readOptionsFile("not json").error, /not JSON/);
-  assert.match(readOptionsFile(JSON.stringify({ look: "classic" })).error, /not an OpenMTM2 options file/);
+  assert.match(readOptionsFile(JSON.stringify({ look: "classic" })).error, /not an OpenMTM2 settings file/);
   assert.match(readOptionsFile(JSON.stringify({ format: OPTIONS_FILE_FORMAT, version: SETTINGS_VERSION + 1, settings: {} })).error, /newer/);
+});
+
+test("version 8 keeps MTM1's trucks apart by default, over the off an older save carried", async () => {
+  const { migrateSettings } = await import("../src/app/settings.js");
+  assert.equal(migrateSettings({ version: 7, mtm1TrucksApart: false }).mtm1TrucksApart, true);
+  assert.equal(migrateSettings({ version: 8, mtm1TrucksApart: false }).mtm1TrucksApart, false);
+});
+
+test("the MTM1 Classic preset turns every MTM1 choice on, the 1996 physics, and the enhanced graphics off", async () => {
+  const { applyMtm1Classic } = await import("../src/app/settings.js");
+  const settings = applyMtm1Classic({ graphics: "max", physics: "mtm2", look: "enhanced" });
+  for (const key of ["mtm1EarthSky", "mtm1TrucksApart", "originalBackdrops", "mtm1Particles", "mtm1Sounds"]) assert.equal(settings[key], true, key);
+  assert.equal(settings.mtm1TerrainOverlap, false);
+  assert.equal(settings.physics, "mtm1");
+  assert.equal(settings.graphics, "off");
+});
+
+test("version 9 turns MTM2's water and truck reflections off and makes MTM1's sky one for every track, off, over older saves", async () => {
+  const { DEFAULT_SETTINGS, migrateSettings } = await import("../src/app/settings.js");
+  assert.equal(DEFAULT_SETTINGS.waterReflections, false);
+  assert.equal(DEFAULT_SETTINGS.truckReflections, false);
+  assert.equal(DEFAULT_SETTINGS.mtm1EarthSky, false);
+  const old = migrateSettings({ version: 8, waterReflections: true, truckReflections: true, mtm1EarthSky: true });
+  assert.deepEqual([old.waterReflections, old.truckReflections, old.mtm1EarthSky], [false, false, false]);
+  const kept = migrateSettings({ version: 9, waterReflections: true, truckReflections: true, mtm1EarthSky: true });
+  assert.deepEqual([kept.waterReflections, kept.truckReflections, kept.mtm1EarthSky], [true, true, true]);
+});
+
+test("the MTM2 Classic preset: no MTM1 choice, the 1998 game's own picture and none of the patch's weather or reflections", async () => {
+  const { applyMtm1Classic, applyMtm2Classic } = await import("../src/app/settings.js");
+  const settings = applyMtm2Classic(applyMtm1Classic({ graphics: "max", sparks: true, sparkAmount: 3, waterSplash: true, reflections: true, hdWeather: true }));
+  for (const key of ["mtm1EarthSky", "mtm1TrucksApart", "mtm1Particles", "mtm1Sounds", "hdWeather", "reflections", "waterSplash", "sparks"]) assert.equal(settings[key], false, key);
+  for (const key of ["originalBackdrops", "greyDust", "waterReflections", "truckReflections", "backdrops", "dustEffects"]) assert.equal(settings[key], true, key);
+  assert.equal(settings.mtm1TerrainOverlap, true);
+  assert.equal(settings.physics, "mtm2");
+  assert.equal(settings.sparkAmount, 0);
+  assert.equal(settings.graphics, "off");
+});
+
+test("the OpenMTM2 preset: no MTM1 or MTM2 choice, the port's effects, every enhanced part but the glossy paint, and the patch's extras", async () => {
+  const { applyMtm1Classic, applyOpenMtm2 } = await import("../src/app/settings.js");
+  const { VISUAL_OPTIONS } = await import("../src/game/visuals.js");
+  const settings = applyOpenMtm2(applyMtm1Classic({ waterReflections: true, truckReflections: true, greyDust: true }));
+  for (const key of ["mtm1EarthSky", "mtm1Particles", "mtm1Sounds", "originalBackdrops", "greyDust", "waterReflections", "truckReflections", "glossyPaint"]) assert.equal(settings[key], false, key);
+  for (const key of ["tireTracks", "waterSplash", "terrainDetail", "hdWeather", "reflections"]) assert.equal(settings[key], true, key);
+  assert.equal(settings.physics, "mtm2");
+  assert.equal(settings.dustAmount, 3);
+  assert.equal(settings.sparkAmount, 2);
+  assert.equal(settings.graphics, "custom");
+  for (const option of VISUAL_OPTIONS) assert.equal(settings[option.key], option.key !== "glossyPaint", option.key);
+});
+
+test("version 10 keeps the chase camera clear of the ground by default, over older saves, and every preset turns it on", async () => {
+  const { DEFAULT_SETTINGS, applyMtm1Classic, applyMtm2Classic, applyOpenMtm2, migrateSettings } = await import("../src/app/settings.js");
+  assert.equal(DEFAULT_SETTINGS.cameraClearance, true);
+  assert.equal(migrateSettings({ version: 9, cameraClearance: false }).cameraClearance, true);
+  assert.equal(migrateSettings({ version: 10, cameraClearance: false }).cameraClearance, false);
+  for (const apply of [applyMtm1Classic, applyMtm2Classic, applyOpenMtm2]) assert.equal(apply({ cameraClearance: false }).cameraClearance, true, apply.name);
+});
+
+test("the Volumetric weather slider: Default where a preset turns it on, None where it is off", async () => {
+  const { DEFAULT_SETTINGS, applyOpenMtm2 } = await import("../src/app/settings.js");
+  const { GRAPHICS_FLAGS } = await import("../src/game/graphics.js");
+  const { weatherLevel } = await import("../src/game/atmosphere.js");
+  assert.equal(weatherLevel(DEFAULT_SETTINGS), 0);
+  assert.equal(weatherLevel({ ...DEFAULT_SETTINGS, volumetricWeather: true }), 2);
+  for (const tier of ["high", "max"]) assert.equal(GRAPHICS_FLAGS[tier].weatherAmount, 2, tier);
+  for (const tier of ["off", "low"]) assert.equal(GRAPHICS_FLAGS[tier].weatherAmount, 0, tier);
+  assert.equal(weatherLevel(applyOpenMtm2({})), 2);
 });

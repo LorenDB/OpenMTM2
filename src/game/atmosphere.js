@@ -133,6 +133,21 @@ export const fogLight = (overFt, lit, lightFt = FOG_TOP.lightFt) => 1 + lit * Ma
 /** How much brighter a fog's top is lit than its inside, for a weather that lets `sun` of the sunlight through (game/weather.js `sun`). */
 export const fogTopLit = (volume, sun) => (volume?.lit ?? 0) * (0.4 + 0.6 * Math.min(1, Math.max(0, sun)));
 
+/**
+ * The Volumetric weather slider (Options, Enhanced graphics, Custom): 0 None (the switch off, the game's own fog),
+ * 1 Few, 2 Default (what a preset sets) and 3 Max, the fog as thick as `fogVolume` describes it. Each is that share
+ * of the fog's thickness.
+ */
+export const FOG_AMOUNTS = Object.freeze([0, 0.3, 0.55, 1]);
+export const WEATHER_LEVEL_NAMES = Object.freeze(["None", "Few", "Default", "Max"]);
+export const DEFAULT_WEATHER_LEVEL = 2;
+/** The level the settings ask for: `weatherAmount` 1..3 while Volumetric weather is on, else 0. */
+export function weatherLevel(settings) {
+  if (settings?.volumetricWeather !== true) return 0;
+  const level = settings?.weatherAmount;
+  return Number.isInteger(level) && level >= 0 && level <= 3 ? level : DEFAULT_WEATHER_LEVEL;
+}
+
 /*
   Per weather, the port's choices (the distances come from WEATHER_LOOK):
    - `deckFt`: how far over its floor (game/fog-floor.js) the fog is at its full thickness.
@@ -166,7 +181,9 @@ const VOLUMES = Object.freeze({
  *
  * `clearRange` is where a weather without fog of its own fades into the distance, feet
  * `{ startFt, endFt }` (the renderer's draw distance decides it). `indoor` is a stadium: under
- * its roof there is no day's haze, only the air of a hall, a tenth as thick.
+ * its roof there is no day's haze, only the air of a hall, a tenth as thick. `amount` is the
+ * Volumetric weather slider's share of the fog (`FOG_AMOUNTS`): 1, Max, is the fog as described
+ * above; less thins it, and the picture still fades out at the same distance.
  *
  * @returns {{ densityPerFt: number, deckFt: number, scaleHeightFt: number, fadeStartFt: number, farFt: number, reachFt: number,
  *   drift: number, windFtPerS: number, skyDepth: number, glow: number, shape: object, billowFt: number, billowSizeFt: number,
@@ -176,7 +193,7 @@ const VOLUMES = Object.freeze({
  *   `shape` is the layer's (`fogProfile`, with its `scaleHeightFt`); `billowFt` to `lightFt` its
  *   top's (`FOG_TOP`), none for a fog without one.
  */
-export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, { indoor = false } = {}) {
+export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, { indoor = false, amount = 1 } = {}) {
   const look = WEATHER_LOOK[weather], volume = VOLUMES[weather];
   if (!look || !volume) return null;
   let halfFt, fadeStartFt, farFt, reachFt = null;
@@ -206,7 +223,7 @@ export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, 
   const { open = false, top = false, ...lay } = volume;
   const form = top ? FOG_TOP : NO_TOP;
   return {
-    ...lay, open, densityPerFt: Math.LN2 / halfFt, fadeStartFt, farFt, reachFt: reachFt ?? farFt,
+    ...lay, open, densityPerFt: Math.LN2 / halfFt * amount, skyDepth: lay.skyDepth * amount, fadeStartFt, farFt, reachFt: reachFt ?? farFt,
     shape: Object.freeze({ cap: form.cap, capFt: form.capFt, crispFt: form.crispFt, wisps: form.wisps, scaleHeightFt: lay.scaleHeightFt }),
     billowFt: top ? FOG_TOP.billowFt : 0, billowSizeFt: FOG_TOP.billowSizeFt, lit: top ? FOG_TOP.lit : 0, lightFt: FOG_TOP.lightFt,
   };
@@ -224,15 +241,23 @@ export function fogHides(volume, distanceFt) {
 }
 
 /**
- * How much of a track's backdrop the fog hides, 0 to 1, for an eye on the fog's floor looking
- * `sine` (the sine of the angle) above the horizon: the same sum the shader does
- * (render/atmosphere.js), without its banks. The backdrop is seen through the whole depth of
- * the fog, which thins as the line of sight climbs out of it, so hills stand clearer the
- * higher they reach and their feet are lost in the haze the ground fades into.
+ * The weathers whose fog stands between the eye and a backdrop: Foggy, Dense Fog, Rain and Snow. In the others (Clear,
+ * Cloudy, the dark ones) the day's haze is the ground's distance and not the backdrop's: an HD backdrop is the picture of a
+ * far range in its own air already, and seen through the haze too it was washed out.
  */
-export function backdropHides(volume, sine) {
+export const BACKDROP_HAZED = new Set([2, 3, 4, 5]);
+
+/**
+ * How much of a track's backdrop the fog hides, 0 to 1, for an eye on the fog's floor looking
+ * `sine` (the sine of the angle) above the horizon in `weather`: the same sum the shader does
+ * (render/atmosphere.js), without its banks. In a weather of `BACKDROP_HAZED` the backdrop is seen
+ * through the whole depth of the fog, which thins as the line of sight climbs out of it; in every
+ * weather its foot is lost in the haze the ground fades into, so the ground's far edge is never
+ * seen against it.
+ */
+export function backdropHides(volume, sine, weather = 0) {
   if (!volume) return 0;
-  const through = 1 - Math.exp(-volume.densityPerFt * fogColumn(-volume.deckFt, sine, BACKDROP_DISTANCE_FT, volume.shape));
+  const through = BACKDROP_HAZED.has(weather) ? 1 - Math.exp(-volume.densityPerFt * fogColumn(-volume.deckFt, sine, BACKDROP_DISTANCE_FT, volume.shape)) : 0;
   const foot = Math.min(1, Math.max(0, sine / BACKDROP_FOOT));
   return Math.max(through, 1 - foot * foot * (3 - 2 * foot));
 }

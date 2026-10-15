@@ -117,8 +117,15 @@ function takeTouch(t) {
 function soundOf(t, ground) {
   const s = t.state;
   const air = 4 - s.tires.filter((x) => x.onGround).length;
-  const tires = s.tires.map((x) => ({ onGround: x.onGround, grip: x.grip, force: [x.force[0], x.force[1], x.force[2]], spin: x.spin }));
+  const tires = s.tires.map((x) => ({ onGround: x.onGround, grip: x.grip, force: [x.force[0], x.force[1], x.force[2]], spin: x.spin, surface: x.surface, lateral: x.lateral }));
+  const m = s.matrix, weather = ground.weather ?? 0;
+  // In water, for its sounds (0x41bbd0): on a level with water, a tire on a water surface or the body under the level;
+  // never in Snow. (A probe's `waterDepth` is no measure of it: it is how deep the probe is in the ground, wet or dry.)
+  const level = ground.waterLevelFt ?? null;
+  const inWater = weather !== 5 && level !== null
+    && (s.tires.some((x) => x.onGround && [3, 13].includes(S.surfaceType(x.surface))) || s.pos[1] < level);
   const out = {
+    weather, inWater, vy: m[3] * s.bvel[0] + m[4] * s.bvel[1] + m[5] * s.bvel[2],
     rpm: s.rpm, throttle: s.controls.throttle, brake: Math.max(s.controls.brakeFront, s.controls.brakeRear), gear: s.controls.gear, airborne: air, forward: s.bvel[2],
     speed: Math.hypot(s.bvel[0], s.bvel[1], s.bvel[2]), 
     impact: t.snd.impact, hit: t.snd.hit, clearance: s.pos[1] - ground.height(s.pos[0], s.pos[2]), splash: t.snd.splash, tires, surface: S.surfaceType(ground.surface(s.pos[0], s.pos[1] + 100, s.pos[2])), heli: s.heliTimer > 0, heliTeryl: !!s.heliVisual?.teryl, heliPos: s.heliVisual ? [...s.heliVisual.pos] : null,

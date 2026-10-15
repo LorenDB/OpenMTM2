@@ -1,6 +1,6 @@
 /*
   The player's own data in OPFS (`userdata/<key>.json`): driver profiles and the Hall of Fame.
-  Kept apart from the install, so "Use a different install" does not touch it.
+  Kept apart from the install, so "Change base install" does not touch it.
 */
 import { readTextFile, removePath, writeBytesToFile } from "../shared/opfs.js";
 

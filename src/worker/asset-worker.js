@@ -7,12 +7,13 @@
   once this module graph has loaded.
 */
 import { copyInstall, readManifest, removeInstall, syncInstall } from "./install-store.js";
-import { addGameFolder, addPods, describeMounts, mountAll, removeAddons, removePod, setMountOrder } from "./addon-store.js";
+import { addGameFolder, addPods, describeMounts, mountAll, reloadPodIni, removeAddons, removePod, setMountOrder } from "./addon-store.js";
 import { buildCatalog } from "./catalog.js";
 import { buildSky, buildTrackRender, transferablesOf } from "./track-build.js";
 import { lenientKlp } from "../game/sound-model.js";
 import { buildTruckPreview } from "./preview-build.js";
 import { loadingScreen } from "./screen-art.js";
+import { truckEnvMap } from "./env-map.js";
 import { loadCockpit, cockpitArt } from "./cockpit-art.js";
 import { loadEffectsArt } from "./effects-art.js";
 import { decodeActPalette, decodeRawTexture, parseKlp, parseLoc, parseMod, parseMtmAmbientSounds, parseMtmSun, parseTrn, renderMod } from "../vendor/openphotex/index.js";
@@ -53,11 +54,21 @@ const handlers = {
     return copyInstall(request, (progress) => self.postMessage({ event: "install-progress", payload: progress }));
   },
 
-  /** Reload POD.INI: mount what the folder's file lists now, copying only what changed. */
+  /** Reload POD.INI: the stored POD.INI applied again, every archive it lists mounted in its order (worker/addon-store.js). */
+  async reloadPodIni() {
+    vfs = null;
+    catalog = null;
+    return reloadPodIni();
+  },
+
+  /** Change base install, from a folder picked again: mount what its POD.INI lists, copying only what changed. */
   async reloadInstall(request) {
     vfs = null;
     catalog = null;
-    return syncInstall(request, (progress) => self.postMessage({ event: "install-progress", payload: progress }));
+    const done = await syncInstall(request, (progress) => self.postMessage({ event: "install-progress", payload: progress }));
+    // The new POD.INI's order for the install's archives, ahead of the added ones.
+    await reloadPodIni();
+    return done;
   },
 
   async uninstall() {
@@ -107,15 +118,16 @@ const handlers = {
     return describeMounts(await mounted());
   },
 
-  async catalog() {
+  /** `mtm1Apart`: also the MTM1 trucks that MTM2's shadow, as `MTM1:<file>` (Options, Advanced, "Keep MTM1 trucks apart"). */
+  async catalog({ mtm1Apart = false } = {}) {
     if (!catalog) catalog = await buildCatalog(await mounted());
-    return catalog;
+    return mtm1Apart ? catalog : { ...catalog, trucks: catalog.trucks.filter((truck) => !truck.apart) };
   },
 
   /** Everything needed to draw a track; `{ path }` is its SIT, e.g. "WORLD\\TPARK.SIT". */
   /** `scope` is the track's lookup family (the catalogue's `scope`), for a track of another game than MTM. */
-  async trackRender({ path, scope, detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals, smoothTiles }) {
-    const build = await buildTrackRender(scoped(await mounted(), scope), path, { detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals, smoothTiles });
+  async trackRender({ path, scope, detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals, smoothTiles, hdWeather, originalBackdrops }) {
+    const build = await buildTrackRender(scoped(await mounted(), scope), path, { detailLevel, raceType, truckFiles, weather, mtm1, tileOverlap, visuals, smoothTiles, hdWeather, originalBackdrops });
     return withTransfer(build, transferablesOf(build));
   },
 
@@ -283,9 +295,15 @@ const handlers = {
   },
 
   /** A track's sky for another weather, `{ name, width, height, rgba }` or null. */
-  async sky({ path, scope, weather, mtm1 }) {
-    const sky = await buildSky(scoped(await mounted(), scope), path, weather, mtm1);
+  async sky({ path, scope, weather, mtm1, hdWeather }) {
+    const sky = await buildSky(scoped(await mounted(), scope), path, weather, mtm1, { hdWeather });
     return sky ? withTransfer(sky, [sky.rgba.buffer]) : null;
+  },
+
+  /** The texture MTM2 mirrors on a truck's body in `weather` (worker/env-map.js), `{ width, height, rgba }` or null. */
+  async envMap({ weather = 0 } = {}) {
+    const image = await truckEnvMap(await mounted(), weather);
+    return image ? withTransfer(image, [image.rgba.buffer]) : null;
   },
 
   /** The race loading screen, `{ width, height, rgba }` or null. */

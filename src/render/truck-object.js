@@ -37,6 +37,8 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
   const bodyGroup = meshesOf(library, truck.parts.body);
   // How strongly each part shines with "Glossy paint" (render/gloss.js): the body's paint in full.
   bodyGroup.userData.gloss = GLOSS.body;
+  // The body, which "Truck reflections" draws again (render/truck-reflection.js).
+  bodyGroup.userData.body = true;
   root.add(bodyGroup);
   // The body's vertices are copied so that damage can move them (and repair put them back).
   const bodyMeshes = bodyGroup.children.map((mesh) => {
@@ -370,19 +372,28 @@ function artTone(image) {
 
 /*
   The lamps as the port draws them ("Truck lamps", docs/VISUALS.md; game/truck-lights.js has the rules): a lens that
-  glows in the lamp's own colour, far brighter than white, so the lens flares it; a headlight's beam as light in the air
+  glows in the lamp's own bitmap, as large as the TRK makes it, far brighter than white, so the lens flares it (a soft
+  round glow only for a lamp without a bitmap); a headlight's beam as light in the air
   (render/light-beam.js), seen by what the weather puts in the air; tail lamps that run dim and brake bright; and lamps
   that a dent carries with the panel they sit on.
 */
 function createRichLamps(truck) {
   const group = new THREE.Group();
   group.name = "lamps";
+  const bitmaps = new Map();
+  const bitmap = (name) => {
+    if (!name || !truck.lightTextures?.[name]) return null;
+    if (!bitmaps.has(name)) bitmaps.set(name, dataTexture(truck.lightTextures[name], "enhanced", false));
+    return bitmaps.get(name);
+  };
   const items = (truck.lights ?? []).map((light) => {
     const tone = lampTone(light) ?? artTone(truck.lightTextures?.[light.source]);
+    // The lens glows in the lamp's own picture and colours; the port's tone is for a lamp without one.
+    const own = bitmap(light.source);
     let lens = null, beam = null;
     if (light.radius > 0) {
-      lens = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({ map: lensTexture(), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false })));
-      lens.scale.setScalar(light.radius * 2.6);
+      lens = new THREE.Sprite(fogDims(new THREE.SpriteMaterial({ map: own ?? lensTexture(), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, toneMapped: false })));
+      lens.scale.setScalar(light.radius * (own ? 2 : 2.6));
       lens.renderOrder = 2;
       lens.visible = false;
       group.add(lens);
@@ -395,7 +406,7 @@ function createRichLamps(truck) {
       group.add(beam);
     }
     // Where the lamp is now, body axes: where the TRK has it, until a dent moves the panel it sits on.
-    return { light, lens, beam, tone, at: [...light.pos] };
+    return { light, lens, beam, tone, lensTone: own ? [1, 1, 1] : tone, at: [...light.pos] };
   });
   const dir = new THREE.Vector3(), scene = new THREE.Vector3(), toward = new THREE.Vector3();
   return {
@@ -410,7 +421,7 @@ function createRichLamps(truck) {
     /** `viewer` is the camera in the body's game axes, `eyeWorld` in the scene's. */
     update(state, clockMs, viewer, eyeWorld) {
       const seconds = clockMs / 1000;
-      for (const { light, lens, beam, tone, at } of items) {
+      for (const { light, lens, beam, tone, lensTone, at } of items) {
         const level = blinkOn(light, clockMs) ? lampLevel(light, state) : 0;
         lampDirection(lampHeading(light, seconds), light.pitch, dir);
         if (lens) {
@@ -421,7 +432,7 @@ function createRichLamps(truck) {
           const glow = lensGlow(light, level, state.daylight) * smoothstep(-0.15, 0.4, dir.dot(toward));
           lens.visible = glow > 0.01 && !state.cockpit;
           if (lens.visible) {
-            lens.material.color.setRGB(tone[0] * glow, tone[1] * glow, tone[2] * glow);
+            lens.material.color.setRGB(lensTone[0] * glow, lensTone[1] * glow, lensTone[2] * glow);
             const pull = Math.min(light.radius * 0.5, distance * 0.5);
             lens.position.set(at[0] + toward.x * pull, at[1] + toward.y * pull, -(at[2] + toward.z * pull));
           }

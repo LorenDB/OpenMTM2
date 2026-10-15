@@ -9,7 +9,8 @@
   `family` ("MTM", "CPR", "EVO1", "EVO2", "TV" (Terminal Velocity and Fury3), "HB" or "" when unknown; "MTM" when it states none), and a
   lookup goes through the mounts of one family first, in mount order, then through the rest: a
   CPR or Evo archive never shadows an MTM2 file of the same name, whatever the order. The VFS
-  itself looks up for "MTM"; `scoped(family)` is the same VFS for another game's track.
+  itself looks up for "MTM"; `scoped(family)` is the same VFS for another game's track, and `preferGame(game)` puts one
+  game's archives first within the family (an MTM1 truck kept apart from MTM2's same-named one).
 
   This module is pure: a mount is `{ name, archive, readEntry(entry), family? }`, where `archive`
   is an OpenPhotex PodArchive and `readEntry` resolves to the entry's bytes. The asset worker
@@ -39,9 +40,14 @@ export function createVfs(mounts) {
   const familyOf = (mount) => mount.family ?? DEFAULT_FAMILY;
   const views = new Map();
 
-  function view(family) {
-    if (views.has(family)) return views.get(family);
-    const tables = [...allTables.filter((t) => familyOf(t.mount) === family), ...allTables.filter((t) => familyOf(t.mount) !== family)];
+  function view(family, game = null, first = null) {
+    const key = `${family}|${game ?? ""}|${first ?? ""}`;
+    if (views.has(key)) return views.get(key);
+    let tables = [...allTables.filter((t) => familyOf(t.mount) === family), ...allTables.filter((t) => familyOf(t.mount) !== family)];
+    // One game's archives ahead of the rest of its family (`preferGame`): MTM1's before MTM2's, though both are "MTM".
+    if (game) tables = [...tables.filter((t) => t.mount.game === game), ...tables.filter((t) => t.mount.game !== game)];
+    // One archive ahead of all (`preferMount`), then the rest as above.
+    if (first) tables = [...tables.filter((t) => t.mount.name === first), ...tables.filter((t) => t.mount.name !== first)];
 
     /** `{ mount, entry }` for a path, or null. */
     function find(path) {
@@ -77,8 +83,14 @@ export function createVfs(mounts) {
     }
 
     /** `mounts` is this view's lookup order; `allMounts` the mount order as the player set it. */
-    const made = { family, mounts: tables.map((t) => t.mount), allMounts: mounts, find, read, list, scoped: view };
-    views.set(family, made);
+    const made = {
+      family, mounts: tables.map((t) => t.mount), allMounts: mounts, find, read, list, scoped: (other) => view(other),
+      /** The same VFS with the archives of one game (`mount.game`, "MTM1") looked through first. */
+      preferGame: (other) => view(family, other, first),
+      /** The same VFS with one archive (by `mount.name`) looked through first. */
+      preferMount: (name) => view(family, game, name),
+    };
+    views.set(key, made);
     return made;
   }
 

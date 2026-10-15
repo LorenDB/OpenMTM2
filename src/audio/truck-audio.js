@@ -1,25 +1,66 @@
 /*
-  The trucks' sound in a race: per truck the engine's three loops, a skid loop that follows the
-  surface, and one-shots for gear changes, hull impacts, landings and splashes. The sim sends each
-  truck's `sound` state with its pose (worker/sim-worker.js soundOf); the choices are in
-  game/sound-model.js. The player's truck is heard unpositioned, the others where they are.
+  The trucks' sound in a race: per truck the engine's three loops, a corner and a wheelspin loop on
+  each rear tire that follow its surface, the water and bridge loops, and one-shots for gear changes,
+  hull impacts and splashes. The sim sends each truck's `sound` state with its pose
+  (worker/sim-worker.js soundOf); the rules are in game/sound-model.js. The player's truck is heard
+  unpositioned, the others where they are.
 */
-import { YEEHAW_GAIN, engineVoices, gearSound, hornSample, impactSound, skidAmount, skidSample } from "../game/sound-model.js";
+import {
+  BRIDGE_SURFACES, YEEHAW_GAIN, bridgeVoice, cornerSample, engineVoices, gearSound, hornSample, impactSound, skidRate, skidSurface,
+  spinAction, spinSample, splashGain, tireSliding, variantPicker, wadeGain,
+  MTM1_SKID_SPEED, mtm1CornerSample, mtm1SkidSample, mtm1SpinSample, mtm1Variant,
+} from "../game/sound-model.js";
 
 const ENGINE_LOOPS = [["idle", "STARTIDL"], ["mid", "M1-2-M2"], ["accel", "ACCEL3B"]];
+/** The rear tires (RR, RL): the only ones with skid voices. */
+const REAR = [2, 3];
 /** Trucks farther than this from the listener get no skid voice, and their one-shots are skipped, feet. */
 const AUDIBLE_FT = 900;
 
 /** How long a hull impact's level lingers as the bar the next knock must clear (it falls to a third in this time). */
 const IMPACT_FADE_S = 2;
 
-export function createTruckAudio(audio, { count, player = 0, random = Math.random, kookyHorn = false, onHit = () => {} }) {
+export function createTruckAudio(audio, { count, player = 0, random = Math.random, kookyHorn = false, mtm1Sounds = false, onHit = () => {} }) {
   const pick = (n) => 1 + Math.floor(random() * n);
   const trucks = Array.from({ length: count }, () => ({
-    engine: null, heli: null, skid: null, skidName: null, gear: null, impactBusy: false, cooldown: 0, started: false,
+    engine: null, heli: null, gear: null, impactBusy: false, cooldown: 0, started: false,
+    rear: REAR.map((tire) => ({ tire, code: -1, corner: null, spin: null })), sliding: [false, false, false, false], throttle: 0, brake: 0,
+    inWater: false, wade: null, bridges: BRIDGE_SURFACES.map(() => null),
   }));
+  // The corner and the wheelspin each keep their own last variant, as their routines do.
+  const cornerPick = variantPicker(random), spinPick = variantPicker(random);
   let disposed = false, lastHorn = -1;
-  audio.preload?.(["SUSPEN1", "SUSPEN3", "SUSPEN5", "SUSPEN6", "2NDGEAR", "3RDGEAR", "SPLASH", "SPLASH1", "YEEHAW", "HUEY", "TERADCY1", "TERADCY2"]);
+  audio.preload?.([
+    "SUSPEN1", "SUSPEN3", "SUSPEN5", "SUSPEN6", "2NDGEAR", "3RDGEAR", "SPLASH1", "WTR-ABV1", "YEEHAW", "HUEY", "TERADCY1", "TERADCY2",
+    "SKID-C2", "SKID-D1", "SKID-D2", "SKID-G1", "SKID-G2", "SKID-G3", "SNWSKID5", "SNWSKID6", "SNWSKID7", "SPINICE", "SPINROC1", "SPINROC2", "SPINROC3",
+  ]);
+
+  /** A looping voice kept by its handle: `{ promise, voice, ended }`, `voice` once it has started. */
+  function loopVoice(name, gain, rate, position) {
+    const handle = { promise: null, voice: null, ended: false };
+    handle.promise = audio.play(name, { loop: true, gain, rate, position }).then((voice) => {
+      if (disposed || handle.ended) voice?.stop();
+      else if (voice) handle.voice = voice;
+      else handle.ended = true;
+      return voice;
+    });
+    return handle;
+  }
+  const playing = (handle) => !!handle && !handle.ended && !(handle.voice?.stopped);
+  const stopLoop = (handle) => { if (!handle) return null; handle.ended = true; handle.voice?.stop(); return null; };
+
+  /**
+   * Start a rear tire's corner or spin loop for its surface, unless one plays (0x4297a0, 0x429840). With "MTM1 sounds"
+   * (MTM1_MONSTER_EXE_ANALYSIS.md 6.7) MTM1's samples, and only from the RL tire: MTM1 has one of each a truck.
+   */
+  function startSkid(r, kind, i, pos) {
+    if (playing(r[kind])) return;
+    if (mtm1Sounds && r.tire !== 3) return;
+    const sample = mtm1Sounds
+      ? kind === "corner" ? mtm1CornerSample(r.code) : mtm1SpinSample(r.code, mtm1Variant(random))
+      : kind === "corner" ? cornerSample(r.code, cornerPick) : spinSample(r.code, spinPick);
+    r[kind] = sample ? loopVoice(sample.name, sample.gain * (i === player ? 1 : 0.9), skidRate(random), i === player ? null : pos) : null;
+  }
 
   function startEngine(t, i, pose) {
     t.started = true;
@@ -72,29 +113,62 @@ export function createTruckAudio(audio, { count, player = 0, random = Math.rando
         }
       }
 
-      // Skids: the surface's loop at the loudest tire's slip.
-      const slip = Math.max(0, ...s.tires.map(skidAmount));
-      // Which skid it is is decided without the random variant (`pick` of 1), so the loop runs on until the kind changes;
-      // a variant is drawn only when a new loop starts. (Comparing the random names restarted the loop every frame.)
-      const spec = { type: s.surface, spinning: s.throttle > 0.4 && s.speed < 30, speed: s.speed };
-      // A skid starts above 0.08 of slip and runs on down to 0.03, so a tire hovering at the edge does not start and stop it every frame.
-      const sliding = slip > (t.skidName ? 0.03 : 0.08) && s.speed > 6;
-      const kind = near && sliding ? skidSample({ ...spec, pick: () => 1 }) : null;
-      t.skidAge = (t.skidAge ?? 0) + dt;
-      // A loop that is running stays at least a third of a second, whether it ends or gives way to another kind.
-      if (kind !== t.skidName && !(t.skidName && t.skidAge < 0.35)) {
-        t.skid?.then?.((voice) => voice?.stop());
-        t.skidAge = 0;
-        t.skidName = kind;
-        t.skid = kind ? audio.play(skidSample({ ...spec, pick }), { loop: true, gain: 0, position: i === player ? null : pos }) : null;
-      }
-      if (t.skid) {
-        t.skid.then((voice) => {
-          if (!voice) return;
-          voice.setGain(0.8 * slip);
-          if (i !== player) voice.setPosition(pos);
+      // Skids (0x41bbd0, 0x47c480, 0x477520): no braking skid, a corner loop and a spin loop per rear tire.
+      if (!near) {
+        for (const r of t.rear) { r.corner = stopLoop(r.corner); r.spin = stopLoop(r.spin); }
+      } else {
+        // A rear tire on a new surface: the loops that play start over with the new surface's sample.
+        REAR.forEach((k, j) => {
+          const r = t.rear[j], code = skidSurface(s.tires[k]?.surface, s.tires[k]?.onGround, s.weather);
+          if (code === r.code) return;
+          r.code = code;
+          for (const kind of ["corner", "spin"]) if (playing(r[kind])) { r[kind] = stopLoop(r[kind]); startSkid(r, kind, i, pos); }
         });
+        const slid = t.sliding.some(Boolean);
+        t.sliding = s.tires.map((tire, k) => tireSliding(t.sliding[k], tire, s.speed));
+        const slides = t.sliding.some(Boolean);
+        if (!slid && slides) for (const r of t.rear) startSkid(r, "corner", i, pos);
+        if (slid && !slides) for (const r of t.rear) r.corner = stopLoop(r.corner);
+        const spin = spinAction({ throttle: s.throttle, wasThrottle: t.throttle, forward: s.forward, tires: s.tires });
+        if (spin === "start") for (const r of t.rear) startSkid(r, "spin", i, pos);
+        if (spin === "stop") for (const r of t.rear) { r.corner = stopLoop(r.corner); r.spin = stopLoop(r.spin); }
+        if (i !== player) for (const r of t.rear) for (const kind of ["corner", "spin"]) r[kind]?.voice?.setPosition(pos);
       }
+      t.throttle = s.throttle;
+      // MTM1's brake skid (0x43d050): the brake going on from fully off, fast enough: each rear tire's, once.
+      if (mtm1Sounds && near && s.brake > 0 && t.brake <= 0 && s.speed > MTM1_SKID_SPEED) {
+        for (const r of t.rear) {
+          const sample = mtm1SkidSample(r.code, mtm1Variant(random));
+          if (sample) oneShot(sample.name, sample.gain * (i === player ? 1 : 0.9), i, pose);
+        }
+      }
+      t.brake = s.brake ?? 0;
+
+      // Water (0x41bbd0): a splash on going in, by how fast the truck came down, and the wading loop while in.
+      // A truck along the water's edge goes in and out: a splash needs half a second out of the water before it.
+      if (near && s.inWater && !t.inWater && (t.dryFor ?? Infinity) > 0.5) {
+        const gain = splashGain(s.vy);
+        if (gain !== null) oneShot("SPLASH1", gain, i, pose);
+      }
+      t.dryFor = s.inWater ? 0 : (t.dryFor ?? Infinity) + dt;
+      t.inWater = !!s.inWater;
+      if (near && s.inWater) {
+        if (!playing(t.wade)) t.wade = loopVoice("WTR-ABV1", wadeGain(s.speed), 1, i === player ? null : pos);
+        t.wade.voice?.setGain(wadeGain(s.speed));
+        if (i !== player) t.wade.voice?.setPosition(pos);
+      } else t.wade = stopLoop(t.wade);
+
+      // Bridges (0x41ec90): BRIDGE1 while a tire on the ground stands on wood (1100) or 1400 and the truck moves.
+      BRIDGE_SURFACES.forEach((code, b) => {
+        const on = near && s.tires.some((tire) => tire.onGround && Math.floor(tire.surface / 100) * 100 === code);
+        const v = on ? bridgeVoice(s.speed) : null;
+        if (!v) { t.bridges[b] = stopLoop(t.bridges[b]); return; }
+        const gain = v.gain * (i === player ? 1 : 0.9);
+        if (!playing(t.bridges[b])) t.bridges[b] = loopVoice("BRIDGE1", gain, v.rate, i === player ? null : pos);
+        t.bridges[b].voice?.setGain(gain);
+        t.bridges[b].voice?.setRate(v.rate);
+        if (i !== player) t.bridges[b].voice?.setPosition(pos);
+      });
 
       // Well up in the air with all four wheels off the ground, a truck may honk or whoop.
       t.airTime = s.airborne === 4 && !s.heli && s.clearance > 16 ? (t.airTime ?? 0) + dt : 0;
@@ -118,7 +192,7 @@ export function createTruckAudio(audio, { count, player = 0, random = Math.rando
       if (t.heli && (!s.heli || s.heliTeryl || !near)) { t.heli.then((voice) => voice?.stop()); t.heli = null; }
       if (t.heli) t.heli.then((voice) => voice?.setPosition(flyer));
 
-      // Gear changes, hull impacts, landings, splashes.
+      // Gear changes and hull impacts.
       if (near) {
         const gear = gearSound(t.gear, s.gear);
         // One gear sound at a time per truck (the game stops the last before the next), and not within a second of the last.
@@ -145,7 +219,6 @@ export function createTruckAudio(audio, { count, player = 0, random = Math.rando
           audio.play(impact.name, { gain: impact.gain, position: i === player ? null : pos })
             .then((voice) => (voice ? voice.done : null)).finally(() => { t.impactBusy = false; });
         }
-        if (s.splash && t.cooldown === 0) { oneShot(random() < 0.5 ? "SPLASH" : "SPLASH1", 0.9, i, pose); t.cooldown = 0.6; }
       }
       t.gear = s.gear;
     });
@@ -155,7 +228,9 @@ export function createTruckAudio(audio, { count, player = 0, random = Math.rando
     disposed = true;
     for (const t of trucks) {
       for (const voice of Object.values(t.engine ?? {})) voice?.stop();
-      t.skid?.then?.((voice) => voice?.stop());
+      for (const r of t.rear) { stopLoop(r.corner); stopLoop(r.spin); }
+      stopLoop(t.wade);
+      t.bridges.forEach(stopLoop);
       t.heli?.then?.((voice) => voice?.stop());
     }
   }

@@ -15,7 +15,7 @@
 import * as THREE from "three";
 import {
   CONTACT_GAP_S, DUST_RANGE_FT, DUST_TICK_S, TRACK_RANGE_FT, SMOKE_AFTER_S, SMOKE_EVERY_S, PUFF_FRAMES, PUFF_POOL, SPARK_POOL, TRACK_BREAK_FT, CLASSIC_TRACK_POOL, TRACK_STEP_FT, TRACK_WIDTH_FT,
-  SPARK_BURST_GAP_S, TIRE_SPARK_SHARE, SPARK_HIT_SPEED, SPARK_MIN_SPEED, CLASSIC_SPARK_MIN_SPEED, TRACK_LIFE_S, TRACK_FADE_S, dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit,
+  SPARK_BURST_GAP_S, TIRE_SPARK_SHARE, manySparksForHit, sparkRules, CLASSIC_DUST, RICH_DUST, GREY_DUST_TONE, SPARK_HIT_SPEED, SPARK_MIN_SPEED, CLASSIC_SPARK_MIN_SPEED, TRACK_LIFE_S, TRACK_FADE_S, dustPuffs, keepsTread, puffFrame, puffLife, puffSize, puffsForHit, raisesDust, scrapeSparks, sparksForHit,
 } from "../game/tire-effects.js";
 import { iceHullContacts, standOnFt } from "../game/ice.js";
 import {
@@ -41,11 +41,17 @@ const flatTexture = ({ rgba, width, height }, repeat = false) => {
   return texture;
 };
 
-/** A puff frame as tinted dust: the art's brightness becomes its opacity (at most 0.5), the colour a dull brown. */
-function dustPrint(art, [r, g, b] = [128, 112, 92], top = 128) {
+/**
+ * A puff frame as tinted dust: the art's brightness becomes its opacity (at most 0.5), the colour a dull brown. A tint of
+ * null keeps the art's own grey (MTM2's dust), brought up to the brightness the art has at its fullest.
+ */
+function dustPrint(art, tint = [128, 112, 92], top = 128) {
   const out = new Uint8ClampedArray(art.rgba.length);
+  let most = 1;
+  if (!tint) for (let i = 0; i < art.rgba.length; i += 4) most = Math.max(most, art.rgba[i], art.rgba[i + 1], art.rgba[i + 2]);
   for (let i = 0; i < art.rgba.length; i += 4) {
     const lum = Math.max(art.rgba[i], art.rgba[i + 1], art.rgba[i + 2]);
+    const [r, g, b] = tint ?? [art.rgba[i] * 255 / most, art.rgba[i + 1] * 255 / most, art.rgba[i + 2] * 255 / most];
     out[i] = r; out[i + 1] = g; out[i + 2] = b;
     out[i + 3] = Math.min(top, lum * 0.9);
   }
@@ -63,6 +69,9 @@ function treadPrint(art) {
   return { rgba: out, width: art.width, height: art.height };
 }
 
+/** The Sparks slider's level in the effect flags: a number 0..3, or the older true and false (Normal and None). */
+const sparkLevelOf = (flags) => (flags.sparks === true ? 2 : Math.max(0, Math.min(3, Number(flags.sparks) || 0)));
+
 /**
  * @param {{ scene: THREE.Scene, art: object|null, ground: (x: number, z: number) => number, count: number, random?: () => number,
  *   rich?: object|null, floor?: ((x: number, z: number, y: number) => number)|null }} options
@@ -72,7 +81,8 @@ function treadPrint(art) {
  *   (render/scenery.js `particles`): `{ look, groundTone, bareGround(x, z, y), snowDepth(x, z, y), snowLying(x, z, y),
  *   strikeIce(x, z, speedFtPerS), dragIce(chain, points) }`.
  */
-export function createTireEffects({ scene, art, ground, count, random = Math.random, rich = null, dark = false, floor = null }) {
+
+export function createTireEffects({ scene, art, ground, count, random = Math.random, rich = null, dark = false, floor = null, greyDust = false }) {
   const root = new THREE.Group();
   root.name = "tire-effects";
   scene.add(root);
@@ -114,7 +124,10 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   // Puffs.
   // The puff art is grey on black; it is drawn as a soft brown dust, clear where the art is black, not added to the view.
   // Kinds 0 and 1 are dust, 2 and 3 the dark grey smoke of a collision (denser).
-  const tints = [[[128, 112, 92], 128], [[54, 54, 58], 110]];
+  // MTM2 classic dust (Options, Advanced): both kinds in the art's own grey, as the game draws a wheel's dust and a hit's alike.
+  const tints = greyDust ? [[null, 128], [null, 128]] : [[[128, 112, 92], 128], [[54, 54, 58], 110]];
+  // The Dust slider's level (game/tire-effects.js `dustLevel`), as the last `update` was given it; and the sprites alive.
+  let dustNow = 2, livePuffs = 0;
   const frames = tints.flatMap(([tint, top]) => [art?.puff2, art?.puff3].map((list) => (list ?? []).map((image) => image && new THREE.SpriteMaterial({
     map: flatTexture(dustPrint(image, tint, top)), transparent: true, depthWrite: false, opacity: 0.7,
   }))));
@@ -132,16 +145,22 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
    * 3 times and swells by 10. With "Rich particles" the smoke of a hit is a puff of the port's own, drifting with `vel`.
    */
   function puff(x, y, z, smoke = false, vel = STILL) {
+    if (dustNow <= 0) return;
     if (particles) {
-      particles.puff(smoke ? PUFF_KINDS.smoke : PUFF_KINDS.dust, x, y + 0.5, z, vel[0] * 0.2 + (random() - 0.5) * 3, 1 + random() * 2, vel[2] * 0.2 + (random() - 0.5) * 3);
+      const amount = RICH_DUST[dustNow] ?? RICH_DUST[2];
+      particles.puff(smoke ? PUFF_KINDS.smoke : PUFF_KINDS.dust, x, y + 0.5, z, vel[0] * 0.2 + (random() - 0.5) * 3, 1 + random() * 2, vel[2] * 0.2 + (random() - 0.5) * 3,
+        { scale: amount.scale, life: amount.life, ...(greyDust ? { tone: GREY_DUST_TONE } : {}) });
       return;
     }
     if (!frames[0].length) return;
+    const level = CLASSIC_DUST[dustNow] ?? CLASSIC_DUST[2];
+    if (livePuffs >= level.pool) return;
     const sprite = puffs.find((p) => !p.userData.live);
     if (!sprite) return;
-    const scale = smoke ? 3 : 2.8, growth = smoke ? 10 : 14;
+    const { scale, growth, life } = smoke ? level.smoke : level.dust;
+    livePuffs++;
     Object.assign(sprite.userData, {
-      age: 0, life: puffLife(random()) * (smoke ? 1.6 : 2.2), size: puffSize(random()) * scale, growth,
+      age: 0, life: puffLife(random()) * life, size: puffSize(random()) * scale, growth,
       kind: (smoke ? 2 : 0) + (random() < 0.5 ? 0 : 1), live: true,
     });
     sprite.position.set(x, y + 0.5, -z);
@@ -205,9 +224,9 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   sparkPoints.visible = !rich;
   root.add(sparkPoints);
   /** A hit's burst of sparks, once for a contact that lasts (game/tire-effects.js SPARK_BURST_GAP_S). */
-  function burst(state, force, share = 1) {
+  function burst(state, force, share = 1, many = false) {
     if (clock - (state.lastBurst ?? -9) < SPARK_BURST_GAP_S) return 0;
-    const thrown = sparksForHit(force, Math.random, share);
+    const thrown = many ? manySparksForHit(force) : sparksForHit(force, Math.random, share);
     if (thrown) state.lastBurst = clock;
     return thrown;
   }
@@ -219,13 +238,14 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
   /**
    * With "Rich particles": `count` of the game's sparks struck at `at` (game feet) between a truck moving at `vel` and
    * what it strikes, moving at `other` (still, for the ground or a wall); `normal` the way off that surface
-   * (game/particles.js `sparkVelocity`). Each is a few glowing dots; a blow (`hit`) scatters them wider.
+   * (game/particles.js `sparkVelocity`). Each is a few glowing dots (one, `single`, below the Sparks slider's Many); a
+   * blow (`hit`) scatters them wider.
    */
-  function sparkShowerAt(at, count, { vel, other = STILL, normal, hit = false }) {
+  function sparkShowerAt(at, count, { vel, other = STILL, normal, hit = false, single = false }) {
     const speed = Math.hypot(vel[0] - other[0], vel[1] - other[1], vel[2] - other[2]);
     let thrown = 0;
     for (let n = 0; n < count; n++) {
-      const flecks = hit ? 1 + Math.floor(random() * 2) : sparkShower(speed, random);
+      const flecks = single ? 1 : hit ? 1 + Math.floor(random() * 2) : sparkShower(speed, random);
       for (let f = 0; f < flecks; f++) {
         const v = sparkVelocity({ vel, other, normal, hit, random });
         if (particles.streak(STREAK_KINDS.spark, at[0], at[1], at[2], v[0], v[1], v[2])) thrown++;
@@ -340,12 +360,15 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
    */
   function throwPuff(kind, hub, floor, vel, out, family, type, scale = 1, thick = 1) {
     const spec = PUFF_KINDS[kind], jitter = () => (random() - 0.5) * 2;
-    const tone = spec.ground ? earthTone(family, type, spec, hub[0], hub[2]) : spec.tone;
+    const dusty = kind === "dust", amount = RICH_DUST[dustNow] ?? RICH_DUST[2];
+    const tone = dusty && greyDust ? GREY_DUST_TONE : spec.ground ? earthTone(family, type, spec, hub[0], hub[2]) : spec.tone;
+    const life = dusty ? amount.life : 1;
+    if (dusty) scale *= amount.scale;
     // Dust and a sliding tire's smoke hang where they were raised; powder and mist are flung up and out by the tire.
     const hangs = kind === "dust" || kind === "rubber", spread = kind === "rubber" ? 1.1 : 0.6;
     const carried = kind === "dust" ? 0.2 : kind === "rubber" ? 0.1 : 0.42, flung = hangs ? 0.8 : 2 + random() * 2.5, up = hangs ? 0.6 + random() * 1.4 : 2 + random() * 3.5;
     particles.puff(spec, hub[0] + jitter() * spread, floor + 0.5, hub[2] + jitter() * spread,
-      vel[0] * carried + out[0] * flung + jitter() * 1.2, up, vel[2] * carried + out[1] * flung + jitter() * 1.2, { tone, scale, thick });
+      vel[0] * carried + out[0] * flung + jitter() * 1.2, up, vel[2] * carried + out[1] * flung + jitter() * 1.2, { tone, scale, thick, life });
   }
   /**
    * A tire raising dust lays it along the way it rolled since the last tick, from `state.dustAt[k]` to `hub`: a puff
@@ -360,7 +383,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     const dx = hub[0] - from[0], dz = hub[2] - from[1], rolled = Math.hypot(dx, dz);
     // (Not across a jump from one place to another.)
     if (rolled > 40) return;
-    state.dustOwed[k] += (rolled / (DUST.spacingFt * (far ? DUST.farSpacing : 1))) * raised * few;
+    state.dustOwed[k] += (rolled / (DUST.spacingFt * (far ? DUST.farSpacing : 1))) * raised * few * (RICH_DUST[dustNow] ?? RICH_DUST[2]).count;
     const count = Math.floor(state.dustOwed[k]);
     state.dustOwed[k] -= count;
     for (let n = 0; n < count; n++) {
@@ -582,6 +605,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
      */
     update({ dt, listener, flags, noDust = false, trucks, light = 1, weather = 0, camera = null, lights = null, snowDown = 0, viewHeight = 900, lite = false }) {
       weatherNow = weather;
+      dustNow = flags.dust === true ? 2 : Math.max(0, Math.min(3, Number(flags.dust) || 0));
       snowNow = snowDown;
       lastTrucks = trucks;
       trucks.forEach((t, i) => { lastSurface[i] = t?.surface ?? null; });
@@ -663,7 +687,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         u.age += dt;
         const frame = puffFrame(u.age, u.life);
         const material = frame < 0 ? null : frames[u.kind][frame] ?? frames[u.kind][PUFF_FRAMES - 1];
-        if (!material) { u.live = false; sprite.visible = false; continue; }
+        if (!material) { u.live = false; sprite.visible = false; livePuffs = Math.max(0, livePuffs - 1); continue; }
         sprite.material = material;
         const size = (u.size + Math.min(1, u.age / u.life) * u.growth) * 2;
         sprite.scale.set(size, size, 1);
@@ -730,21 +754,22 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       // What it struck: the ground, or the ice over the water, when the point is down on it; else a thing.
       const onIce = !!rich && iced(bed), floor = onIce ? waterLevel : bed;
       const onGround = where[1] - floor < 1.2;
-      if (flags.sparks) {
+      const amount = sparkRules(sparkLevelOf(flags));
+      if (amount.share > 0) {
         // Under water, nothing that burns; off the ice, chips.
         const kind = rich
           ? scrapeThrows({ onGround, underWater, onIce, family: lastSurface[i]?.family, type: lastSurface[i]?.type, weather: weatherNow, snowFt: rich.snowLying?.(where[0], where[2], where[1]) ?? 0 })
           : "spark";
-        const result = scrapeSparks(state.scrape.get(zone) ?? 0, steps / 60, speedFtS, Math.random, 1, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED);
+        const result = scrapeSparks(state.scrape.get(zone) ?? 0, steps / 60, speedFtS, Math.random, amount.share, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED, amount.many && !rich);
         state.scrape.set(zone, result.timer);
-        const struck = sparksForHit(force, speedFtS);
         if (rich && kind === "spark") {
           // Off the ground, up; off a thing, out from it toward the truck, along the ground.
           const pos = lastTrucks[i]?.pose?.pos ?? where;
           const normal = onGround ? [0, 1, 0] : [pos[0] - where[0], 0, pos[2] - where[2]];
-          sparkShowerAt(where, result.sparks, { vel: state.vel, normal });
-          sparkShowerAt(where, struck, { vel: state.vel, normal, hit: true });
-        } else for (let n = 0; n < result.sparks + burst(state, force); n++) spark(where[0], where[1], where[2], 14, 8, state.vel, kind);
+          const struck = amount.many ? sparksForHit(force, speedFtS) : burst(state, force, amount.share);
+          sparkShowerAt(where, result.sparks, { vel: state.vel, normal, single: !amount.many });
+          sparkShowerAt(where, struck, { vel: state.vel, normal, hit: true, single: !amount.many });
+        } else for (let n = 0; n < result.sparks + burst(state, force, amount.share, amount.many); n++) spark(where[0], where[1], where[2], 14, 8, state.vel, kind);
       }
       // (What it does to the ice is the hull's on the ice, `hullOnIce`, which looks at it every frame.)
       if (!underWater) this._contactSmoke(state, where, steps, flags, force, speedFtS, onGround ? i : -1, onIce);
@@ -812,19 +837,20 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         }
       }
       const underWater = !!rich && waterLevel !== null && weatherNow !== 5 && floorUnder(at[0], at[2], at[1]) < waterLevel && at[1] < waterLevel;
-      if (flags.sparks) {
+      const amount = sparkRules(sparkLevelOf(flags));
+      if (amount.share > 0) {
         // Tires alone throw far fewer than bodywork.
-        const share = hull ? 1 : TIRE_SPARK_SHARE;
-        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, slide, Math.random, share, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED);
+        const share = (hull ? 1 : TIRE_SPARK_SHARE) * amount.share;
+        const result = scrapeSparks(state.scrape.get(0) ?? 0, steps / 60, slide, Math.random, share, rich ? SPARK_MIN_SPEED : CLASSIC_SPARK_MIN_SPEED, amount.many && !rich);
         state.scrape.set(0, result.timer);
-        const struck = sparksForHit(force, slide);
         if (rich && !underWater) {
           // Out from where the two meet, toward this truck: its own sparks.
           mine = lastTrucks[i]?.pose?.pos ?? at;
           const normal = [mine[0] - at[0], 0, mine[2] - at[2]];
-          sparkShowerAt(at, result.sparks, { vel: state.vel, other: theirVel, normal });
-          sparkShowerAt(at, struck, { vel: state.vel, other: theirVel, normal, hit: true });
-        } else for (let n = 0; n < result.sparks + burst(state, force, share); n++) spark(at[0], at[1], at[2], 14, 8, state.vel, underWater ? "bubble" : "spark");
+          const struck = amount.many ? sparksForHit(force, slide) : burst(state, force, share);
+          sparkShowerAt(at, result.sparks, { vel: state.vel, other: theirVel, normal, single: !amount.many });
+          sparkShowerAt(at, struck, { vel: state.vel, other: theirVel, normal, hit: true, single: !amount.many });
+        } else for (let n = 0; n < result.sparks + burst(state, force, share, amount.many); n++) spark(at[0], at[1], at[2], 14, 8, state.vel, underWater ? "bubble" : "spark");
       }
       if (!underWater) this._contactSmoke(state, at, steps, flags, force, slide);
     },

@@ -15,6 +15,8 @@
      an edge of foam that laps. The ground under it takes the same (`dressBed`): it darkens and
      blues with depth, light dances on it in the shallows, and the shore is wet;
    - rain rings in Rain;
+   - shadows: where the hills or anything standing cast the sun's shadow (render/sun-shadows.js, the enhanced look),
+     the water loses the sun's share of its daylight and its glint, and keeps what it mirrors of the sky;
    - ice in Snow, when the game makes the water solid (MTM2_PHYSICS.md 2.1): flat and hard, at
      the game's own opacity, dark where water lies under it and pale where it is frozen to the
      bed, broken by long cracks, plates and hairlines that are seen running down into it, none of
@@ -42,6 +44,7 @@ const ICE_OPACITY = waterOpacity(SNOW);
 /** The clock the waves run on wraps here, seconds. */
 const CLOCK_SECONDS = 4096;
 const glsl = (n) => n.toFixed(4);
+const luminance = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 
 /** Numbers for the graphics card to read as they are, four to a texel: no filtering, no mipmaps. */
 function dataTexture(data, width, height) {
@@ -55,18 +58,30 @@ function dataTexture(data, width, height) {
 const VERTEX = /* glsl */ `
 varying vec3 vWorld;
 varying vec3 vView;
+#include <shadowmap_pars_vertex>
 void main() {
   vec4 world = modelMatrix * vec4( position, 1.0 );
   vec4 view = viewMatrix * world;
   vWorld = world.xyz;
   vView = view.xyz;
+  // Where this point lies in each of the sun's shadow maps (the cascades, render/sun-shadows.js); the water faces up.
+  #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_DIR_LIGHT_SHADOWS; i ++ ) {
+      vDirectionalShadowCoord[ i ] = directionalShadowMatrix[ i ] * ( world + vec4( 0.0, directionalLightShadows[ i ].shadowNormalBias, 0.0, 0.0 ) );
+    }
+    #pragma unroll_loop_end
+  #endif
   gl_Position = projectionMatrix * view;
 }`;
 
 const FRAGMENT = /* glsl */ `
 varying vec3 vWorld;
 varying vec3 vView;
-uniform float uTime, uLight, uIce, uSnow, uRain, uSkyOn, uWave, uDark;
+#include <packing>
+#include <shadowmap_pars_fragment>
+// uSunShare: the sun's share of the daylight on the water, which a shadow takes away
+uniform float uTime, uLight, uIce, uSnow, uRain, uSkyOn, uWave, uDark, uSunShare;
 // uDaylight: the light that falls on the water from the sky and the sun together; uScatter: the water's own colour
 uniform vec3 uSun, uSunColor, uDaylight, uScatter, uSkyCap, uHorizon, uFogColor, uFogRange, uGroundAt;
 uniform sampler2D uGround, uWaves, uCloud, uSky, uRipples;
@@ -75,6 +90,29 @@ uniform vec4 uRippleAt;
 // The marks the trucks have left in the ice, and each cell's list of those that reach into it (game/ice.js \`createIceMarks\`).
 uniform sampler2D uIceMarks, uIceGrid;
 ${ATMOSPHERE_FRAGMENT_GLSL}
+
+// How much of the sun reaches this point, 0 to 1: from the finest of the sun's shadow maps that covers it (they are listed
+// nearest first), 1 where none does or there are no shadows.
+float sunReaches() {
+  float lit = 1.0;
+  #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+    bool found = false;
+    DirectionalLightShadow caster;
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_DIR_LIGHT_SHADOWS; i ++ ) {
+      caster = directionalLightShadows[ i ];
+      if ( ! found ) {
+        vec3 on = vDirectionalShadowCoord[ i ].xyz / vDirectionalShadowCoord[ i ].w;
+        if ( all( greaterThan( on.xy, vec2( 0.01 ) ) ) && all( lessThan( on.xy, vec2( 0.99 ) ) ) && on.z <= 1.0 ) {
+          lit = getShadow( directionalShadowMap[ i ], caster.shadowMapSize, caster.shadowIntensity, caster.shadowBias, caster.shadowRadius, vDirectionalShadowCoord[ i ] );
+          found = true;
+        }
+      }
+    }
+    #pragma unroll_loop_end
+  #endif
+  return lit;
+}
 
 // The sky a ray leaving the water along \`way\` would meet: the dome's own picture (render/track-scene.js skyGeometry).
 vec3 skyAlong( vec3 way, float blur ) {
@@ -387,6 +425,10 @@ void main() {
   vec4 cloud = texture2D( uCloud, at / 61.0 );
   vec3 color;
   float alpha;
+  // In a shadow the water has the sky's light alone: no sun's share of the daylight, and no glint.
+  float sunLit = sunReaches();
+  float shade = 1.0 - uSunShare * ( 1.0 - sunLit );
+  vec3 daylight = uDaylight * shade;
 
   if ( uIce > 0.5 ) {
     // How wide a pixel is on the ice here, feet, and how far aside the eye's line runs a foot down in it.
@@ -451,9 +493,9 @@ void main() {
     body = mix( body, crushedIce, struck.z * ( 0.6 + 0.4 * vein.a ) );
     // Scored white where a body was dragged over it.
     body = mix( body, vec3( 0.8, 0.87, 0.91 ) * ( 0.9 + 0.1 * vein.a ), scraped.y * 0.8 );
-    body *= uLight;
+    body *= uLight * shade;
     color = mix( body, skyAlong( back, 3.5 + 2.0 * scraped.y ), ( 0.05 + 0.55 * glance + 0.25 * struck.w ) * ( 1.0 - 0.6 * struck.z ) );
-    color += uSunColor * ( pow( max( dot( back, uSun ), 0.0 ), 90.0 ) * 0.6 * ( 1.0 - 0.7 * scraped.y ) );
+    color += uSunColor * ( pow( max( dot( back, uSun ), 0.0 ), 90.0 ) * 0.6 * ( 1.0 - 0.7 * scraped.y ) ) * sunLit;
     // Snow on the ice, in drifts the wind has drawn out: it covers \`uSnow\` of it (the noise lies about a half, so a
     // threshold there covers half), and gathers first along the shore.
     vec2 blown = vec2( at.x * 0.82 + at.y * 0.57, at.y * 0.82 - at.x * 0.57 );
@@ -463,7 +505,7 @@ void main() {
     float lying = smoothstep( edge - 0.015, edge + 0.045, drift + ( 1.0 - smoothstep( 0.0, 2.5, depth ) ) * 0.3 + ( vein.a - 0.5 ) * 0.05 ) * step( 0.001, uSnow );
     // The drift's edge is thin and lets the ice show; a blow, or a body dragged through it, sweeps it clear.
     lying *= 1.0 - 0.85 * max( max( struck.z, struck.w ), scraped.x );
-    color = mix( color, vec3( 0.87, 0.91, 0.97 ) * uLight * ( 0.92 + 0.08 * vein.a ), lying );
+    color = mix( color, vec3( 0.87, 0.91, 0.97 ) * uLight * shade * ( 0.92 + 0.08 * vein.a ), lying );
     alpha = ${ICE_OPACITY.toFixed(4)} * smoothstep( - 0.05, 0.12, depth );
   } else {
     // Waves: three fields of ripples crossing, calmer in the distance (where they would only shimmer) and in the shallows.
@@ -508,10 +550,10 @@ void main() {
       float path = max( depth, 0.0 ) / sqrt( 1.0 - ( 1.0 - eye.y * eye.y ) / ${(WATER_INDEX * WATER_INDEX).toFixed(4)} );
       vec3 passes = exp( - vec3( ${WATER_TAKES.map((v) => v.toFixed(4)).join(", ")} ) * path );
       float hides = 1.0 - dot( passes, vec3( 0.2126, 0.7152, 0.0722 ) );
-      vec3 body = uScatter * uDaylight * ( 1.0 - passes ) / max( hides, 1e-3 );
+      vec3 body = uScatter * daylight * ( 1.0 - passes ) / max( hides, 1e-3 );
       color = mix( body, skyAlong( back, 1.0 ), glance );
       float toSun = max( dot( back, uSun ), 0.0 );
-      color += uSunColor * ( pow( toSun, 420.0 ) * 2.4 + pow( toSun, 36.0 ) * 0.05 );
+      color += uSunColor * ( pow( toSun, 420.0 ) * 2.4 + pow( toSun, 36.0 ) * 0.05 ) * sunLit;
       // How much of the bed the water hides is the water's own doing, whatever the weather: in the dark deep water is
       // black, not clear.
       alpha = max( hides, glance );
@@ -522,7 +564,7 @@ void main() {
       float lace = texture2D( uCloud, at / 40.0 + uTime * 0.004 ).a * 0.6 + texture2D( uCloud, at / 23.0 - uTime * 0.006 ).b * 0.4;
       float churnedShows = smoothstep( 0.25, 0.55, churned * ( 0.2 + 1.8 * lace ) ) * smoothstep( 0.02, 0.12, churned );
       foam = max( foam, churnedShows );
-      color = mix( color, vec3( 0.8, 0.84, 0.86 ) * uDaylight, foam * 0.75 );
+      color = mix( color, vec3( 0.8, 0.84, 0.86 ) * daylight, foam * 0.75 );
       alpha = max( alpha, foam * 0.8 ) * smoothstep( - 0.02, 0.1, depth );
     }
   }
@@ -582,7 +624,10 @@ export function createWaterSystem({ world, groundTexture = null, lights = {}, ri
   // The marks the trucks leave in the ice, which the graphics card reads as two small pictures of numbers.
   const ice = createIceMarks();
   const uniforms = {
+    // The scene's lights, for the sun's shadow maps (`sunReaches`).
+    ...THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
     ...atmosphereUniforms(),
+    uSunShare: { value: 0 },
     uTime: { value: 0 }, uLight: { value: 1 }, uIce: { value: 0 }, uSnow: { value: 0 }, uRain: { value: 0 }, uWave: { value: 1 }, uDark: { value: 0 },
     uSun: { value: new THREE.Vector3(0, 1, 0) }, uSunColor: { value: new THREE.Color(1, 1, 1) },
     uDaylight: { value: new THREE.Color(1, 1, 1) }, uScatter: { value: new THREE.Color(...WATER_SCATTER) },
@@ -595,9 +640,10 @@ export function createWaterSystem({ world, groundTexture = null, lights = {}, ri
     // The ripples and wakes the trucks stir (render/water-ripples.js), where they run.
     ...(ripples?.uniforms ?? { uRipples: { value: null }, uRippleAt: { value: new THREE.Vector4() } }),
   };
-  const material = new THREE.ShaderMaterial({ uniforms, vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false });
+  const material = new THREE.ShaderMaterial({ uniforms, vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false, lights: true });
   const replaced = new Set();
-  for (const mesh of meshes) { replaced.add(mesh.material); mesh.material = material; }
+  // The water takes the shadows of the hills and of what stands round it; it casts none.
+  for (const mesh of meshes) { replaced.add(mesh.material); mesh.material = material; mesh.receiveShadow = true; mesh.castShadow = false; }
   for (const old of replaced) old.dispose();
   // The ground as the water's bed.
   const bed = { uBed: { value: new THREE.Vector4(level ?? -1e6, 0, 1, 0) }, uBedWaves: { value: waveNoise() } };
@@ -658,8 +704,12 @@ export function createWaterSystem({ world, groundTexture = null, lights = {}, ri
       if (ambient) daylight.add(part.copy(ambient.color).multiplyScalar(ambient.intensity / Math.PI));
       if (hemisphere) daylight.add(part.copy(hemisphere.color).multiplyScalar(hemisphere.intensity / Math.PI));
       const height = Math.max(0, uniforms.uSun.value.y);
+      uniforms.uSunShare.value = 0;
       if (sunLight?.isLight) {
+        const sky = luminance(daylight);
         daylight.add(part.copy(sunLight.color).multiplyScalar((sunLight.intensity / Math.PI) * height));
+        // What a shadow takes: the sun's part of it.
+        uniforms.uSunShare.value = 1 - sky / Math.max(luminance(daylight), 1e-6);
         uniforms.uSunColor.value.copy(sunLight.color).multiplyScalar(Math.min(1.6, sunLight.intensity * 0.42) * (frozen ? 1 : look.sun > 0 ? 1 : 0));
       } else {
         daylight.setScalar(light);
