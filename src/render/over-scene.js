@@ -18,6 +18,8 @@
       Without the lens the small picture has a depth of its own, filled from the scene's, and
       a puff is hidden by what stands in front of its square, as when light: the same shader
       and the same test, on fewer points, so the dust looks the same either side of the change.
+      The small picture comes back to the picture's size by the scene's depth (`UPSIZE`), so what stands in
+      the dust keeps its own outline and not the small picture's steps.
 
   The heavy way needs the scene's depth as a texture. The lens and the optional
   anti-aliasing draw the scene into a picture that has one. The plain screen has its depth
@@ -84,6 +86,40 @@ const DEPTH = {
     void main() { gl_FragDepth = texture2D( tDepth, vUv ).r; gl_FragColor = vec4( 0.0 ); }`,
 };
 
+/*
+  The small picture of heavy puffs back to the picture's size, by the scene's depth. Each small point was worked out at
+  the scene's depth at its middle, so where a truck stands in front of the ground, the four small points around a point
+  of the picture saw two things and blending them drew the truck's outline in steps `OVER.shrink` wide. A point whose
+  four agree with its own depth blends them, as before; one where they do not takes the one whose depth is nearest its own.
+*/
+const UPSIZE = {
+  uniforms: { tOver: { value: null }, tDepth: { value: null }, uSmall: { value: new THREE.Vector2(1, 1) }, uProjection: { value: new THREE.Matrix4() } },
+  vertexShader: PRESENT.vertexShader,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tOver;
+    uniform highp sampler2D tDepth;
+    uniform vec2 uSmall;
+    uniform mat4 uProjection;
+    varying vec2 vUv;
+    // How far ahead the scene is at a depth, in feet; the sky far beyond anything.
+    float ahead( float depth ) {
+      return depth >= 1.0 ? 1e6 : uProjection[ 3 ][ 2 ] / ( depth * 2.0 - 1.0 + uProjection[ 2 ][ 2 ] );
+    }
+    void main() {
+      float here = ahead( texture2D( tDepth, vUv ).r );
+      vec2 corner = floor( vUv * uSmall - 0.5 ) + 0.5;
+      vec2 best = corner / uSmall;
+      float nearest = 1e9, worst = 0.0;
+      for ( int i = 0; i < 4; i++ ) {
+        vec2 at = ( corner + vec2( float( i - ( i / 2 ) * 2 ), float( i / 2 ) ) ) / uSmall;
+        float off = abs( ahead( texture2D( tDepth, at ).r ) - here ) / here;
+        worst = max( worst, off );
+        if ( off < nearest ) { nearest = off; best = at; }
+      }
+      gl_FragColor = texture2D( tOver, worst < 0.1 ? vUv : best );
+    }`,
+};
+
 /**
  * The depth formats a screen may have, most likely first, as three.js names them: 24 bits with a stencil's 8 (what a
  * browser makes even where no stencil was asked for), 24 bits, 32 bit floats, 16 bits.
@@ -113,6 +149,7 @@ export function createOverScene({ renderer, plainScreen = false, soft = false })
   const presenting = pass(PRESENT);
   const laying = pass(LAY, { transparent: true, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor });
   const deepening = pass(DEPTH, { depthTest: true, depthFunc: THREE.AlwaysDepth, depthWrite: true, colorWrite: false });
+  const upsizing = pass(UPSIZE);
   const quad = new FullScreenQuad(presenting);
   const clearColor = new THREE.Color(), drawing = new THREE.Vector2();
   // The samples the screen takes a point, for the scene's picture to take as many.
@@ -229,7 +266,21 @@ export function createOverScene({ renderer, plainScreen = false, soft = false })
       // Let go of the depth: what is drawn next may be drawn into the picture it belongs to, which may not then be read.
       uniforms.uSceneDepth.value = null;
       uniforms.uSceneSoft.value = 0;
-      return target.texture;
+      if (!heavy) return target.texture;
+      // Heavy: the small picture back to the picture's size, sharp along what stands in the dust (`UPSIZE`).
+      full = sized(full, width, height);
+      upsizing.uniforms.tOver.value = small.texture;
+      upsizing.uniforms.tDepth.value = depth;
+      upsizing.uniforms.uSmall.value.set(small.width, small.height);
+      upsizing.uniforms.uProjection.value.copy(camera.projectionMatrix);
+      renderer.setRenderTarget(full);
+      renderer.setClearColor(0x000000, 0);
+      quad.material = upsizing;
+      counted(() => quad.render(renderer));
+      renderer.setRenderTarget(before);
+      renderer.setClearColor(clearColor, alpha);
+      upsizing.uniforms.tDepth.value = null;
+      return full.texture;
     },
     /** Lay a picture `draw` returned over the picture being drawn into. */
     lay(texture) {
@@ -320,6 +371,7 @@ export function createOverScene({ renderer, plainScreen = false, soft = false })
       presenting.dispose();
       laying.dispose();
       deepening.dispose();
+      upsizing.dispose();
       quad.dispose();
     },
   };

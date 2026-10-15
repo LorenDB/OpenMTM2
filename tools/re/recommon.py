@@ -2,7 +2,9 @@
 
 The decompiled output lives in <repo>/re/ (git-ignored, never published). RE_TARGET picks the
 executable: mtm2 (the default; output in re/out, game folder ~/games/mtm2 or MTM2_DIR) or mtm1
-(output in re/mtm1/out, game folder ~/games/mtm1 or MTM1_DIR).
+(output in re/mtm1/out, game folder ~/games/mtm1 or MTM1_DIR) or evo2 (4x4 Evolution 2,
+4x42.exe; output in re/evo2/out, game folder ~/games/evo2 or EVO2_DIR) or evo1 (4x4 Evolution,
+4x4LE.exe; output in re/evo1/out).
 """
 import bisect
 import json
@@ -16,7 +18,7 @@ TARGET = os.environ.get("RE_TARGET", "mtm2")
 OUT = os.path.join(RE_DIR, "out") if TARGET == "mtm2" else os.path.join(RE_DIR, TARGET, "out")
 GAME_DIR = os.path.expanduser(os.environ.get(TARGET.upper() + "_DIR", "~/games/" + TARGET))
 MTM2_DIR = GAME_DIR
-EXE = os.path.join(GAME_DIR, "MONSTER.EXE")
+EXE = os.path.join(GAME_DIR, {"evo2": "4x42.exe", "evo1": "4x4LE.exe"}.get(TARGET, "MONSTER.EXE"))
 IMAGE_BASE = 0x400000
 
 _pe = None
@@ -36,12 +38,17 @@ def image():
     return pe().get_memory_mapped_image()
 
 
+# Watcom builds (4x4 Evolution) name their code AUTO and keep all data in DGROUP.
+WATCOM_SECTIONS = {".text": "AUTO", ".rdata": "DGROUP", ".data": "DGROUP"}
+
+
 def section(name):
-    """(start VA, end VA) of a section, by name."""
-    for s in pe().sections:
-        if s.Name.rstrip(b"\0").decode() == name:
-            start = IMAGE_BASE + s.VirtualAddress
-            return start, start + max(s.Misc_VirtualSize, s.SizeOfRawData)
+    """(start VA, end VA) of a section, by name (MSVC names map to Watcom's when absent)."""
+    for want in (name, WATCOM_SECTIONS.get(name)):
+        for s in pe().sections:
+            if want and s.Name.rstrip(b"\0").decode() == want:
+                start = IMAGE_BASE + s.VirtualAddress
+                return start, start + max(s.Misc_VirtualSize, s.SizeOfRawData)
     raise KeyError(name)
 
 

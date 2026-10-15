@@ -24,8 +24,9 @@ class Target:
     def __init__(self, out, exe):
         self.pe = pefile.PE(os.path.expanduser(exe), fast_load=True)
         self.img = self.pe.get_memory_mapped_image()
-        self.rdata = next((BASE + s.VirtualAddress, BASE + s.VirtualAddress + s.Misc_VirtualSize)
-                          for s in self.pe.sections if s.Name.startswith(b".rdata"))
+        # MSVC keeps constants in .rdata; Watcom builds (4x4 Evolution) keep all data in DGROUP.
+        self.rdata = next((BASE + s.VirtualAddress, BASE + s.VirtualAddress + max(s.Misc_VirtualSize, s.SizeOfRawData))
+                          for s in self.pe.sections if s.Name.startswith((b".rdata", b"DGROUP")))
         self.funcs = []
         with open(os.path.join(out, "functions.tsv")) as f:
             for line in f:

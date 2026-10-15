@@ -16,7 +16,11 @@ MTM2_DIR=~/games/mtm2 tools/re/decompile.sh
 ```
 
 For MTM1: `MTM1_DIR=~/games/mtm1 tools/re/decompile.sh mtm1`, which works in `re/mtm1/` and
-leaves the MTM2 workspace alone. Every helper below reads MTM2 unless `RE_TARGET=mtm1` is set.
+leaves the MTM2 workspace alone. For 4x4 Evolution 2 (`docs/EVO2_EXE_ANALYSIS.md`):
+`EVO2_DIR=~/games/evo2 tools/re/decompile.sh evo2`, into `re/evo2/`, and 4x4 Evolution
+(`docs/EVO2_PHYSICS.md` 10, `docs/EVO_MULTIPLAYER.md`): `tools/re/decompile.sh evo1`, into
+`re/evo1/`. Every helper below reads MTM2 unless `RE_TARGET` is `mtm1`, `evo1` or `evo2`;
+`fdiff.py` takes `FDIFF=evo1:evo2` (any two targets).
 
 This analyses `MONSTER.EXE` from the install, exports every function decompiled to
 `re/out/decomp.c` plus `functions.tsv` and `strings.tsv` (with cross-references), and builds the
@@ -69,3 +73,18 @@ Run them with `re/venv/bin/python` from the repository root. Addresses are hexad
 - The engine passes state through globals: `0x6cef34` current truck, `0x6f6074` current body,
   `0x6cef1c` current axle, `0x6f602c` current tire, `0x6f5d60` the current body-to-world matrix,
   `0x6f1bc8` the substep dt.
+
+## Things to know about the 4x4 Evolution binaries
+
+- `4x42.exe` (Evo 2, 25 September 2001) and `4x4LE.exe` (Evo 1, 16 August 2001) are Watcom
+  builds: code in `AUTO`, data in `DGROUP`, no incremental-link thunks, cdecl calls.
+  `recommon.section` and `match.Target` map the MSVC section names to those.
+- The two compilers produce different text for the same code, so `fdiff.py` across MTM2 and Evo
+  is noise; compare constants and read the logic instead. Evo 1 against Evo 2 diffs work, though
+  the vehicle struct offsets differ.
+- Many float-to-int conversions go through a helper (`0x60fb82`) whose argument Ghidra hides,
+  so cell and sector indices often have to be confirmed against the stock data.
+- Assertion strings name the modules (`..\core\ground.cpp`, `..\core\sim.cpp`,
+  `..\core\particle.cpp`, `..\core\vehicle.cpp`), as in MTM2.
+- The simulation keeps state in scratch globals around `0xcad9xx`; `0x67976c` is the
+  simulation object (dt at +0x3458) and `0x672fe0` the ground.

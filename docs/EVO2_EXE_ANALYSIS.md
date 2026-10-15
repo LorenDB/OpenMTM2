@@ -1,0 +1,484 @@
+# 4x4 Evolution 2: analysis of 4x42.exe
+
+A reverse-engineering survey of the retail 4x4 Evolution 2 executable, written for OpenMTM2. It
+answers four questions:
+
+1. How does the game place and draw vegetation (the `.VEG` trees, the grass, the `.RTD` and
+   `.SDW` overlays), and does any of it collide?
+2. What surfaces does an Evo track have, and what do they do to grip and effects?
+3. How do the tire particles (dirt, mud, sand, snow, leaves) work?
+4. How does Evo 2's vehicle physics differ from MTM2's, so that it can be offered as a
+   **Physics** option?
+
+Part 2 (section 8) turns the findings into an implementation plan for OpenMTM2 and OpenPhotex.
+
+It is a companion to `MONSTER_EXE_ANALYSIS.md`, `MTM2_PHYSICS.md` and OpenPhotex
+`docs/EVO.md`. Every fact carries an address in the analysed build. Anything not confirmed in
+code is marked **hypothesis** or **not traced**. No decompiled code is reproduced here: the
+workspace stays in the git-ignored `re/evo2/`.
+
+The short answers:
+
+- **Vegetation is fully data-driven and mostly decoded.** Trees live in a 16 x 16 grid of
+  512 ft sectors, up to 100 per sector. The per-tree `value` byte the readers call "unknown" is
+  the tree's **yaw in 1/256 turns**, and the model slot is the tree's index in its sector `& 3`.
+  Trees **are knocked over** when a truck hits them (section 2.5). Grass is procedural: the
+  `.TEX` file's second number per texture is a **vegetation density class** (None, Sparse,
+  Medium, Dense) that sets both the grass density and the tree spacing. A track without a
+  `.VEG` (every Evo 1 track) gets procedurally generated trees from that class.
+- **`.RTD` is a 1-bit shade map** (1024 x 1024, 8 ft cells), and **`.SDW` is a per-cell
+  shadow texture overlay** (section 3).
+- **Surfaces use MTM2's encoding**, `type * 100 + depth`, and the `.TEX` file's first number
+  per texture is that value. OpenMTM2 currently treats every Evo tile as Dirt (section 4).
+  Evo's grip table differs from MTM2's on five types.
+- **Tire particles** are chosen by surface, scale with wheelspin, take their colour from the
+  ground under them, and AUTUMN throws leaves (section 5).
+- **The vehicle model is new.** The rigid body and contact framework descend from MTM2's, but
+  the tires (slip angle and a lateral table), the drivetrain (torque curve, gearbox, transfer
+  case, torque split, three differential types) and the aero model (reference areas, CL/CD/CY,
+  damping derivatives) are Evo's own and are driven by each vehicle's `.TRK` figures. The full
+  step is in `EVO2_PHYSICS.md`; multiplayer is in `EVO_MULTIPLAYER.md`.
+
+---
+
+## 0. Method and build
+
+| Item | Value |
+|---|---|
+| Install | `~/games/evo2` (`4x42.exe`, 50 POD archives) |
+| File | `4x42.exe`, 2,776,064 bytes, MD5 `d476380ab257486896ba1a6593c70e87` |
+| PE timestamp | 1001433395 = 25 September 2001, 15:56 UTC |
+| Machine | i386 PE32, image base 0x400000, relocations present |
+| Toolchain | **Watcom C/C++** (sections `AUTO` for code, `DGROUP` for data, `.bss`), cdecl calls, no incremental-link thunks |
+| Source paths | Assertion strings name the modules: `..\core\ground.cpp`, `..\core\sim.cpp`, `..\core\particle.cpp`, `..\core\vehicle.cpp`, `..\core\texlist.cpp`, `..\core\truck.c`, `..\core\skid.cpp`, `..\core\smoke.c`... |
+
+The workspace was built with `EVO2_DIR=~/games/evo2 tools/re/decompile.sh evo2` (Ghidra 12.1
+headless; 5,067 functions, one decompile failure). The helpers take `RE_TARGET=evo2`.
+
+Conventions in this document: world units are feet, Y is up, the terrain is 256 x 256 cells of
+32 ft (OpenPhotex `docs/EVO.md`). `rand()` is the C runtime's (0 to 32767, `0x60fa5c`).
+"Uniform [a, b]" means `a + (b - a) * rand() / 32767`.
+
+---
+
+## 1. File roles, as the executable reads them
+
+| File | Read by | What it is |
+|---|---|---|
+| `DATA\<lvl>.TEX` | `CTextureList::load` `0x5cb530` | `count,shadowCount` then per texture `surfaceValue,vegClass,name` (section 4.1) |
+| `DATA\<lvl>.CLR` | `CGround::load` `0x46b150` | per cell, bits 0-11 the texture; an index past the list is replaced and counted ("%d invalid ground indices") |
+| `DATA\<lvl>.SDW` | `0x46b150` | per cell shadow texture word (section 3.2) |
+| `DATA\<lvl>.RTD` | `0x46b150` | 131,072 bytes: the 1024 x 1024 shade bitmask (section 3.1) |
+| `DATA\<lvl>.VEG` | `0x469ec0`, reader `0x466af0` | trees and grass parameters (section 2) |
+| `LEVELS\<lvl>.LVL` | | `vegTexture` (e.g. `MGRASS1.RAW`) and `detailTexture` (e.g. `DET7.RAW`): **not traced** beyond their names |
+
+The cell record of the ground grid is 0x26 bytes; +0x20 is the `.CLR` word and +0x22 the `.SDW`
+word.
+
+---
+
+## 2. Vegetation
+
+### 2.1 The `.VEG` reader (`0x466af0`) and its defaults
+
+The reader is versioned; fields absent from older versions get defaults:
+
+| Field | Global | Default when absent |
+|---|---|---|
+| `maxTrees` | `0x673538` | |
+| `treeModel` x 4 | `0x673540`, `0x673640`, `0x673740`, `0x673840` | version < 4: one model copied to all four slots; no file: `deftree.smf` |
+| `treeTex` | `0x928528` | `deftree4.raw` |
+| `treeLine` | `0x673940` | |
+| `treeMinDist2 Dense / Medium / Sparse` | `0x67394c`, `0x673948`, `0x673944` | version < 2: Medium and Sparse are 0 |
+| `treeSizeX,treeSizeY,treeBiasY` x 4 | `0x673950`, `0x673960`, `0x673970` (arrays of 4) | version < 4: slot 0 copied to all |
+| `whackTrees` | `0x92858c` | read and never used again (no other reference in the executable) |
+| `grassTexture` | `0x8eb2c0` | version < 5: `defscrub.raw` |
+| `vegMinSize,vegMaxSize,vegBias` x 4 | `0x673068`, `0x673078`, `0x912b00` | version < 5: 2, 4, 0 for every slot |
+| `vegiColorMin,vegiColorMax,scrubColor` | `0x673980`, `0x673984`, `0x673988` | version < 6: 0.35, 0.5, 0.25 |
+| `treeGrid` blocks | `0x928590` | version < 3: the trees are generated (2.3) |
+
+The stock files are version 6.
+
+### 2.2 The tree grid
+
+- The 256 `treeGrid` blocks are **a 16 x 16 grid of sectors** of 512 ft (16 terrain cells), not
+  terrain rows. Block `b` is the sector at x `b % 16`, z `b / 16` (checked on ALASKA1: block 1
+  holds x sector 1, block 16 z sector 1).
+- Each sector holds a count and **at most 100** trees: positions (x, y, z) as floats, then one
+  byte per tree at sector +0x4B4, then one state byte per tree at sector +0x518.
+- **The per-tree byte (`value` in OpenPhotex) is `rand() & 0xFF` at placement**, and it is the
+  tree's **yaw**: the renderer turns the model by `value * pi / 128` about the vertical axis
+  (`0x468910`, constants 1/128 and pi at `0x63515c`, `0x635160`). A falling tree starts from the
+  same angle (`0x545db0`, pi/128 at `0x64a64a`).
+- **The model slot is the tree's index in its sector `& 3`** (`0x4660b0`), not derived from
+  `value`.
+- The state byte is set to 0xFF for every tree after loading (standing). When a truck hits the
+  tree it holds the index of the falling-tree object (2.5).
+- Each tree model is moved so its lowest point is at its origin and scaled to exactly
+  `treeSizeX` by `treeSizeY` by `treeSizeX` of its slot (`0x467f80`).
+- **Drawn height:** the stored y plus `treeBiasY` of the slot (`0x4660b0`). The stored y
+  already includes a sink: the generator writes `ground + treeBiasY * (1 - r)`, r uniform [0, 1],
+  and on ALASKA1 the stored heights sit 0 to 18 ft under the terrain (median 5.9 ft). The bias
+  is therefore applied twice in effect: a slot with bias -15 draws its base 15 to 30 ft below
+  the ground.
+- **Distances:** a tree within 512 ft draws as its model, faded out between 480 and 512 ft; from
+  448 ft it draws as a far billboard from `treeTex` (`0x4660b0`). At most 1,000 near trees a
+  frame.
+- A bounding box per sector (8 corners, `0x980190`) is built from its trees, widened by half
+  `treeSizeX` and by `treeSizeY + treeBiasY` upward, for culling.
+
+### 2.3 Procedural trees (`0x467be0`)
+
+When the level has no `.VEG`, or one older than version 3, trees are generated. The only
+exception is a level named `matt` (a developer test level). **Every Evo 1 track loaded in Evo 2
+gets trees this way.**
+
+For each of `maxTrees` attempts:
+
+1. A point uniform over the world (0 to 8191 ft on x and z) at the terrain height there.
+2. Rejected at or above `treeLine`, or below the water level + 1 ft.
+3. Rejected inside the bounding box (plus 20 ft) of any level object.
+4. The cell's texture gives its **vegetation class** (`.TEX` second number, 4.1). Class 0
+   rejects; classes 1, 2, 3 use `treeMinDist2` Sparse, Medium, Dense as the least squared
+   distance to every tree already in the sector.
+5. The tree is added to its sector (rejected if the sector has 100), at
+   `ground + treeBiasY[slot] * (1 - r)`, with `value = rand() & 0xFF`.
+
+### 2.4 Grass (`0x469b20`, `0x470f40`)
+
+Grass is not stored anywhere; it is drawn per terrain cell from a fixed random pattern.
+
+- **The pattern:** at ground initialisation the generator is seeded with 873 (`0x369`), and a
+  table of 2,048 tufts is filled (32 x 8 x 8): for each, an x and z offset uniform [0, 32] ft in
+  the cell, a slot `rand() & 3`, and a size (initially uniform [2, 4]). After the `.VEG` is read,
+  each size is redrawn uniform [`vegMinSize`, `vegMaxSize`] of its slot (`0x467f80`, unseeded).
+  The pattern repeats every 8 x 8 cells.
+- **The density:** a cell whose texture has vegetation class c > 0 draws `1 << c` tufts (2, 4
+  or 8). At high detail (`0x892528`) four times as many, at most 32.
+- **Trucks press grass down:** for every vehicle, the tufts of the cell it is in that lie inside
+  the vehicle (`0x41de30`) get their top set to `ground + vegBias[slot] * size * 0.25`. With
+  the default negative bias this sinks them into the ground.
+- **Not traced:** how the slot maps to a region of `grassTexture`, how `vegiColorMin`,
+  `vegiColorMax` and `scrubColor` tint grass and trees (the tree pass uses
+  `0.5 * (vegiColorMin + vegiColorMax)` for its light level, `0x468910`), and what `LVL
+  vegTexture` adds.
+
+### 2.5 Trees fall when hit (`0x545db0`, `0x5460d0`)
+
+Trees are collision objects found by the truck-object broadphase (the type test `0x41c3b0`,
+called from the truck-against-object code `0x535ce0`). When a truck overlaps one:
+
+- If the tree is standing (state 0xFF), a **falling-tree object** is made (at most 128 at once,
+  "Too many tree objects"): the tree's position, its model slot, its yaw (`value * pi / 128`),
+  and the **truck's velocity**. The tree's state byte stores the object's index, so the
+  standing copy stops drawing.
+- If it is already falling, the hit sets its velocity to the truck's again.
+- `0x5460d0` (from the update `0x546180`) frees an object and compacts the list.
+- **Not traced:** the fall's motion in `0x546180`, whether the tree slows the truck, and whether
+  a fallen tree ever stands up again.
+
+---
+
+## 3. Shade and shadows
+
+### 3.1 `.RTD`: the shade map
+
+131,072 bytes, read whole into `0x8ca208`: a 1024 x 1024 bitmask, one bit per 8 ft square.
+Bit `x8 + z8 * 1024` (x8 = x / 8, z8 = z / 8, both & 1023; order checked against the trees below), byte `bit >> 3`, mask
+`1 << (bit & 7)` (table `0x673048`). A missing file is all zeros.
+
+- **Set means in shade.** While the weather has a sun, the terrain vertex light is scaled to
+  **0.35** in shade (`0x46c030`, constant `0x664684`).
+- A truck in shade casts no sun shadow (`0x5f7820` through `0x477c30`).
+- The tree pass ORs shade bits around every tree: up to 30 random points each within a quarter
+  of `treeSizeX` (`0x467f80`). The stock files already hold that shade: on ALASKA1 every one of
+  the 13,660 trees stands on a set bit, against 12% of the map overall. So `.RTD` is the baked
+  shade of terrain, objects and trees, and the game adds tree shade again at load.
+- Vertex light under water fades linearly to zero over 50 ft of depth (`0x46c030`).
+
+### 3.2 `.SDW`: shadow textures
+
+One 16-bit word per cell, stored at cell +0x22: a texture index into the full `.TEX` list (so
+`ordinaryCount` and up, the shadow group). **0x8000 means no shadow** and 0x4000 is kept as a
+special value (**not traced**). Other out-of-range words become 0x8000 and are counted ("%d
+invalid ground shadow indices").
+
+`.SDW` is read only when the **ground shadow** option is on (`groundShadowFlag`, `0x672eb0`;
+the same flag makes `CTextureList` load the shadow group at all) and neither weather slot is
+type 2 or 3. Weather 3 is Rain (`EVO2_PHYSICS.md` 1); 2 is not identified (**hypothesis**:
+fog). Otherwise every cell is 0x8000.
+
+---
+
+## 4. Surfaces
+
+### 4.1 The `.TEX` numbers (`0x5cb530`)
+
+Each record is `surfaceValue,vegClass,name`:
+
+- `surfaceValue` goes to an int per texture (texture list +0x6004): MTM2's
+  `type * 100 + depth`. OpenPhotex calls it `param0`.
+- `vegClass` goes to a byte per texture (texture list +0x8004): 0 None, 1 Sparse, 2 Medium,
+  3 Dense (names at `0x673038`). OpenPhotex calls it `param1`.
+
+Examples: Evo 1 ASPEN has Rock 1204, Dirt 204 and Grass 604/605 with classes 0 to 3; Evo 2
+ALASKA1 has Dirt 202/203, Mud 402, Grass 603 (mostly class 3) and Snow 904.
+
+### 4.2 The surface at a point (`0x4751c0`) and the types
+
+Above the water level, the value of the cell's texture. **At or below it, 1300 (deep water), or
+800 (ice) in Snow (weather 4).** This is MTM2's rule (`MTM2_PHYSICS.md` 2.3). The type names
+are at `0x672ffc`, indexed by `value / 100`:
+
+| Type | Name | Evo 2 mu | MTM2 mu | Drag density |
+|---|---|---|---|---|
+| 0 | Default | 1.0 | 1.0 | 0.002377 |
+| 1 | Cement | 1.0 | 1.0 | 0.002377 |
+| 2 | Dirt | 0.9 | 0.9 | 0.002377 |
+| 3 | Water | **0.5** | 0.4 | 0.15 |
+| 4 | Mud | **0.5** | 0.4 | 0.002377 |
+| 5 | Sand | 0.7 | 0.7 | 0.002377 |
+| 6 | Grass | 0.7 | 0.7 | 0.002377 |
+| 7 | Gravel | 0.6 | 0.6 | 0.002377 |
+| 8 | Ice | **0.3** | 0.2 | 0.002377 |
+| 9 | Snow | **0.5** | 0.3 | 0.002377 |
+| 10 | Metal | 0.8 | 0.8 | 0.002377 |
+| 11 | Wood | 0.8 | 0.8 | 0.002377 |
+| 12 | Rock | 0.6 | 0.6 | 0.002377 |
+| 13 | Deep water | **0.5** | 0.4 | 0.15 |
+| 14 | Train track | 1.0 (default) | (none) | 0.002377 |
+
+The Evo column is `0x545ac0`, which sets the current fluid density (`0xcad9f4`) and mu
+(`0xcad9f8`). Weather grip (Rain 0.8, Snow 0.6) and the tire tread table are in `EVO2_PHYSICS.md` 1 and 5.1.
+
+`0x475350` packs the surface into an effect word: a class (Cement 10; Dirt and Sand 13; Water 1;
+Mud, Grass, Gravel and Snow 5; others 0), a flag for Snow, `depth / 2`, and the type
+value. **Hypothesis:** the class picks the ground sound or tire noise.
+
+---
+
+## 5. Particles
+
+### 5.1 The manager (`0x4fc0a0`)
+
+`CParticleManager` holds **300 particles** of 100 bytes in a ring (the oldest is reused), 8
+smoke-puff slots of 0x48 bytes, and a second pool at +0x7798 for leaves. Particles are 3D
+chunks: each is drawn with `ptcle1.smf` or `ptcle2.smf`, chosen at random.
+
+### 5.2 When tires emit (`0x4fd850`)
+
+Emission is evaluated at a fixed **15 Hz** (period `0x678b20` = 1/15 s), only while the
+**Particle/Dirt Effects** option (`0x892484`) and `smokeEffectFlag` (`0x672f00`) are on. Each
+tire is considered when it is within 0.5 ft of the ground. Two gates per tire, each with its own
+timer re-armed to uniform [0, 0.2] s after it fires:
+
+- **Wheelspin** (`0x4fc3b0`): the tire spins faster than 3 rad/s either way and its slip
+  accumulator (6.3) is non-zero. Calls the debris emitter `0x4fc500`.
+- **Sliding** (`0x4fc470`): the tire has any sideways velocity. Calls `0x4fcc50`, the same
+  emitter for a sliding tire.
+
+### 5.3 What a tire throws (`0x4fc500`, `0x4fcc50`, `0x4fbce0`)
+
+The kind comes from the tire's surface type:
+
+| Surface | Kind | Count factor | Shade value (+0x54) | Size (+0x44) |
+|---|---|---|---|---|
+| Cement | none | | | |
+| Gravel | 1 | 1 | uniform [0.9, 1.9] **hypothesis** | uniform [0.3, 0.9] |
+| Grass | 2 one time in 7, else 0 | 1 | uniform [0.6, 1.6] | uniform [0.3, 0.9] |
+| Sand | 3 | 1.5 | uniform [0.5, 1.5] | uniform [0.25, 0.8] |
+| Mud | 4 | 1.5 | uniform [0.7, 1.7] | uniform [0.15, 0.5] |
+| Snow | 5 | 1.5 | uniform [0.35, 1.35] | uniform [0.2, 0.4] |
+| anything else (Dirt, Water...) | 0 | 1 | uniform [0.6, 1.6] | uniform [0.3, 0.9] |
+
+- **Strength:** `min(1, slip * 3 / 100)`, where slip is the tire's accumulator (6.3). Vertical
+  speed is uniform up to the emitter's vertical figure times strength (thrown downward when the
+  tire's vertical velocity is negative), horizontal speed uniform up to its horizontal figure
+  times strength, heading backward from the tire within +/-10 degrees around a 20-degree spread.
+  The velocity is turned into world axes by the body matrix. Spawn points are spread along the
+  tire's motion this step with a jitter of [-0.25, 0.25] ft.
+- **Colour:** sampled from the ground texture under the spawn point (`0x4783b0`), with a
+  fallback of RGB (80, 55, 0) and a random brightness of 0xC0 or 0x100 of 256. **Snow is white.**
+  Kind 5 also picks a random atlas cell (u 0 or 0.15625, v 0, 0.25, 0.5 or 0.75).
+- **Spin:** each particle gets a random angular rate on three axes.
+- **Skid marks:** the first spawn of a burst also lays a skid mark (`0x5b3a50`), except on Mud
+  and Snow, or in Rain or Snow weather (3, 4).
+
+### 5.4 Leaves on AUTUMN
+
+On a level named AUTUMN, a truck faster than 15 ft/s throws **4 leaves** (kind 7, second pool,
+`0x4fe530`) from every tire on the ground, each burst. The leaf motion constants are in
+`0x4fe530` (0.36, 0.04, 0.2, 0.03): **not traced**.
+
+### 5.5 Located, not traced
+
+Water wake and ripples (`waterWakeFlag`, `WAKE.TIF`, `RIPPLE.RAW`, classes `SWaterSpray` and
+`SWaterBlob`), smoke puffs (`SSmokePuff`, `..\core\smoke.c` `0x5b4520`), and skid marks
+(`CSkid`, `0x5aad30`). They are reached through vtables that the export does not resolve.
+
+---
+
+## 6. The vehicle
+
+### 6.1 Lineage
+
+The simulation keeps MTM2's style: per-object scratch globals (the current body at `0xcad9xx`,
+the current vehicle through `0x67976c`, dt at `0x67976c + 0x3458`), point contacts with
+friction limited by the normal load (`0x547f90`, the hull and scrape-point contact, like MTM2's
+`0x475960`), and the same surface encoding. **Everything that makes a truck drive is new.** Of
+the `.TRK` and telemetry fields Evo 2 uses, none of the following exists in MTM2's executable:
+`slipRatio`, `slip_angle`, `corneringCF`, `latFfricLit`, `critlFx`, `slipDiffType`,
+`axleBias`, `torqueTable`, `spring_rate`, `damping_cf`, `refArea`, `clp,cmq,cnr`,
+`xfrLowRatio`, `gearInertia`.
+
+An Evo 2 Physics option is therefore **a new vehicle model on MTM2's world**, not a set of
+switches on MTM2's model like the MTM1 option.
+
+### 6.2 What the `.TRK` feeds (`0x5ed4b0`)
+
+The reader stores every physics field Evo's `.TRK` carries. Layout of the vehicle object:
+
+| Offset | Field |
+|---|---|
+| +0x60, +0x18C | front right and left tire (tire stride 0x12C; spin rate +0x11C relative) |
+| +0x318, +0x444 | rear right and left tire |
+| +0xE8 ... | tire `CF` (per tire, at tire +0x88) |
+| +0x10C ... | tire `spring_arm` |
+| +0x2C4 / +0x57C | front / rear axle `maxangle` (axle stride 0x2B8) |
+| +0x2C8 / +0x580 | `maxcompr` |
+| +0x2E0 / +0x598 | `spring_rate` |
+| +0x2FC / +0x5B4 | `torque_pct` |
+| +0x308 / +0x5C0 | `axleBias` |
+| +0x314 / +0x5CC | `slipDiffType` |
+| +0x5D0, +0x5D4 | engine RPM, engine torque (live) |
+| +0x5F0, +0x5F4, +0x5F8, +0x5FC | `redline`, `redlineTimer`, `upshift_rpm`, `dnshift_rpm` |
+| +0x600 | throttle |
+| +0x60C ... +0x618 | `maxHP`, `maxHPRPM`, `maxTorque`, `maxTorqueRPM` |
+| +0x61C, +0x620 | `torqueTableCount`, `torqueTable[]` (up to 23 entries) |
+| +0x690, +0x6D0 | `gear_ratio[]`, current gear |
+| +0x6B8, +0x6C0, +0x6C4, +0x6C8 | `final_drive`, `axle_ratio`, `xfrLowRatio`, the effective final ratio |
+| +0x6D4, +0x6DC | `maxGear`, `gearInertia[]` |
+| +0x704 | `xm.type` |
+| +0x1238, +0x123C, +0x1240 | `max_brake_force_pct`, `drive_type`, transfer case (0 2WD, 1 4H, 2 4L) |
+| +0x12B8 | the parts' torque modifier |
+
+The stock CBLS24 (Chevrolet Blazer) gives an idea of the range: 2,869 lb dry, inertias 2500,
+2500, 3750, springs 1450 / 761 lb/ft front and rear, a 13-point torque table peaking at 250 lb-ft,
+7 gear slots, final drive 3.73, transfer low 2.72, torque split 40/60, CD 0.4.
+
+### 6.3 The rest
+
+The second pass traced the whole step: tires, driveline, gearbox, brakes, aerodynamics, hull
+contacts and integration. It is written up in `EVO2_PHYSICS.md`, with the comparison against
+Evo 1 (section 10) and the plan for the code (section 11). That document supersedes the first
+pass's notes on the engine and differentials, which read +0x1238 as a rolling-resistance factor
+(it is `max_brake_force_pct`: the term is brakes plus rolling resistance) and +0x123C as a drive
+mode (it is `drive_type`).
+
+---
+
+## 7. What OpenMTM2 does today, against these findings
+
+`src/worker/evo-track-build.js`:
+
+| Today | The game |
+|---|---|
+| Every tile is Dirt (`textureValues: [200]`) | Each texture's `surfaceValue` from `.TEX` (4.1) |
+| Tree model slot `(value & 3)` | Index in sector `& 3` (2.2) |
+| Tree yaw `((value >> 4) & 15) * pi / 8` | `value * pi / 128` (2.2) |
+| Tree base on the terrain | Stored y plus `treeBiasY` (2.2) |
+| Trees are trunk boxes that stop trucks | Trees fall when hit (2.5); the effect on the truck is not traced |
+| No trees on Evo 1 tracks | Procedural trees from `vegClass` (2.3) |
+| No grass, `.RTD` or `.SDW` | 2.4, 3.1, 3.2 |
+| MTM2's grip table | Evo's (4.2) |
+
+OpenPhotex: `docs/EVO.md` and `src/evo/veg.ts` describe the 256 blocks as terrain rows and the
+fourth value as unknown. They are 16 x 16 sectors and the yaw byte. `.TEX` `param0` and
+`param1` are `surfaceValue` and `vegClass`. There is no reader for `.RTD` or `.SDW`.
+
+---
+
+## 8. Implementation plan
+
+The work splits into what is fully known (sections 2 to 5), which can be built now, and the
+Evo 2 vehicle model, which needs a second RE pass first, as MTM2's physics did.
+
+### 8.1 OpenPhotex (formats first)
+
+1. **`.TEX`:** name the record fields `surfaceValue` and `vegClass` (keep `param0`/`param1` as
+   aliases for one release). Export `EVO_VEG_CLASS` names.
+2. **`.VEG`:** document the 16 x 16 sector order; expose `sector` and `indexInSector` per tree,
+   rename `value` to `yawByte` (alias kept). Add `evoTreeYaw(byte)` and `evoTreeSlot(index)`.
+3. **New readers:** `parseEvoRtd` (1024 x 1024 bitmask, with `evoShadeAt(x, z)`) and
+   `parseEvoSdw` (256 x 256 words, 0x8000 none). Both are fixed-size grids. `.RTD` bit
+   `x8 + z8 * 1024`, least significant bit first (checked against the VEG trees, 3.1).
+4. **`evoProceduralTrees(heights, clr, tex, veg, objects, waterLevel)`**, implementing 2.3
+   deterministically: the game used unseeded `rand()`, so the port picks a seed (from the track
+   name) and says so.
+5. **`evoGrassPattern()`**: the 2,048-tuft table of 2.4 with the MSVC-compatible `rand()`
+   seeded at 873. Watcom's `rand()` must be checked against MSVC's before claiming the same
+   pattern (**to confirm**).
+6. Tests over the stock archives: every `.TEX` value is a known type, the `.RTD`/`.SDW` sizes,
+   the sector bounds.
+7. **Evo surfaces in the sim:** `SURFACE_MU_EVO2` (4.2) and type 14, selected by the rules.
+
+### 8.2 OpenMTM2: track features (no physics change)
+
+In order of value for effort:
+
+1. **Surfaces** (`evo-track-build.js`): `sim.textureValues` from `.TEX` `surfaceValue`. The
+   MTM2 truck then feels mud, snow, ice and rock on Evo tracks, and `tire-effects.js` and the
+   sounds see the right surface. Small change, large effect.
+2. **Trees done right:** slot, yaw and height from 2.2; procedural trees for Evo 1 tracks (8.1
+   item 4); near model within 512 ft and billboards beyond 448 ft (`src/render/billboards.js`
+   already draws cutouts).
+3. **Grass** (`src/render/scenery.js` or a new `src/render/evo-grass.js`): instanced quads per
+   cell from the pattern and `vegClass`, drawn within a radius of the camera, textured from
+   `grassTexture`, pressed down under trucks (2.4). Behind the existing scenery and graphics
+   switches.
+4. **Shade and shadows:** `.RTD` darkens the terrain vertex light to 0.35 (fed to
+   `src/worker/terrain-mesh.js` as a per-vertex factor) and suppresses a truck's sun shadow
+   (`src/render/sun-shadows.js`); `.SDW` as a second terrain texture layer from the shadow group,
+   off in overcast weathers, with the ground-shadow switch.
+5. **Particles** (`src/game/particles.js` and `src/render/particles.js`, in the manner of
+   `mtm1-particles.js`): an `evo` particle style with the kinds, gates, strength and colours of
+   section 5, chunk models `PTCLE1.SMF`/`PTCLE2.SMF` from Evo's archives (falling back to the
+   current sprites), AUTUMN leaves. Skid marks off on mud and snow (`tire-tracks.js`).
+6. **Falling trees:** a tree hit by a truck becomes a moving object with the truck's velocity
+   (`level-movers.js` has moving objects already) and stops being solid. Until 2.5 is traced
+   further, the fall itself (pivot at the base, falling away from the truck) is the port's
+   choice and must be documented as such.
+7. **Later:** `.WAT` animated water (OpenPhotex reads it), the `detailTexture`, water wakes
+   (5.5).
+
+### 8.3 The Evo 2 Physics option
+
+Superseded by `EVO2_PHYSICS.md` section 11, written after the second pass: Evo 1 and Evo 2
+physics as two entries of `PHYSICS_MODELS`, a new `src/sim/evo/` module in OpenPhotex on MTM2's
+world and collision code, Evo vehicles on their own `.TRK` figures, MTM and CPR vehicles on
+MTM2's vehicle model.
+
+### 8.4 Other Evo features worth considering
+
+- **Garage settings with the game's meaning:** springs, shocks, torque split, brake balance,
+  handling and transfer gear have setters in `vehicle.cpp` (`0x5ecba0` and following) with the
+  in-game help texts. They map onto the Evo 2 model once it exists.
+- **Parts:** `PARTS\PARTS.TXT` holds Aero, Brake, CG, Tire CF, Torque and Weight modifiers per
+  part (`0x5dbe20` prints them). Stock parts per vehicle are in the `.TRK`.
+- **Missions** (`MISSIONS\*.MSN`, `SCRIPTS\*.SC`): the script language has conditions such as
+  `objectsIntersect`, `vehicleIn4WDHigh` and `waterLevelInRange` (`0x4528a0`). That is enough to
+  start on El Norte and Obs Park missions, which load as free roam today.
+- **Truck lights:** every Evo `.TRK` lists light cones (`coneTexture`, `coneLength`), which
+  `truck-lights.js` could draw at night.
+
+---
+
+## 9. Still open
+
+- Grass slot to texture region, and the colour parameters (2.4).
+- The falling tree's motion and its effect on the truck (2.5).
+- The `.SDW` 0x4000 value, and the weather numbering (3.2, 4.2, 5.3).
+- Weather grip and the tire-cut table under Evo (4.2).
+- Water wake, spray, smoke puffs and skid marks in detail (5.5).
+- Whether Evo 1's executable (`~/games/evo1/4x4LE.exe`) differs from Evo 2 on any of this. The
+  data formats are the same (ASPEN has `.TEX` classes, `.RTD` and `.SDW`).

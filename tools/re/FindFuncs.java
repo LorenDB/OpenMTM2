@@ -25,6 +25,7 @@ public class FindFuncs extends GhidraScript {
   }
 
   boolean plausible(Address a) throws Exception {
+    if (!text.contains(a.subtract(3))) return false;                     // the block's first bytes
     int b = getByte(a) & 0xff, p = getByte(a.subtract(1)) & 0xff;
     long v = getInt(a) & 0xffffffffL;
     if (v >= text.getStart().getOffset() && v <= text.getEnd().getOffset()) return false; // jump table
@@ -41,12 +42,15 @@ public class FindFuncs extends GhidraScript {
   }
 
   public void run() throws Exception {
+    // MSVC names first; Watcom builds (4x4 Evo 2) use AUTO for code and DGROUP for data.
     text = currentProgram.getMemory().getBlock(".text");
+    if (text == null) text = currentProgram.getMemory().getBlock("AUTO");
     listing = currentProgram.getListing();
     long lo = text.getStart().getOffset(), hi = text.getEnd().getOffset();
     int seeds = 0;
-    for (String name : new String[] {".rdata", ".data"}) {
+    for (String name : new String[] {".rdata", ".data", "DGROUP"}) {
       MemoryBlock blk = currentProgram.getMemory().getBlock(name);
+      if (blk == null) continue;
       long n = Math.min(blk.getSize(), currentProgram.getMemory().getBlock(name).getSize());
       for (Address a = blk.getStart(); a.getOffset() + 4 <= blk.getStart().getOffset() + n; a = a.add(4)) {
         if (!blk.isInitialized()) break;

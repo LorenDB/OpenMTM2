@@ -1331,7 +1331,11 @@ are drawn one of two ways, by how much of the picture their squares cover betwee
   hidden by what stands in front of its square, as when light: the same shader and the same
   test on fewer points, so the dust looks the same either side of the change. Measured in
   thick dust, the two pictures differ by one or two steps of 255, and by more only along the
-  outlines of what stands in the dust, a point wide.
+  outlines of what stands in the dust, a point wide. The small picture is brought back to the
+  picture's size by the scene's depth (`UPSIZE`): a point whose four nearest small points saw
+  about what it sees blends them, and one on an outline (a truck before the ground) takes the
+  small point whose depth is nearest its own. Blended alone, those outlines were drawn in steps
+  four points wide, the truck and its tires pixelated wherever they stood in thick dust.
 
 The heavy way needs the scene's depth as a texture. The lens's picture has one, and so has the
 optional anti-aliasing's. The plain screen (no lens, MSAA) keeps its depth where no shader can
