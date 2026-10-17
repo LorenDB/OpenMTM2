@@ -2,13 +2,13 @@
   A gamepad or wheel as the game's analog joystick (MONSTER_EXE_ANALYSIS.md section 7, mode 2):
   the left stick steers; the pedal axis is the left trigger (brake) less the right trigger
   (throttle), or the left stick's y when no trigger is pressed (up is throttle). RB / LB shift up
-  and down. Browsers report every axis already centred to -1..1, so the game's calibration
+  and down; A, held, is an Evolution truck's handbrake. Browsers report every axis already centred to -1..1, so the game's calibration
   reduces to the dead zone, which the simulation applies.
 
   Uses the first connected pad in the standard mapping; `sample()` returns null when there is
   none, and the keyboard then drives alone.
 */
-const TRIGGER_LEFT = 6, TRIGGER_RIGHT = 7, BUMPER_LEFT = 4, BUMPER_RIGHT = 5;
+const TRIGGER_LEFT = 6, TRIGGER_RIGHT = 7, BUMPER_LEFT = 4, BUMPER_RIGHT = 5, BUTTON_A = 0;
 const DEAD_ZONE = 0.12;
 
 export function createGamepadInput(nav = navigator) {
@@ -27,7 +27,7 @@ export function createGamepadInput(nav = navigator) {
       // Shifts are edges, like the keys.
       const shiftUp = up && !upHeld, shiftDown = down && !downHeld;
       upHeld = up; downHeld = down;
-      return { x: pad.axes[0] ?? 0, y, deadZone: DEAD_ZONE, shiftUp, shiftDown };
+      return { x: pad.axes[0] ?? 0, y, deadZone: DEAD_ZONE, shiftUp, shiftDown, handbrake: pressed(pad, BUTTON_A) };
     },
   };
 }

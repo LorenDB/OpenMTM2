@@ -134,26 +134,38 @@ export async function addGameFolder({ label, files }, onProgress = () => {}) {
 }
 
 /**
- * Add archives picked by hand. One already there with the same name, size and date is left as it is.
+ * Add archives picked by hand. One added by hand before under the same name is replaced, read afresh whatever its size
+ * and date (a POD rebuilt under the same name), and keeps its place in the mount order.
  * @param {{ files: File[] }} request
  */
 export async function addPods({ files }, onProgress = () => {}) {
   const manifest = await readAddons();
-  const fresh = files.map((file) => ({ name: file.name.toUpperCase(), file })).filter(({ name, file }) =>
-    !manifest.archives.some((a) => a.source === "manual" && a.name === name && a.size === file.size && a.modified === (file.lastModified ?? null)));
+  const fresh = files.map((file) => ({ name: file.name.toUpperCase(), file }));
+  const replaced = new Map();
+  for (const { name } of fresh) {
+    const old = manifest.archives.find((a) => a.source === "manual" && a.name === name);
+    if (!old) continue;
+    await removePath(old.path);
+    manifest.archives = manifest.archives.filter((a) => a !== old);
+    replaced.set(name, old.key);
+  }
   const chunk = progress(fresh, onProgress);
   const added = [], failed = [];
   for (const { name, file } of fresh) {
     const slot = `m${manifest.next++}`;
     try {
-      added.push({ ...(await store(file, `${ADDON_DIR}/${slot}/${name}`, name, chunk(name))), key: `${slot}:${name}`, source: "manual", label: "" });
+      const key = `${slot}:${name}`;
+      added.push({ ...(await store(file, `${ADDON_DIR}/${slot}/${name}`, name, chunk(name))), key, source: "manual", label: "" });
+      // The archive it replaces keeps its place in the order.
+      const before = replaced.get(name);
+      if (before) manifest.order = manifest.order.map((k) => (k === before ? key : k));
     } catch (error) {
       failed.push(error.message);
     }
   }
   manifest.archives.push(...added);
   await writeAddons(manifest);
-  return { added: added.map((a) => a.name), skipped: files.length - fresh.length, failed };
+  return { added: added.map((a) => a.name), replaced: [...replaced.keys()], skipped: 0, failed };
 }
 
 /**

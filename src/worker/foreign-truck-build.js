@@ -10,7 +10,9 @@
   - A CPR car is its body (`MODELS\<name>.CMD`, the high-detail model, or a `.BIN`) and four wheel models, one per
     corner. Of the body's two wing packages the road-course one is drawn. The driver's helmet is left out.
   - An Evolution truck is its body (`MODELS\<name>.SMF`) and its tires (`<tire base>16L` and `16R`, else the next
-    detail down). Its bodies model their own suspension, so no axle, bar, shock or driveshaft is added.
+    detail down). As 4x42.exe does (game/evo-suspension.js), a body's AXLEF and AXLER groups are taken out of it,
+    recentred and scaled to their axle's track, and drawn at the axles; a truck with an axle-bar texture (AMT.TRK) has
+    the game's bars and shocks too.
 
   No lamps, no cockpit and no crash dents: those are read from MTM2's own files, which these vehicles do not have.
   The physics is MTM2's (docs/PLAN.md Stage 3.1): the manifest gives the wheel positions and the hull points, the
@@ -18,11 +20,12 @@
 */
 import {
   CMD_NORMAL_SCALE, CMD_POSITION_SCALE, CMD_UV_SCALE, EVO_WHEEL_KEYS, MTM_WHEEL_KEYS, cmdFaceTriangles, cmdWingPackages, parseCprCmd,
-  parseTruckManifest, podPathTitle,
+  evoSim, parseEvoParts, parseTruckManifest, podPathTitle,
 } from "../vendor/openphotex/index.js";
 import { loadArtTexture } from "./art-texture.js";
-import { decodeSmfModel, loadEvoModelTextures } from "./evo-models.js";
+import { decodeSmfModel, loadEvoModelTextures, loadEvoTexture } from "./evo-models.js";
 import { decodeModel } from "./models.js";
+import { AMT_SUSPENSION, EVO_BAR_AXLE_SPAN } from "../game/evo-suspension.js";
 import { createPaletteResolver } from "./palette-resolver.js";
 
 /** The games whose vehicles are listed beside MTM's trucks, and where each keeps its manifests. */
@@ -97,6 +100,33 @@ export function tireSize(model) {
   return radiusFt > 0 && widthFt > 0 ? { radiusFt, widthFt } : null;
 }
 
+/**
+ * The body's group named `pattern` (AXLEF, AXLER) taken out of it as a model of its own: recentred on its box and scaled
+ * alike on every axis to `span` feet across (0x5d3ad0). Null when the body has no such group.
+ */
+function takeAxle(body, pattern, span, name) {
+  const meshes = body.meshes.filter((m) => pattern.test(m.groupName));
+  if (!meshes.length || !(span > 0)) return null;
+  body.meshes = body.meshes.filter((m) => !meshes.includes(m));
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const { positions } of meshes) {
+    for (let i = 0; i < positions.length; i++) { const a = i % 3; if (positions[i] < lo[a]) lo[a] = positions[i]; if (positions[i] > hi[a]) hi[a] = positions[i]; }
+  }
+  const centre = lo.map((v, a) => (v + hi[a]) / 2), scale = span / ((hi[0] - lo[0]) || 1);
+  const moved = meshes.map((m) => ({ ...m, positions: m.positions.map((v, i) => (v - centre[i % 3]) * scale) }));
+  const half = hi.map((v, a) => ((v - lo[a]) / 2) * scale);
+  return { name, meshes: moved, textureNames: [...new Set(moved.map((m) => m.textureName).filter(Boolean))], frameNames: null, bounds: { min: half.map((v) => -v), max: half } };
+}
+
+/** The parts list (PARTS\\PARTS.TXT) of the view's archives, read once per view; empty without one. */
+const partsLists = new WeakMap();
+function evoParts(view) {
+  if (!partsLists.has(view)) {
+    partsLists.set(view, Promise.resolve().then(() => view.read("PARTS\\PARTS.TXT")).then((bytes) => (bytes ? parseEvoParts(bytes) : [])).catch(() => []));
+  }
+  return partsLists.get(view);
+}
+
 async function evoTruck(view, file, game) {
   const bytes = await view.read(`TRUCK\\${file}`);
   if (!bytes) return null;
@@ -107,7 +137,11 @@ async function evoTruck(view, file, game) {
     const data = stem ? await view.read(`MODELS\\${stem}.SMF`) : null;
     return data ? decodeSmfModel(data, `${stem}.SMF`) : null;
   };
-  const tireBase = stemOf(manifest.tireModelBaseName);
+  // Its stock parts fitted (a Class 2 or 3 version: docs/EVO2_PHYSICS.md 2.1): figures, lift and tires.
+  const fitted = manifest.stockParts?.length
+    ? evoSim.applyEvoParts(evoSim.evoSpecFromTrk(manifest), manifest.stockParts, await evoParts(view))
+    : { spec: evoSim.evoSpecFromTrk(manifest), liftFt: 0, tireModelBase: null };
+  const tireBase = fitted.tireModelBase ?? stemOf(manifest.tireModelBaseName);
   const tire = async (side) => {
     for (const detail of ["16", "12", "08"]) {
       const model = tireBase ? await smf(`${tireBase}${detail}${side}`) : null;
@@ -117,12 +151,43 @@ async function evoTruck(view, file, game) {
   };
   const parts = { body: await smf(stemOf(manifest.truckModelBaseName)), tireLeft: await tire("L"), tireRight: await tire("R") };
   if (!parts.body?.meshes.length) return null;
+  // A lift kit lowers the wheels' anchors: the body stands higher on them.
+  const anchors = EVO_WHEEL_KEYS.map((key) => xyz(manifest.wheelAnchors[key])).map((a) => (a && fitted.liftFt ? [a[0], a[1] - fitted.liftFt, a[2]] : a));
+  const tireFt = tireSize(parts.tireLeft ?? parts.tireRight);
+  // An axle-bar texture (0x5ed4b0): AMT.TRK's own, or one the manifest names (stock manifests name none).
+  const barName = stemOf(manifest.barTextureName) && stemOf(manifest.barTextureName) !== "NULL" ? manifest.barTextureName : null;
+  const amt = file === "AMT.TRK";
+  const bars = amt ? AMT_SUSPENSION : barName ? {
+    shockTexture: stemOf(manifest.shockTextureName) !== "NULL" ? manifest.shockTextureName : null, barTexture: barName,
+    axlebar: manifest.axlebarOffset ?? { x: 0, y: 0, z: 0 }, driveshaft: manifest.driveshaftPos ?? { x: 0, y: 0, z: 0 },
+  } : null;
+  const body = parts.body;
+  if (anchors.every(Boolean)) {
+    const span = (r, l) => (r[0] - l[0]) * (bars ? EVO_BAR_AXLE_SPAN : 1);
+    parts.axleFront = takeAxle(body, /^AXLEFL?$/i, span(anchors[0], anchors[1]), `${body.name}#AXLEF`);
+    parts.axleRear = takeAxle(body, /^AXLERL?$/i, span(anchors[2], anchors[3]), `${body.name}#AXLER`);
+  }
   const textures = await loadEvoModelTextures(view, parts);
+  let evoSuspension = null;
+  if (bars && tireFt && anchors[0]) {
+    for (const name of [bars.shockTexture, bars.barTexture]) {
+      const title = name && podPathTitle(name).toUpperCase();
+      if (title && !(title in textures)) { const image = await loadEvoTexture(view, title); if (image) textures[title] = image; }
+    }
+    // The low-detail body's height (0x5ff4d0); the body as drawn, without its axles, stands in for it.
+    let top = -Infinity, bottom = Infinity;
+    for (const { positions } of body.meshes) for (let i = 1; i < positions.length; i += 3) { top = Math.max(top, positions[i]); bottom = Math.min(bottom, positions[i]); }
+    evoSuspension = {
+      shockTexture: bars.shockTexture && podPathTitle(bars.shockTexture).toUpperCase(), barTexture: podPathTitle(bars.barTexture).toUpperCase(),
+      axlebar: bars.axlebar, inner: anchors[0][0] - tireFt.widthFt / 2 - 0.5, tall: top - bottom > 7.5,
+    };
+  }
   return {
-    name: manifest.truckName, parts, textures,
-    anchors: EVO_WHEEL_KEYS.map((key) => xyz(manifest.wheelAnchors[key])),
+    name: manifest.truckName, parts, textures, anchors,
     scrapePoints: (manifest.scrapePoints ?? []).map(xyz),
-    tire: tireSize(parts.tireLeft ?? parts.tireRight), game,
+    tire: tireFt, game, evoSuspension,
+    // The vehicle's own figures for the 4x4 Evolution physics (OpenPhotex evoSim; docs/EVO2_PHYSICS.md 2).
+    evoSpec: fitted.spec,
   };
 }
 
@@ -166,7 +231,7 @@ async function cprCar(view, file) {
 
 /**
  * A vehicle of another game for drawing, or null when its files are not mounted: `{ file, name, game, parts, anchors,
- * scrapePoints, textures, tire, suspension: null, lights: [], lightTextures: {} }`, `file` its `<GAME>:<file>` name.
+ * scrapePoints, textures, tire, suspension: null, evoSuspension, lights: [], lightTextures: {} }`, `file` its `<GAME>:<file>` name.
  */
 export async function buildForeignTruckRender(vfs, id) {
   const named = parseForeignTruckId(id);

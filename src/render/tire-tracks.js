@@ -926,11 +926,12 @@ export function createTireTracks({ scene, art = null, ground, snowDepth = () => 
    * The six points across a track at game (x, z), going the way (px, pz) is square to (a unit
    * vector, to its left), under a tire at height `y`. In snow (`ridges`): a ridge's foot, its crest, the
    * left edge of the lid over the trench, its right edge, the other ridge's crest and foot. Off snow
-   * there are no ridges: the rut's left edge three times and its right edge three times.
+   * there are no ridges: the rut's left edge three times and its right edge three times. `tread` is how wide the tire
+   * is against a stock truck's (game/tire-effects.js `treadShare`): the whole track is that much narrower.
    */
-  const edgeAcross = (x, z, px, pz, ridges, y) => {
-    if (ridges) return SNOW_ACROSS_FT.map((out) => edgePoint(x + px * out, z + pz * out, y));
-    const left = edgePoint(x + px * half, z + pz * half, y), right = edgePoint(x - px * half, z - pz * half, y);
+  const edgeAcross = (x, z, px, pz, ridges, y, tread = 1) => {
+    if (ridges) return SNOW_ACROSS_FT.map((out) => edgePoint(x + px * out * tread, z + pz * out * tread, y));
+    const left = edgePoint(x + px * half * tread, z + pz * half * tread, y), right = edgePoint(x - px * half * tread, z - pz * half * tread, y);
     return [left, left, left, right, right, right];
   };
   /** Each of the six points' place across the track's texture, off snow and in it, and which part it is of: a ridge's foot (1), its crest (a half), the rut (0). */
@@ -1027,7 +1028,7 @@ export function createTireTracks({ scene, art = null, ground, snowDepth = () => 
     const lx = x - open.start[0], lz = z - open.start[1], long = Math.hypot(lx, lz);
     if (!(long <= TRACK_LONGEST_FT && long > 1e-6)) return false;
     const px = -lz / long, pz = lx / long;
-    const to = edgeAcross(x, z, px, pz, ridges, y);
+    const to = edgeAcross(x, z, px, pz, ridges, y, strip.tread);
     if (!trackLevel(to, ground(x, z, y)) || !edgeHolds(open.from, to, open.to) || !open.passed.every((edge) => edgeHolds(open.from, to, edge))) return false;
     open.passed.push(open.to);
     open.to = to;
@@ -1076,13 +1077,16 @@ export function createTireTracks({ scene, art = null, ground, snowDepth = () => 
 
   return {
     /** A tire's own track: hand it back to `lay` and `lift`. */
-    strip: () => ({ id: strips++, last: null, edge: null, along: 0, kind: null, open: null }),
+    strip: () => ({ id: strips++, last: null, edge: null, along: 0, kind: null, open: null, tread: 1 }),
     /**
      * The tire of `strip` stands at game (x, z) on ground that takes a track of `kind`
      * (`TRACK_KINDS`), pressing `press` hard (0 to 1), its hub at height `y` (which says whether it
-     * is on a bridge's deck or the ground under it). Lays a piece when it has gone far enough.
+     * is on a bridge's deck or the ground under it), `tread` how wide its tire is against a stock truck's. Lays a piece
+     * when it has gone far enough.
      */
-    lay(strip, x, z, kind, press = 1, y = undefined) {
+    lay(strip, x, z, kind, press = 1, y = undefined, tread = 1) {
+      // A change of width begins a new piece: the last one's edge is the old width.
+      if (strip.tread !== tread) { strip.tread = tread; strip.edge = null; strip.open = null; }
       if (!strip.last) { strip.last = [x, z]; strip.edge = null; strip.open = null; return; }
       const dx = x - strip.last[0], dz = z - strip.last[1], length = Math.hypot(dx, dz);
       if (length > TRACK_BREAK_FT) { strip.last = [x, z]; strip.edge = null; strip.open = null; return; }
@@ -1092,8 +1096,8 @@ export function createTireTracks({ scene, art = null, ground, snowDepth = () => 
       strip.open = null;
       // The piece starts on the last one's far edge, so the two share it; a strip's first starts square to its own way.
       const fresh = !(strip.edge && strip.kind === kind);
-      const from = fresh ? edgeAcross(strip.last[0], strip.last[1], px, pz, ridges, y) : strip.edge;
-      const to = edgeAcross(x, z, px, pz, ridges, y);
+      const from = fresh ? edgeAcross(strip.last[0], strip.last[1], px, pz, ridges, y, tread) : strip.edge;
+      const to = edgeAcross(x, z, px, pz, ridges, y, tread);
       // Never off a deck's edge or across a ledge: the strip ends, and begins again where the ground is level with the tire.
       if (!trackLevel(to, ground(x, z, y)) || (fresh && !trackLevel(from, ground(strip.last[0], strip.last[1], y)))) {
         strip.last = [x, z]; strip.edge = null; return;

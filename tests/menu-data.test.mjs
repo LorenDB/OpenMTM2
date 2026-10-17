@@ -1,6 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { garageSummary, raceLengthLabel, raceTypeName, trackPreviewBmp } from "../src/game/menu-data.js";
+import { garageSummary, raceLengthLabel, raceTypeName, trackInfoRows, trackPreviewBmp } from "../src/game/menu-data.js";
+
+test("a track without a picture shows what its SIT says, the rows it does not say left out", () => {
+  const rows = new Map(trackInfoRows({
+    name: "Mud Run", game: "EVO2", locale: " ", author: "Somebody", raceType: "circuit", trackLength: 10560, checkpoints: 12,
+    defaultLaps: 2, weatherMask: 0b11, level: "MUD.LVL", file: "MUD.SIT", pod: "MUD.POD",
+  }, { type: "Circuit (EVO2)" }));
+  assert.equal(rows.get("Type"), "Circuit (EVO2)");
+  assert.equal(rows.get("Game"), "4x4 Evolution 2");
+  assert.equal(rows.has("Location"), false);
+  assert.equal(rows.get("Author"), "Somebody");
+  assert.equal(rows.get("Length"), "10,560 ft (2.00 mi)");
+  assert.equal(rows.get("Laps"), "2");
+  assert.equal(rows.get("Weather"), "Clear, Cloudy");
+  assert.equal(rows.get("File"), "MUD.SIT (MUD.POD)");
+});
 
 test("classic menu labels and stock track preview artwork", () => {
   assert.equal(raceTypeName("summit"), "Summit Rumble");

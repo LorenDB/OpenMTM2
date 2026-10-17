@@ -4,7 +4,8 @@
   stored as JSON in OPFS (`userdata/profiles.json`). Pure, so it runs under Node.
 */
 export const MAX_NAME_LENGTH = 16;
-export const DEFAULT_GARAGE = Object.freeze({ suspension: 0, transferSetting: 1500, tireCut: 0 });
+/** A new driver's Garage: Medium suspension and a Medium tire cut (MTM2's own start is Soft and Shallow). */
+export const DEFAULT_GARAGE = Object.freeze({ suspension: 1, transferSetting: 1500, tireCut: 1 });
 
 /** A name trimmed to the limit, or "" when nothing is left. */
 export function cleanName(name) {

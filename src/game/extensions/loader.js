@@ -28,6 +28,16 @@ export function trackForExtension(extension, tracks, current) {
   return tracks.find((track) => extension.acceptsTrack(track)) ?? null;
 }
 
+/**
+ * The trucks a race would have: the player's and the picked opponents, or in spectator mode the picked trucks alone.
+ * `null` when the extension has no minimum or the field reaches it, else the minimum it falls short of.
+ */
+export function entrantsShortfall(extension, opponents, spectator) {
+  const min = extension?.minEntrants ?? 0;
+  const count = (opponents?.length ?? 0) + (spectator ? 0 : 1);
+  return count >= min ? null : min;
+}
+
 /** Defaults stored below `settings.extensions`, keyed by extension id. */
 export function extensionSettingDefaults() {
   return Object.fromEntries(EXTENSIONS.map((extension) => [

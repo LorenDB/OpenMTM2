@@ -1,5 +1,6 @@
 /* Shared contents of the Options screen and the Options modal opened from every menu screen. */
 import { DUST_LEVEL_NAMES, SPARK_LEVEL_NAMES, dustLevel, sparkLevel } from "../game/tire-effects.js";
+import { GRASS_LEVEL_NAMES, grassLevel } from "../render/evo-grass.js";
 import { FLY_SCHEMES, FLY_SCHEME_NAMES } from "../game/fly-camera.js";
 import { buildKind, defaultSkin } from "../install/exe-version.js";
 import { el } from "./dom.js";
@@ -279,8 +280,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     }),
     nav("Start screen", leaveFor(() => context.router.go("start", {}, { replace: true }))));
 
-  /** Settings declared by each extension, isolated in one panel per extension. */
-  const extensionPanels = EXTENSIONS.map((extension) => el("section", { class: "extension-options-panel" },
+  /** Settings declared by each extension: a heading, its description and its rows, as the Display page's sections are. */
+  const extensionPanels = EXTENSIONS.flatMap((extension) => [
     el("h3", {}, extension.name),
     el("p", { class: "muted" }, extension.description),
     ...extension.settings.map((spec) => {
@@ -298,8 +299,40 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         }), spec.suffix ?? null);
       }
       return null;
-    }),
-  ));
+    }).filter(Boolean),
+  ]);
+
+  /**
+   * Reload POD.INI: the browser keeps no handle on the folder, so it is picked again (the same one or another), and every
+   * archive is copied afresh, so a POD rebuilt under the same name is read again.
+   */
+  const reinstall = async (target) => {
+    const [{ pickInstallFolder }, { inspectSource }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
+    const source = await pickInstallFolder();
+    if (!source) return;
+    const found = await inspectSource(source);
+    if (!found.files?.length) { window.alert(found.message); return; }
+    const label = target.textContent;
+    target.disabled = true;
+    const off = context.assets.on("install-progress", ({ copied, total, name }) => {
+      target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
+    });
+    try {
+      const done = await context.assets.call("reloadInstall", { files: found.files, podIni: found.podIni, exeVersion: found.exeVersion ?? null, weatherArt: found.weatherArt ?? [], force: true });
+      const lines = [`${done.archives.length} archives mounted, in POD.INI order.`];
+      if (done.added.length) lines.push(`Read again: ${done.added.join(", ")}.`);
+      if (done.removed.length) lines.push(`Removed: ${done.removed.join(", ")}.`);
+      if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
+      window.alert(lines.join("\n"));
+      window.location.reload();
+    } catch (error) {
+      window.alert(`Could not reload POD.INI: ${error.message}`);
+      target.textContent = label;
+      target.disabled = false;
+    } finally {
+      off();
+    }
+  };
 
   const sections = [
     ["Game", [
@@ -307,6 +340,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         ...PHYSICS_MODELS.map((m) => el("option", { value: m.id, selected: m.id === physicsModel(settings.physics).id, title: m.note }, m.label))),
       "The rules the trucks are driven by, from the next race on. Monster Truck Madness is the 1996 game: tires that touch throw trucks twice as hard, water stops a truck, weather does not change the grip, no crash damage, and its drag rules"),
       toggle("Automatic gears", "autoShift"), toggle("Crash damage", "crashDamage", "Trucks dent where they are hit"),
+      row("Terrain overlap", el("input", { type: "checkbox", class: "opt-switch", checked: settings.terrainOverlap !== false, "aria-label": "Terrain overlap", onchange: (event) => { settings.terrainOverlap = event.target.checked; save(); } }),
+        "The ground tiles overlap by two pixels, as Monster Truck Madness 2 draws them. Off, they meet edge to edge, as MTM1 draws them. Some HD texture packs need it on. From the next race"),
       toggle("Drag auto stage", "autoStage", "Drag races: the truck drives itself to the staging beams. Off, you stage it yourself; the Auto Stage key (T) then does it for one pass"),
       choose("Speed", "units", ["MPH", "KPH"], ["mph", "kph"]),
       row("Computer opponents", el("select", { "aria-label": "Computer opponents", onchange: (event) => {
@@ -322,6 +357,7 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
         type: "checkbox", class: "opt-switch", checked: settings.look === "enhanced", "aria-label": "Smooth textures",
         onchange: (event) => { settings.look = event.target.checked ? "enhanced" : "classic"; save(); },
       }), "Textures filtered smooth and the world lit by the sun (the enhanced look). Off: the game's own sharp texels and baked light"),
+      toggle("Lens flare", "sunFlare", "With Smooth textures: the sun's flare across the screen. Off keeps the sun and moon"),
       choose("Detail", "detailLevel", ["Low", "Medium", "High"]),
       row("Anti-aliasing", el("select", {
         "aria-label": "Anti-aliasing", title: AA_HINT,
@@ -340,9 +376,6 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       menus,
       el("h3", {}, "Effects"),
       toggle("Tire tracks", "tireTracks"), toggle("Water splashes", "waterSplash"),
-      // MTM2's own two (MONSTER.INI reflectionFlag and truckReflectionFlag), for the game's water and every truck.
-      toggle("Water reflections", "waterReflections", "MTM2's: the world mirrored in the game's water (\"Reflective water\" has its own). From the next race"),
-      toggle("Truck reflections", "truckReflections", "MTM2's: the clouds mirrored on the trucks' bodies, or the sky in Rain, Dusk and Night; none in fog or Pitch Black. From the next race"),
       // One amount for both pictures (game/tire-effects.js `CLASSIC_DUST`, `RICH_DUST`): Few is the game's own puffs.
       slider("Dust", {
         min: 0, max: 3, step: 1, value: dustLevel(settings), format: (v) => DUST_LEVEL_NAMES[v],
@@ -352,6 +385,12 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       slider("Sparks", {
         min: 0, max: 3, step: 1, value: sparkLevel(settings), format: (v) => SPARK_LEVEL_NAMES[v],
         set: (v) => { settings.sparkAmount = v; settings.sparks = v > 0; save(); },
+      }),
+      // 4x4 Evolution's grass: how far around the camera it is drawn (render/evo-grass.js `GRASS_RADII`).
+      slider("Evo grass", {
+        min: 0, max: GRASS_LEVEL_NAMES.length - 1, step: 1, value: grassLevel(settings), format: (v) => GRASS_LEVEL_NAMES[v],
+        set: (v) => { settings.evoGrassRange = v; settings.evoGrass = v > 0; save(); },
+        title: "4x4 Evolution tracks: how far around the camera the grass is drawn, on every tile its .TEX marks for vegetation, pressed down under the trucks. Near is about the game's own. From the next race",
       }),
       // The port's own scenery (docs/VISUALS.md): one preset, and on Custom each part on its own switch.
       el("h3", {}, "Enhanced graphics"),
@@ -377,9 +416,9 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
       toggle("Menu music", "menuMusic"),
       row("Announcer voice", el("input", { type: "checkbox", class: "opt-switch", checked: false, disabled: !VOICE_COMMENTARY_ENABLED }), "Voice commentary is temporarily disabled."),
     ]],
-    ["Keys", [choose("Fly-by controls", "flyControls", FLY_SCHEMES.map((id) => FLY_SCHEME_NAMES[id]), [...FLY_SCHEMES]), note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
+    ["Keys", [note, keyRows, el("div", { class: "opt-actions" }, button("Reset keys", () => {
       Object.assign(bindings, mergeBindings({})); settings.bindings = {}; save(); note.textContent = "Keys reset."; showKeys();
-    }))]],
+    })), choose("Fly-by controls", "flyControls", FLY_SCHEMES.map((id) => FLY_SCHEME_NAMES[id]), [...FLY_SCHEMES])]],
     ["Extensions", [
       el("p", { class: "muted" }, "Optional game modes shipped with OpenMTM2. Each extension owns its settings and runtime rules."),
       ...extensionPanels,
@@ -388,17 +427,21 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ["Advanced", [
       // Each preset sets the draft; Save keeps it.
       el("div", { class: "opt-actions opt-presets" },
-        preset("MTM1 Classic preset", applyMtm1Classic, "Monster Truck Madness 1 as it was: MTM1 sky, trucks apart, original backdrops, MTM1 particles and sounds, the 1996 physics, tiles edge to edge, and the enhanced graphics off. Save to keep it."),
+        preset("MTM1 Classic preset", applyMtm1Classic, "Monster Truck Madness 1 as it was: MTM1 sky, trucks apart, original backdrops shown, MTM1 particles and sounds with no dust or sparks, the 1996 physics, no terrain overlap, smooth textures, and the enhanced graphics off. Save to keep it."),
         preset("MTM2 Classic preset", applyMtm2Classic, "Monster Truck Madness 2 as it was: no MTM1 option, original backdrops, MTM2 classic dust (the game's few puffs), no sparks or water splashes, no CP3 HD weather or reflections, MTM2's water and truck reflections, backdrops, and the enhanced graphics off. Save to keep it."),
-        preset("OpenMTM2 preset", applyOpenMtm2, "The port's own picture: no MTM1 or MTM2 option, tire tracks, water splashes, many dust puffs and normal sparks, every enhanced part but the glossy paint, and CP3 terrain detail, HD weather and reflections. Save to keep it.")),
+        preset("OpenMTM2 preset", applyOpenMtm2, "The port's own picture: no MTM1 or MTM2 option, tire tracks, water splashes, normal dust puffs and sparks, every enhanced part including the glossy paint, and CP3 terrain detail, HD weather and reflections. Save to keep it.")),
       el("h3", {}, "Display"),
       toggle("MTM1 particles", "mtm1Particles", "Monster Truck Madness 1's own particles and tracks: single points of the ground's colour thrown by the tires, which mark the ground where they land, and tracks darkened into the ground, in place of the dust, the spray and the tire tracks. From the next race"),
       toggle("Original backdrops", "originalBackdrops", "The game's own backdrops in place of HD ones (Community Patch 3's backdropsHD.pod), wherever an archive still has the original. From the next race"),
       toggle("MTM1 sounds", "mtm1Sounds", "Monster Truck Madness 1's skids from MTM2's SOUND.POD: its corner, wheelspin and brake skids. MTM1's engine is not in MTM2's archives; the engine stays MTM2's"),
       toggle("MTM1 sky", "mtm1EarthSky", "Monster Truck Madness 1's flat sky on every track: an MTM1 track's own, and EARTHSKY on the others, in the weathers without a sky of their own. Needs MTM1's sky files mounted (EARTHSKY.ACT and ALIENSKY.RAW, in MTM1's GAME.POD). From the next race"),
-      row("MTM1 no terrain overlap", el("input", { type: "checkbox", class: "opt-switch", checked: !settings.mtm1TerrainOverlap, "aria-label": "MTM1 no terrain overlap", onchange: (event) => { settings.mtm1TerrainOverlap = !event.target.checked; save(); } }),
-        "Monster Truck Madness 1 tracks: the ground tiles meet edge to edge, as MTM1 draws them. Off, they overlap by two pixels, as MTM2 does"),
+      // MTM2's own two (MONSTER.INI reflectionFlag and truckReflectionFlag), for the game's water and every truck.
+      toggle("MTM2 Water reflections", "waterReflections", "MTM2's: the world mirrored in the game's water (\"Reflective water\" has its own). From the next race"),
+      toggle("MTM2 Truck reflections", "truckReflections", "MTM2's: the clouds mirrored on the trucks' bodies, or the sky in Rain, Dusk and Night; none in fog or Pitch Black. From the next race"),
       toggle("MTM2 classic dust", "greyDust", "Wheels' dust and collisions' smoke in the game's own grey puff colour, as MTM2 draws them, in place of the port's earth-coloured dust and dark smoke. From the next race"),
+      toggle("Evo particles", "evoParticles", "4x4 Evolution tracks: the game's tire debris, in the ground's colour, by surface (gravel, grass, sand, mud, snow) from spinning and sliding tires, and the leaves on Autumn. From the next race"),
+      toggle("Evo AI life", "evoLife", "4x4 Evolution tracks: the game's AI life, four flocks of birds that follow the computer drivers' line, circle, land and take off when a truck comes near, as the game's ailife setting. From the next race"),
+      toggle("Evo forest", "evoForest", "4x4 Evolution tracks without a vegetation file (the first game's): a forest generated over every tile its .TEX marks for trees, as 4x4 Evolution 2 does, from the track's own tree models. From the next race"),
       toggle("CP3 Terrain detail", "terrainDetail", "Community Patch 3 tracks: detail normals where the track paints a mask, and HD ground normal maps (Enhanced look)"),
       row("CP3 HD weather", el("input", { type: "checkbox", class: "opt-switch", checked: settings.hdWeather !== false, "aria-label": "CP3 HD weather", onchange: (event) => { settings.hdWeather = event.target.checked; save(); } }),
         "Community Patch 3's HD skies for Rain, Dusk and Night and the older levels' clouds: the pictures in the game folder's WeatherArt folder, or the port's own copy of the community's set. Off: the game's own sky art"),
@@ -426,8 +469,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
     ["Data", [
       el("p", { class: "muted" },
         "OpenMTM2 reads the tracks and vehicles of Monster Truck Madness 1 and 2, CART Precision Racing and 4x4 Evolution 1 and 2. "
-        + "Add POD.INI reads another game folder's POD.INI and mounts every archive it lists. Reload POD.INI mounts again every archive "
-        + "the base install's POD.INI lists, in its order. Change base install picks the Monster Truck Madness 2 folder again, or another one. "
+        + "Add POD.INI reads another game folder's POD.INI and mounts every archive it lists. Reload POD.INI picks the game folder again "
+        + "(or another Monster Truck Madness 2 folder) and reads every archive its POD.INI lists afresh, in its order. "
         + "The POD manager shows what is mounted, and adds single POD files from any game without the game being installed."),
       el("div", { class: "opt-actions opt-data" },
         button("Add POD.INI", async (event) => {
@@ -456,51 +499,8 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
             off();
           }
         }, null, "Pick another game's folder: its POD.INI is read and every archive it lists is added beside the base install"),
-        button("Reload POD.INI", async (event) => {
-          // The POD.INI picked with the base install, from its copy: no folder is picked.
-          if (!close()) return;
-          const target = event.currentTarget;
-          target.disabled = true;
-          try {
-            const done = await context.assets.call("reloadPodIni");
-            const lines = [`${done.archives} archives of the base install mounted, in POD.INI order.`];
-            if (done.restored.length) lines.push(`Mounted again: ${done.restored.join(", ")}.`);
-            window.alert(lines.join("\n"));
-            window.location.reload();
-          } catch (error) {
-            window.alert(`Could not reload POD.INI: ${error.message}`);
-            target.disabled = false;
-          }
-        }, null, "Mount again every archive the base install's POD.INI lists, those taken out in the POD manager included, in the file's order"),
-        button("Change base install", async (event) => {
-          // The browser keeps no handle on the folder, so it is picked again; only new or changed archives are copied.
-          const target = event.currentTarget;
-          const [{ pickInstallFolder }, { inspectSource }] = await Promise.all([import("../install/picker.js"), import("../install/inspect-source.js")]);
-          const source = await pickInstallFolder();
-          if (!source) return;
-          const found = await inspectSource(source);
-          if (!found.files?.length) { window.alert(found.message); return; }
-          const label = target.textContent;
-          target.disabled = true;
-          const off = context.assets.on("install-progress", ({ copied, total, name }) => {
-            target.textContent = `Copying ${name} ${total ? Math.round((copied / total) * 100) : 100}%`;
-          });
-          try {
-            const done = await context.assets.call("reloadInstall", { files: found.files, podIni: found.podIni, exeVersion: found.exeVersion ?? null, weatherArt: found.weatherArt ?? [] });
-            const lines = [`${done.archives.length} archives mounted, in POD.INI order.`];
-            if (done.added.length) lines.push(`Copied: ${done.added.join(", ")}.`);
-            if (done.removed.length) lines.push(`Removed: ${done.removed.join(", ")}.`);
-            if (found.missing?.length) lines.push(`Listed but not in the folder: ${found.missing.join(", ")}.`);
-            window.alert(lines.join("\n"));
-            window.location.reload();
-          } catch (error) {
-            window.alert(`Could not change the base install: ${error.message}`);
-            target.textContent = label;
-            target.disabled = false;
-          } finally {
-            off();
-          }
-        }, null, "Pick the Monster Truck Madness 2 folder again, or another one: its POD.INI is read, and only new or changed archives are copied")),
+        button("Reload POD.INI", (event) => reinstall(event.currentTarget), null,
+          "Pick the Monster Truck Madness 2 folder again, or another one: its POD.INI is read and every archive it lists is copied again, changed or not, and mounted in the file's order")),
       el("h3", {}, "POD mounting"),
       el("div", { class: "opt-actions opt-data" },
         button("POD manager", async () => { (await import("./pod-manager.js")).openPodManager(context); })),
@@ -549,11 +549,11 @@ export async function mountOptionsPanel(container, context, { close: closeNow = 
   function showDraft() {
     const shown = {
       "Physics": () => physicsModel(settings.physics).id, "Smooth textures": () => settings.look === "enhanced",
-      "Enhanced graphics": () => graphicsChoice(settings.graphics), "MTM1 no terrain overlap": () => !settings.mtm1TerrainOverlap,
-      "CP3 HD weather": () => settings.hdWeather !== false, "Dust": () => dustLevel(settings), "Sparks": () => sparkLevel(settings),
+      "Enhanced graphics": () => graphicsChoice(settings.graphics), "Terrain overlap": () => settings.terrainOverlap !== false,
+      "CP3 HD weather": () => settings.hdWeather !== false, "Dust": () => dustLevel(settings), "Sparks": () => sparkLevel(settings), "Evo grass": () => grassLevel(settings),
     };
     // A slider's figure beside it, in its own words.
-    const named = { "Dust": DUST_LEVEL_NAMES, "Sparks": SPARK_LEVEL_NAMES };
+    const named = { "Dust": DUST_LEVEL_NAMES, "Sparks": SPARK_LEVEL_NAMES, "Evo grass": GRASS_LEVEL_NAMES };
     for (const control of container.querySelectorAll("input[aria-label], select[aria-label]")) {
       const label = control.getAttribute("aria-label");
       const value = toggleKeys.has(label) ? !!settings[toggleKeys.get(label)] : shown[label]?.();

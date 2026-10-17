@@ -208,6 +208,11 @@ the same flag makes `CTextureList` load the shadow group at all) and neither wea
 type 2 or 3. Weather 3 is Rain (`EVO2_PHYSICS.md` 1); 2 is not identified (**hypothesis**:
 fog). Otherwise every cell is 0x8000.
 
+OpenMTM2 draws both under a sun as the game does, except where it draws the sun's shadows itself
+(the enhanced look, `sunShadows` in `worker/evo-track-build.js`): there the baked shade and the
+shadow tiles would darken the same ground a second time under the real shadows, so both are left
+off, as MTM2's `.LTE` is in that look.
+
 ---
 
 ## 4. Surfaces
@@ -306,9 +311,28 @@ The kind comes from the tire's surface type:
 
 ### 5.4 Leaves on AUTUMN
 
-On a level named AUTUMN, a truck faster than 15 ft/s throws **4 leaves** (kind 7, second pool,
-`0x4fe530`) from every tire on the ground, each burst. The leaf motion constants are in
-`0x4fe530` (0.36, 0.04, 0.2, 0.03): **not traced**.
+On a level named AUTUMN, every 15 Hz tick, a truck faster than 15 ft/s throws **4 leaves** (kind 7)
+from every tire on the ground whose bottom is over the water level (`0x89266c`), half a foot to the
+side, into the second pool (`0x4fe530`). That pool holds **100** and takes no more while it is full;
+it does not reuse the oldest. A leaf (`0x4fe530`, moved by `0x4fe830`, drawn by `0x4fe990`):
+
+- is a square of half-size uniform [0.04, 0.4] ft (corners (+-1, +-1, 0) times the size), from one
+  of four cells of its texture (u 0 or 0.3125, v 0 or 0.5), turning at uniform [-60, 60] degrees a
+  second on each axis;
+- rises at uniform [3, 8] ft/s to uniform [0.03, 0.2] times the truck's speed above where it
+  started (10 ft at most; the speed comes from the fast square root `(bits >> 1) + 0x82e7cc`), then
+  falls at the same speed (`0x6451d9` = -1), drifting at uniform [-0.5, 0.5] ft/s across;
+- is gone once it is under the ground.
+
+The port throws fewer, smaller leaves than this (40 at most, 1 a tick from each tire, each a
+leaf's shape 0.2 to 0.5 ft long; `game/evo-particles.js`), none from a tire on Cement, and draws
+none within 2.5 ft of the eye: as the game's numbers stand, a cloud of large squares surrounds the
+truck, which the game's videos do not show.
+
+The debris chunks of 5.1 are 4x4 Evolution's `MODELS\PTCLE1.SMF` and `PTCLE2.SMF` (`STARTUP.POD`,
+with `ART\PTCLE.RAW`; Evo 2 ships neither): five vertices, about 0.4 and 0.6 ft across. The size
+of 5.3 scales them, so a chunk is 0.06 to 0.55 ft across. The port draws a turning square of a
+chunk's footprint (`CHUNK_FT` in `game/evo-particles.js`).
 
 ### 5.5 Located, not traced
 
@@ -317,6 +341,37 @@ Water wake and ripples (`waterWakeFlag`, `WAKE.TIF`, `RIPPLE.RAW`, classes `SWat
 (`CSkid`, `0x5aad30`). They are reached through vtables that the export does not resolve.
 
 ---
+
+## 5a. Ground: the smoothed terrain (`..\core\ground.cpp`)
+
+The 256 x 256 `.RAW` corners (1/32 ft, rows along z) are not drawn or driven as MTM2's flat 32 ft
+triangles. `CGround::init` (`0x469b20`) keeps a 0x26-byte record per cell: at +0x00 a 4 x 4 grid of
+16-bit heights 8 ft apart (index `z * 4 + x`), two shorts at +0x20 and +0x22 (not traced), the cell's
+level of detail at +0x24 and the previous one at +0x25.
+
+- **Filling** (`CGround::load` `0x46b150`, then `0x46ac90`): below detail 3 the sub-heights are
+  planar in the cell's two triangles (`0x46ac50`, `0x46a820`, `0x46a920` / `0x46aad0` by parity), the
+  same surface as MTM2's. At detail 3 or more `0x46a160` fills them with a cardinal spline of tension 0
+  (Catmull-Rom; `0x5c7780` with s = 0.5, weights for t = 0.25, 0.5, 0.75 kept at `0x892600`,
+  `0x892620`, `0x892640`; `0x5c7950` takes the weighted sum and rounds): the first row along x through
+  corners col - 1 .. col + 2, the first column along z through rows row - 1 .. row + 2, then rows 1 to
+  3 along x through the first-column values of the cells col - 1 .. col + 2. Every value is held in
+  0 .. 0xFFE0. The world wraps (masks at `+0x18`, `+0x1C`).
+- **Height** (`CGround::groundHeight`, `0x471cb0`, 27 callers, the vehicle's among them): the 8 ft
+  sub-cell under the point (`x / 8`, `z / 8`), its four corners from this cell's grid or the next
+  cell's first row or column, split into two triangles by parity (`(sx & 1) == (sz & 1)`: the main
+  diagonal, as MTM2's cells are), linear inside; times the height scale at `+0x14` (1/32). So the
+  trucks drive on the smoothed surface whenever it is drawn.
+- **Drawing** (`0x4705f0` from `0x471a40`): each visible cell takes a level of detail by its squared
+  distance from the camera (`+0x6C`, `+0x68` of the view, `0x8eb2a0`, `0x8eb2a4`): 2 draws its 5 x 5
+  points (`0x46c1f0`), 1 a 3 x 3 (`0x46d900`, with the edges next to a coarser cell averaged, so no
+  crack shows), 0 its corners (`0x46f280`); below detail 3 always 0. Normals by central differences
+  over the sub-grid (`(dh / 512, 1, dh / 512)`, `0x66468c`); texture coordinates from 1/32 to 31/32
+  in quarters (the two-pixel crop of MTM2's tiles).
+
+The port (`OpenPhotex evoSim.evoSmoothHeights`, the terrain's fine grid; OpenMTM2
+`worker/evo-track-build.js`) builds Evo 2's ground this way with "Smooth terrain" on, for the drawn
+ground and the simulation alike, and at the finest level of detail everywhere.
 
 ## 6. The vehicle
 
@@ -377,24 +432,177 @@ mode (it is `drive_type`).
 
 ---
 
-## 7. What OpenMTM2 does today, against these findings
+### 6.4 Axles, bars and shocks on the truck
 
-`src/worker/evo-track-build.js`:
+- **Axle models** (`0x5d3ad0`): the body model's `AXLEF` and `AXLER` groups (or `AXLEFL`, `AXLERL`)
+  are each recentred on their own box (`0x5b03e0`) and scaled alike on every axis (`0x5b0630`) to
+  the axle's track, the right tire's x less the left's, times **0.93** (`0x65b1b0`) when the truck
+  has an axle-bar texture. Each frame (`0x5f6ec0`, `0x5f7820`) each is drawn at its axle's centre
+  (axle +0x18, +0x1C, and the axle's z), rolled with the axle; the tires sit on the same rolled line.
+- **Bars and shocks** (`0x5ff4d0`, drawn by `0x600eb0` through `0x5ffc00`, only for a vehicle of
+  version 2 or more with an axle-bar texture, or `bigfoot.trk`): `0x5ed4b0` gives `AMT.TRK`, the
+  only stock truck drawn this way, `shock2.tif`, `axlebar2.tif`, an `axlebarOffset` of
+  (1.3, 0.1, 0.55) and a `driveshaftPos` of (0, 0.6, 0.55), whatever its manifest says. With
+  `inner` the right front tire's x less half its width less 0.5:
+  - two bars per axle from the axle at (+-inner, -0.1) in its rolled frame, 0.31 ft toward the
+    truck's middle, to the body at (+-(offset x pulled 0.1 toward the middle), offset y + 0.05,
+    offset z): flat strips of half-width 0.15 (`0x668174`) across in the x-y plane;
+  - two shocks per tire, 0.2 ft either side of the axle, from (+-(inner + 0.22), 0.2) in the
+    axle's rolled frame straight up to x +-(inner - 0.03) at y 1.2 (front) or 1.7 (rear), plus 1.16
+    or 0.66 when the low-detail body is taller than 7.5 ft (`0x65f3fd`): strips of half-width 0.13
+    (`0x668178`) in the x-z plane;
+  - a driveshaft model stretched from `driveshaftPos` to each axle (`0x601510`), not drawn by the
+    port.
 
-| Today | The game |
+OpenMTM2 (`game/evo-suspension.js`, `worker/foreign-truck-build.js`) draws all of these but the
+driveshaft. JSTruckViewer drew the axle groups where the model file puts them.
+
+### 6.5 What moves, and what collides
+
+Over the 50 stock archives the `.SIT` classes are CCollide 27,955, CCollisionBox 5,645, CNonCollide
+2,446, CCheckpoint 345, CTriggerBox 215, CTrain 42, CFlyingObject 39 and CTreasure 30.
+
+- **CTrain** is MTM's type 10 (the reader `0x41d560` makes a CTrain of a type 10 box, with its
+  `trainVelocity`, `0x41d450`). Up to 32 are listed (`0x551620`, "Too many trains"); each tick
+  (`0x5519xx`) moves one by its velocity's x and z, in world axes, sets its height from the ground
+  under it, and wraps it round the world (`0x5502e0`): MTM2's moving object. FM109's train (18,
+  at -60 ft/s), OILFLD's (15) and THEHILL's semis (7) move.
+- **CFlyingObject** has no motion of its own. Its class (`0x41b610`, vtable `0x662f94`) differs from
+  the others only in its frame step (`0x41df50`, a bare return) and in never being culled by distance
+  (`0x439850`, `0x4394b0`). What makes the helicopters and planes fly is an object path (6.7).
+- **Frame animation** (`0x41dfb0` and `0x41def0`): an object's frame advances by `dt / timePerFrame`
+  and wraps at the model's frame count. The stock animated models are rotors (AK4407R1, R2), the
+  shark (ISSHK), fish, a diver, birds, vultures, an eagle, the lion, a helicopter, a windsock,
+  flags, a sign and pump jacks (FS3PUMP, 0.1 and 0.083 s a frame); 30 or so frames each.
+- **CCollisionBox** is a model-less box, the collision of what a CNonCollide draws. 1,477 of them are
+  tilted or rolled: SHTARTC's ramp (AA3RMP, a CNonCollide) is the slab (4.5, 121, 36.5) rolled 103
+  degrees, so its 121 is its length and its 4.5 its thickness.
+- **Placed birds** (VULTURE's and TRIBAJA's vultures, the eagle) are CNonCollide whose frames flap
+  their wings; most fly an object path (6.7).
+- **AI life** (`CAILife`, `..\core\ailife.cpp`, `0x407770` to `0x40a270`) is the birds that fly, on
+  every level while the `ailife` setting (`4x42.ini`, read at `0x47e770`, default on) is set. Set up
+  at level load (`0x551620` calls `0x409710`): one model, `LIFE.POD`'s `MODELS\BIRD.SMF` (osprey
+  art, `OSPREY.RAW` and `.OPA`), and **4 flocks of 8 birds** (flock stride 0x5DC bytes, bird 0x78).
+  - A flock's target (`0x408b80`, flock +0x80) is a random point of the computer drivers' lines
+    (the AI system's path list, `0x6706ec` + 4, `0x40ad60`), or with none a random checkpoint, 20 ft
+    up (`0x62e3c5`).
+  - Each bird (`0x4080f0`) steers as a boid: toward the target at 0.3 (`0x670670`), toward the
+    flock's mean velocity at 0.1 (`0x670674`), and apart from its flock mates closer than its
+    separation distance and from vehicles within twice their size (at least 5 ft) at 0.3
+    (`0x409420`, `0x670678`); each velocity component is held within +-24 ft/s (`0x670690`).
+  - A bird can sit (bird +0x68): it takes off (`0x407d30`) when its timer runs out or a vehicle
+    comes within twice its size (`0x62e3b1`).
+  - A flock (`0x408d80`, only with 3 checkpoints or more) picks one of 5 modes every uniform
+    [60, 120] s (`0x409390`): 0 and 1 move its target along the line forward or back a point at a
+    time, each point lasting its length over a random 20 to 39 ft/s; 2 and 3 hold it; 4 brings it
+    down to the ground under it (the birds land).
+  - A bird keeps 10 to 48 ft over the ground (20 ft/s^2 up or down, `0x670680`, `0x670684`,
+    `0x670688`) and within 64 ft of the target on x and z; under the ground it sits for uniform
+    [0, 12] s (`0x407d30`) and takes off at 2 ft/s. Its wing frames (BIRD.SMF has 31) run back and
+    forth at `(k * 10 + 2) * frames` a second, k its climb plus, under 7 ft, `1 - height / 7`; over
+    7 ft and not climbing it glides.
+  OpenMTM2: `game/evo-life.js` and `render/evo-life.js`, the "Evo AI life" switch (on, as the game's
+  setting). The flocks follow the first recorded AI line of the track; a vehicle's size for the birds
+  is a truck's 8 ft (the game's per-vehicle figure is not traced).
+- **Objects that move when hit** (`0x552fe0`, `0x553110`): every object with a mass over 0 and no
+  parent is a moving one, the rest static. Stock Evo 2 has 6,417 CCollide with a mass of 1 or more
+  (signposts, fences, crates, barrels, mailboxes, buses), in slugs as MTM2's (a mailbox 6.2, 200 lb).
+  OpenMTM2 makes each MTM2's level box, as heavy as the SIT says (at least 1).
+
+OpenMTM2 (`worker/evo-track-build.js`, `worker/evo-models.js`): CTrain runs as MTM2's moving
+object; every frame of an animated model is a morph target, played at the placement's
+`timePerFrame`; a collision box's height is along whichever of its axes stands nearest upright, a
+collision box is a solid box turned every way (the simulation's immovable box, whose top the tires
+ride as on MTM2's boxes); a rock's (collisionType 1) faces that look up enough are ground and the
+ones steeper than 50 degrees walls, each the triangle itself, solid 2 ft behind it (`steepFace`;
+OpenPhotex `collideTruckFace`), faced the way the model's normals point. Driven on as a surface only,
+a rock's side and a deck's edge were met by nothing, and a slope rising ahead of the front wheels
+faster than the 1 ft allowance under the body was not yet ground: the truck went under it and
+inside. A box laid on each face (a slab a foot thick, the face's rectangle) was tried first: a
+triangle's rectangle is twice its area, and what of it stood past the rock's outline was a wall in
+the air beside the cliffs (Vulture Canyon has 11,067 such faces, up to 342 boxes in a 64 ft cell).
+
+### 6.7 Object paths and track scripts
+
+What moves PEAK's F-15s (one low over the course, three high in formation), ALASKA's helicopters,
+VULTURE's vultures and the boats, animals and vehicles of about 40 stock tracks is neither their
+class nor AI life: it is the `.SIT`'s last section, `#*** Paths ***` (read at `0x4f2840` after the
+courses, "Loading paths", OpenPhotex `EvoSit.paths`), stepped every frame by `0x4f3680`
+(`CObjectPath`). A path moves one box (`object`, counted from 1 in the box list).
+
+- **The parameter `t`:** its whole part is the segment (`0x4f3cf0`: modulo the points; with
+  `direction` 1 forward and back; any other value the first segment), its fraction the place along
+  it by length.
+- **Lengths** (`0x4f2840`): a path going round (`direction` 0) measures every segment, the last back
+  to the first; one going back and forth all but the last, which stays 0. A curve is measured over 64 chords (`0x4f4950`, which
+  keeps the table for `0x4f3d60`), a straight segment (`segmentFlag` 1) as one (`0x4f44e0`).
+- **Position** (`0x4f3e30`): a cardinal spline through the points before, at, after and two after
+  (`0x5c7780`, `s = (1 - tension) / 2`, Catmull-Rom at tension 0; `0x5c79b0`), at the parameter whose
+  length is the fraction's (`0x4f3d60`); a straight segment by the fraction (`0x4f4260`). With the
+  point's `followTerrainFlag` the height is the ground's plus the model's bottom.
+- **Orientation** (`0x4f3ee0`): with the point's `orientFlag` a slerp from its `wOrient` to the
+  next's (`0x60efa0`, `0x60ea10`, `0x60ecd0`); otherwise along the curve's tangent (`0x5c7bf0`) or the
+  segment, as pitch `-atan2(dy, horizontal)` and heading `atan2(dx, dz)` (`0x5e98a0`); with
+  `followTerrainFlag` to the ground's normal (`0x472640`), smoothed as `now * dt + before * (1 - dt)`
+  and made unit (`0x4f4e20`, about a second to follow): up along it, forward the way laid on it
+  (`(normal x way) x normal`). The game keeps one smoothed normal for all such paths (`0xb2cabc`);
+  OpenMTM2 keeps one a path.
+- **Advance** (`0x4f39a0`): with a path `time` over the sum of the pauses, `t += (length / (time -
+  pauses)) * dt / segment length`; else with the point's `time` over 0, `t += dt / time`; else at the
+  point's `vel` (mph, `0x6449e5` = 1.46667 ft/s each), blended to the next point's by the fraction
+  unless `velFlag`, over the segment's length. A segment of no length does not move.
+- **Pauses:** at a point with a `pauseTime`, its fraction 0, the object waits that long (`pauseTimeElapsed`)
+  and goes on with the rest. Reaching the next point (`t` past its whole), `t` is set to it and the
+  step's rest goes on from there, or starts the wait.
+- **End:** a type 0 path stops once `t` reaches `cycles` times the points (twice less 2 with
+  `direction` 1, `0x4f3c90`); type 1 never does. Every stock path is type 1, direction 0: it goes round
+  for ever. PEAK's low F-15 laps its 29 points at 80 mph in about 30 s, over the course each time.
+- **Fields not acted on:** `collisionType` is read and cleared (`0x4f26c0`) and never used: the
+  object collides as its class does. `animationFlag`, `lightFlag` and `AIFlag` are read and never
+  used either: no code but the path code reads the point records, and it reads none of the three
+  (editor data). The object's own frames (a vulture's wings, a rotor) run as its class has them. The
+  cameras use the path objects (`0x4117a0` finds the nearest to the camera's subject, `0x436c90` lists
+  them among its subjects).
+- **Stopped paths** (`stopFlag` 1) wait for the track script: `startPathObject(n)`,
+  `stopPathObject(n)` and `togglePathObject(n)` clear, set and flip it (`0x450170`).
+
+The scripts are `SCRIPTS\<track>.SC` (OpenPhotex `parseEvoScript`): rules of conditions
+(`objectsIntersect(trigger, vehicleN)`, a CTriggerBox by its `name`, or flags raised by `raise`) and
+actions. VULTURE starts two vultures when the player enters the trigger box `boxc`; DESERT and MEDI
+start and stop their convoys the same way.
+
+**Timing** (`0x455140`, run every frame by `0x45fe60`): every rule is tried every frame. A rule with
+no condition acts every frame; one with conditions acts every frame they hold (it is level, not edge,
+triggered: a `togglePathObject` under a held condition flips every frame). A rule may instead `goto` a
+label (`label:` lines, `0x4551f0`; none in the stock scripts). `raise(flag, d)` (`0x450170`) takes `d`
+as seconds (`%f`), `once` (one frame), `forever` or `clear` (taken away); raised flags are queued and
+taken in after the rules (`0x44ff50`), so a rule sees them from the next frame, and timed ones run
+down by the frame's time. Every stock `raise` is `forever`.
+
+OpenMTM2: `game/evo-paths.js` (the rules), `worker/sim-worker.js` (each path's boxes, and what hangs
+from them by `parent`, moved every step; the script acted on for objectsIntersect, flags, the path
+commands and Message, shown in the caption; money, objectives, secrets and tides are the career's and
+are not acted on; a message a rule keeps saying is shown once).
+
+## 7. What OpenMTM2 did, and does now
+
+**Built, to be tested** (`src/worker/evo-track-build.js`, `render/evo-grass.js`, `render/evo-particles.js`,
+`game/evo-particles.js`, `game/falling-trees.js`; OpenPhotex `src/evo/vegetation.ts`):
+
+| Before | Now, as the game |
 |---|---|
 | Every tile is Dirt (`textureValues: [200]`) | Each texture's `surfaceValue` from `.TEX` (4.1) |
 | Tree model slot `(value & 3)` | Index in sector `& 3` (2.2) |
 | Tree yaw `((value >> 4) & 15) * pi / 8` | `value * pi / 128` (2.2) |
 | Tree base on the terrain | Stored y plus `treeBiasY` (2.2) |
-| Trees are trunk boxes that stop trucks | Trees fall when hit (2.5); the effect on the truck is not traced |
-| No trees on Evo 1 tracks | Procedural trees from `vegClass` (2.3) |
-| No grass, `.RTD` or `.SDW` | 2.4, 3.1, 3.2 |
-| MTM2's grip table | Evo's (4.2) |
+| Trees are trunk boxes that stop trucks | A truck knocks a tree over and goes on (2.5; the truck's side and the fall are the port's) |
+| No trees on Evo 1 tracks | A generated forest from `vegClass` (2.3), with the level's own tree models ("Evo forest") |
+| No grass, `.RTD` or `.SDW` | Grass around the camera, pressed under trucks ("Evo grass"); shade at 0.35; shadow tiles swapped in, under a sun (2.4, 3.1, 3.2) |
+| MTM2's grip table | Evo's under the Evo physics models (4.2); MTM2's under MTM2's |
+| No Evo particles | Debris by surface from spinning and sliding tires, leaves on AUTUMN ("Evo particles", 5) |
 
-OpenPhotex: `docs/EVO.md` and `src/evo/veg.ts` describe the 256 blocks as terrain rows and the
-fourth value as unknown. They are 16 x 16 sectors and the yaw byte. `.TEX` `param0` and
-`param1` are `surfaceValue` and `vegClass`. There is no reader for `.RTD` or `.SDW`.
+OpenPhotex now reads the 256 `.VEG` blocks as sectors with the yaw byte, names the `.TEX`
+numbers `surfaceValue` and `vegClass`, and reads `.RTD` and `.SDW` (`docs/EVO.md`).
 
 ---
 
@@ -403,7 +611,7 @@ fourth value as unknown. They are 16 x 16 sectors and the yaw byte. `.TEX` `para
 The work splits into what is fully known (sections 2 to 5), which can be built now, and the
 Evo 2 vehicle model, which needs a second RE pass first, as MTM2's physics did.
 
-### 8.1 OpenPhotex (formats first)
+### 8.1 OpenPhotex (formats first): built
 
 1. **`.TEX`:** name the record fields `surfaceValue` and `vegClass` (keep `param0`/`param1` as
    aliases for one release). Export `EVO_VEG_CLASS` names.
@@ -422,7 +630,7 @@ Evo 2 vehicle model, which needs a second RE pass first, as MTM2's physics did.
    the sector bounds.
 7. **Evo surfaces in the sim:** `SURFACE_MU_EVO2` (4.2) and type 14, selected by the rules.
 
-### 8.2 OpenMTM2: track features (no physics change)
+### 8.2 OpenMTM2: track features (no physics change): built but for 7
 
 In order of value for effort:
 

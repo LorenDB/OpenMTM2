@@ -45,7 +45,7 @@ async function evoTracks(vfs, problems) {
         const checkpoints = sit.boxes.filter((b) => b.sourceClass === "CCheckpoint" || b.boxType === 6).length;
         const raceType = mode ?? "circuit";
         tracks.push({
-          path, pod: mount.name, file, name: sit.trackName || file, locale: "",
+          path, pod: mount.name, file, name: sit.trackName || file, locale: "", author: sit.author?.trim() || null, checkpoints,
           game, scope: game, typeLabel: `${type} (${game})`, freeRoamOnly: !mode || checkpoints === 0,
           typeCode: sit.raceType, raceType, weatherMask: sit.weatherMask, trackLength: sit.trackLength || null,
           defaultLaps: defaultLaps(raceType, sit.trackLength || undefined), ambientSound: sit.ambientSound, level: sit.lvlName, hidden: false,
@@ -148,16 +148,49 @@ async function foreignTrucks(vfs, problems) {
       try {
         const parsed = parseTruckManifest(await mount.readEntry(entry), file);
         if (parsed.kind !== kind) continue;
+        const specs = parsed.manifest.specs ?? {};
         trucks.push({
           path, pod: mount.name, file: foreignTruckId(game, file), name: `${parsed.manifest.truckName || file} (${game})`,
           game, scope: game, dialect: game, waves: [], hidden: false,
+          variant: {
+            base: parsed.manifest.truckName || file, file,
+            quickClass: Number(specs.truckQuickClass) || 0, parts: parsed.manifest.stockParts?.length ?? 0,
+            displacement: Number(specs["eng.displacement"]) || 0,
+          },
         });
       } catch (err) {
         problems.push(`${path}: ${err.message}`);
       }
     }
   }
+  const labels = trucks.map((truck) => variantLabels(trucks.filter((t) => t.game === truck.game && t.variant.base === truck.variant.base).map((t) => t.variant)).get(truck.variant.file));
+  trucks.forEach((truck, i) => { truck.name = `${labels[i]} (${truck.game})`; delete truck.variant; });
   return trucks;
+}
+
+/**
+ * Names for vehicles that share one (4x4 Evolution 2's TRUCK.POD lists most trucks three times): each `{ base, file,
+ * quickClass, parts, displacement }` by file. A version with stock parts fitted (`stockPartList`) is its class, "Class 2"
+ * or "Class 3" (`truckQuickClass`), the bare one keeps the name; versions still alike are told apart by the engine
+ * ("2.4L"), then by file.
+ */
+export function variantLabels(variants) {
+  const out = new Map();
+  if (variants.length < 2) { for (const v of variants) out.set(v.file, v.base); return out; }
+  const named = variants.map((v) => ({ v, label: v.parts > 0 && v.quickClass > 1 ? `${v.base} Class ${v.quickClass}` : v.base }));
+  // Each step names the versions of a group still alike, when it tells them apart.
+  for (const step of [(v) => (v.displacement ? `${v.displacement.toFixed(1)}L` : null), (v) => v.file]) {
+    const groups = new Map();
+    for (const n of named) groups.set(n.label, [...(groups.get(n.label) ?? []), n]);
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const extras = group.map((n) => step(n.v));
+      if (extras.some((e) => !e) || new Set(extras).size < 2) continue;
+      group.forEach((n, i) => { n.label = `${n.label} ${extras[i]}`; });
+    }
+  }
+  for (const n of named) out.set(n.v.file, n.label);
+  return out;
 }
 
 /**
@@ -260,6 +293,8 @@ export async function buildCatalog(vfs) {
         logoBmp: bmpStem(sit.logoBmp), mapBmp: bmpStem(sit.mapBmp), descriptionTxt: sit.descriptionTxt ?? null,
         /** A drag strip's par time, seconds (the fly-by line as a number), or null. */
         dragParTime: sit.dragParTime ?? null,
+        /** The engine's hidden hard-track switch (the fly-by line reads `Sonic`), and the main course's checkpoints. */
+        sonic: !!sit.sonicTrack, checkpoints: sit.boxes.filter((box) => box.type === 6).length,
         weatherMask: sit.weatherMask,
         trackLength: sit.trackLength,
         defaultLaps: defaultLaps(RACE_TYPES[sit.trackTypeCode], sit.trackLength),

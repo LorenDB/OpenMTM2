@@ -23,6 +23,8 @@
     toward the camera in the vertex shader, instead of being hundreds of objects turned by hand.
 */
 import * as THREE from "three";
+import { createEvoGrass, updateEvoGrass } from "./evo-grass.js";
+import { terrainOfBuild } from "../shared/build-terrain.js";
 import { DEFAULT_FRAME_SECONDS, keyframeWeights } from "../shared/keyframe-spline.js";
 import { blockShift, chunkTriangles, indexedBounds } from "../shared/object-chunks.js";
 import { WORLD_FT } from "../shared/scene-frame.js";
@@ -142,10 +144,11 @@ export function createTerrainAtlas(atlas, look) {
   return map;
 }
 
-function surfaceMaterial(map, look, hasShade) {
+/** `litShade`: the lit look also multiplies by the baked shade (4x4 Evolution's .RTD shade map). */
+function surfaceMaterial(map, look, hasShade, litShade = false) {
   return look === "classic"
     ? new THREE.MeshBasicMaterial({ map, vertexColors: hasShade })
-    : new THREE.MeshLambertMaterial({ map });
+    : new THREE.MeshLambertMaterial({ map, vertexColors: litShade });
 }
 
 export function createGroundBoxes(boxes, map, look) {
@@ -275,7 +278,7 @@ function addRoadMask(material, mask) {
  * and, on a track with a painted mask, the detail normals.
  */
 export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.atlas, look), { detail = true } = {}) {
-  const material = surfaceMaterial(map, look, terrain.hasLte);
+  const material = surfaceMaterial(map, look, terrain.hasLte, !!terrain.shadeLit);
   if (look !== "classic" && detail) {
     if (terrain.normalAtlas) {
       const normalMap = createTerrainAtlas(terrain.normalAtlas, look);
@@ -317,13 +320,15 @@ export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.at
     return group;
   }
   const shared = meshGeometry(terrain);
+  // Two triangles a cell, or more where the cell is cut finer (4x4 Evolution 2's smoothed ground, worker/terrain-mesh.js).
+  const per = terrain.indicesPerCell ?? 6;
   for (let chunkRow = 0; chunkRow < GRID / CHUNK_CELLS; chunkRow++) {
     for (let chunkCol = 0; chunkCol < GRID / CHUNK_CELLS; chunkCol++) {
-      const indices = new Uint32Array(CHUNK_CELLS * CHUNK_CELLS * 6);
+      const indices = new Uint32Array(CHUNK_CELLS * CHUNK_CELLS * per);
       let count = 0, low = Infinity, high = -Infinity;
       for (let row = chunkRow * CHUNK_CELLS; row < (chunkRow + 1) * CHUNK_CELLS; row++) {
-        const from = (row * GRID + chunkCol * CHUNK_CELLS) * 6;
-        for (let i = from; i < from + CHUNK_CELLS * 6; i += 3) {
+        const from = (row * GRID + chunkCol * CHUNK_CELLS) * per;
+        for (let i = from; i < from + CHUNK_CELLS * per; i += 3) {
           const a = terrain.indices[i], b = terrain.indices[i + 1], c = terrain.indices[i + 2];
           // Outside a stadium's footprint the triangles are collapsed to a point.
           if (a === b && b === c) continue;
@@ -639,7 +644,7 @@ export function placeObjects(library, objects, copies = [[0, 0]], { rounded = fa
   const slots = {};
   for (const object of objects) {
     const parts = library.get(object.model);
-    if (!parts || parts.some((part) => part.frameCount > 1)) continue;
+    if (!parts || object.moving || parts.some((part) => part.frameCount > 1)) continue;
     const key = object.billboard ? `${object.model}|facing` : object.model;
     if (!byKey.has(key)) byKey.set(key, { parts, facing: !!object.billboard, matrices: [] });
     const entry = byKey.get(key);
@@ -736,8 +741,9 @@ function showCopies(parts, camera, range) {
 
 
 /**
- * The placed objects that animate (keyframed models), one group each with a mesh per part.
- * They need their own morph state, so each copy of the world has its own.
+ * The placed objects that animate (keyframed models) or keep moving (`moving`: a 4x4 Evolution path's object, a
+ * train), one group each with a mesh per part. They need their own morph state and place, so each copy of the world has
+ * its own.
  */
 export function placeAnimatedObjects(library, objects) {
   const group = new THREE.Group();
@@ -745,7 +751,7 @@ export function placeAnimatedObjects(library, objects) {
   const m = new THREE.Matrix4();
   for (const object of objects) {
     const parts = library.get(object.model);
-    if (!parts || !parts.some((part) => part.frameCount > 1)) continue;
+    if (!parts || !(object.moving || parts.some((part) => part.frameCount > 1))) continue;
     const placed = new THREE.Group();
     placed.name = "placedObject";
     placed.userData.sitIndex = object.sitIndex;
@@ -758,15 +764,145 @@ export function placeAnimatedObjects(library, objects) {
     }
     for (const part of parts) {
       const mesh = new THREE.Mesh(part.geometry, part.material);
+      // Its shadow is drawn each frame with the trucks', not kept with the still ground's (render/sun-shadows.js).
+      if (object.moving) mesh.userData.moving = true;
       if (part.frameCount > 1) {
         mesh.updateMorphTargets();
         mesh.userData.frameCount = part.frameCount;
+        // A 4x4 Evolution placement's own time a frame (worker/evo-track-build.js).
+        if (object.frameSeconds) mesh.userData.frameSeconds = object.frameSeconds;
       }
       placed.add(mesh);
     }
     group.add(placed);
   }
   return group.children.length ? group : null;
+}
+
+/** The side of a forest chunk, feet: the trees of one are drawn, and culled, together. */
+const FOREST_CHUNK_FT = 1024;
+
+/**
+ * 4x4 Evolution's trees (`object.forest`, worker/evo-track-build.js), thousands of them: one InstancedMesh per model part
+ * and FOREST_CHUNK_FT chunk, holding the original world's trees only. Each frame a chunk is moved to the copy of the world
+ * nearest the camera (`placeForest`), as the terrain's blocks are, so every tree is drawn once and whole chunks are culled
+ * by their own bounds, in the picture and in each shadow cascade. Placed over every copy (`placeObjects`), every tree was
+ * drawn nine times, and never culled. `slots` finds a tree's instances by its `sitIndex`.
+ */
+export function createForest(library, objects) {
+  const byKey = new Map();
+  for (const object of objects) {
+    const parts = library.get(object.model);
+    if (!parts || parts.some((part) => part.frameCount > 1)) continue;
+    const cx = Math.floor(object.matrix[12] / FOREST_CHUNK_FT), cz = Math.floor(-object.matrix[14] / FOREST_CHUNK_FT);
+    const key = `${object.model}|${cx}|${cz}`;
+    if (!byKey.has(key)) byKey.set(key, { parts, model: object.model, placed: [], at: [(cx + 0.5) * FOREST_CHUNK_FT, -(cz + 0.5) * FOREST_CHUNK_FT] });
+    byKey.get(key).placed.push(object);
+  }
+  const group = new THREE.Group();
+  group.name = "forest";
+  const slots = {};
+  const m = new THREE.Matrix4();
+  for (const { parts, model, placed, at } of byKey.values()) {
+    for (const { geometry, material } of parts) {
+      const mesh = new THREE.InstancedMesh(geometry, material, placed.length);
+      mesh.name = model;
+      placed.forEach((object, i) => {
+        mesh.setMatrixAt(i, m.fromArray(object.matrix));
+        if (object.sitIndex !== undefined) (slots[object.sitIndex] ??= []).push([mesh, i]);
+      });
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      mesh.computeBoundingSphere();
+      mesh.userData.forestAt = at;
+      group.add(mesh);
+    }
+  }
+  group.userData.slots = slots;
+  return group.children.length ? group : null;
+}
+
+/**
+ * Each forest chunk, and each tree falling by itself, at the copy of the world nearest the camera (`wraps`: the world
+ * has copies); with a headset's `range`, a chunk wholly beyond it is left out. Whether anything moved.
+ */
+function placeForest(parts, camera, range, wraps) {
+  const cx = camera.position.x, cz = camera.position.z;
+  let moved = false;
+  const place = (object, [x, z], reach) => {
+    const [dx, dz] = wraps ? blockShift(x, z, cx, cz) : [0, 0];
+    if (object.position.x !== dx || object.position.z !== dz) { object.position.set(dx, 0, dz); moved = true; }
+    const visible = range === Infinity || Math.hypot(x + dx - cx, z + dz - cz) <= range + reach;
+    if (object.visible !== visible) { object.visible = visible; moved = true; }
+  };
+  if (parts.forest) for (const mesh of parts.forest.children) place(mesh, mesh.userData.forestAt, FOREST_CHUNK_FT);
+  for (const falling of parts.falling) place(falling, falling.userData.forestAt, 200);
+  return moved;
+}
+
+const _forestMatrix = new THREE.Matrix4();
+
+/**
+ * A forest tree's instances drawn with `matrix` (scene, column-major), or left out with null: a knocked tree is drawn
+ * by itself while it falls (`addFallingTree`), then put back lying where it fell. Whether the tree is in the forest.
+ */
+export function setForestTree(world, sitIndex, matrix) {
+  const parts = PARTS.get(world);
+  const list = parts?.forest?.userData.slots[sitIndex];
+  if (!list) return false;
+  if (matrix) _forestMatrix.fromArray(matrix);
+  for (const [mesh, i] of list) {
+    if (!matrix) {
+      // Shrunk to nothing where it stands, so the chunk's bounds still hold it.
+      mesh.getMatrixAt(i, _forestMatrix);
+      const e = _forestMatrix.elements;
+      for (const k of [0, 1, 2, 4, 5, 6, 8, 9, 10]) e[k] = 0;
+    }
+    mesh.setMatrixAt(i, _forestMatrix);
+    mesh.instanceMatrix.needsUpdate = true;
+    // Only the one chunk's bounds: a tree lying down may reach past them.
+    if (matrix) mesh.computeBoundingSphere();
+  }
+  bumpShadowStatic(world);
+  return true;
+}
+
+/**
+ * A tree of `model` drawn by itself, for its fall: posed by `poseFallingTree`, kept at the copy of the world nearest the
+ * camera, and taken out by `removeFallingTree`. It shares the forest's geometry and materials, and casts its shadow as
+ * something that moves does. Null when the model is not in the world's library.
+ */
+export function addFallingTree(world, model, [x, z]) {
+  const parts = PARTS.get(world);
+  const pieces = parts?.library.get(model);
+  if (!pieces) return null;
+  const falling = new THREE.Group();
+  falling.name = "fallingTree";
+  falling.userData.forestAt = [x, z];
+  const posed = new THREE.Group();
+  posed.matrixAutoUpdate = false;
+  for (const { geometry, material } of pieces) {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = !!parts.forest?.children[0]?.castShadow;
+    mesh.receiveShadow = !!parts.forest?.children[0]?.receiveShadow;
+    posed.add(mesh);
+  }
+  falling.add(posed);
+  world.add(falling);
+  parts.falling.push(falling);
+  return falling;
+}
+
+/** A falling tree's pose: `matrix` scene, column-major, in the original world. */
+export function poseFallingTree(falling, matrix) {
+  const posed = falling.children[0];
+  posed.matrix.fromArray(matrix);
+  posed.matrixWorldNeedsUpdate = true;
+}
+
+export function removeFallingTree(world, falling) {
+  const parts = PARTS.get(world);
+  falling.removeFromParent();
+  if (parts) parts.falling = parts.falling.filter((f) => f !== falling);
 }
 
 /**
@@ -777,8 +913,9 @@ export function moveObjects(world, moves) {
   const parts = PARTS.get(world);
   if (!moves.length || !parts) return;
   const m = new THREE.Matrix4();
+  const bySit = new Map(moves.map((item) => [item.sitIndex, item]));
   for (const group of parts.placed) {
-    const moved = moves.find((item) => item.sitIndex === group.userData.sitIndex);
+    const moved = bySit.get(group.userData.sitIndex);
     if (!moved) continue;
     m.fromArray(moved.matrix);
     if (group.userData.billboard) group.position.setFromMatrixPosition(m);
@@ -787,9 +924,19 @@ export function moveObjects(world, moves) {
   if (!parts.objects) return;
   const { slots, offsets, order } = parts.objects.userData;
   const touched = new Set();
+  parts.loose ??= new Map();
   for (const { sitIndex, matrix } of moves) {
     const slot = slots[sitIndex];
     if (!slot) continue;
+    // A still object that has started to move (a knocked sign, fence or crate) is drawn by itself from then on, its
+    // shadow among the moving ones: kept among the instances, each move would make the shadows redraw every still
+    // thing in the world, the forest with it, frame after frame (render/sun-shadows.js).
+    const loose = parts.loose.get(sitIndex) ?? (parts.byName.get(slot[0])?.[0]?.userData.facing ? null : loosen(world, parts, sitIndex, slot, touched));
+    if (loose) {
+      loose.matrix.copy(placement(matrix, offsets[order[0]], false));
+      loose.matrixWorldNeedsUpdate = true;
+      continue;
+    }
     for (const mesh of parts.byName.get(slot[0]) ?? []) {
       const { perCopy, facing, places } = mesh.userData;
       // Kept, for when a block is written afresh; then every block, the copies not drawn too.
@@ -801,6 +948,42 @@ export function moveObjects(world, moves) {
   }
   for (const mesh of touched) boundInstances(mesh);
   if (touched.size) bumpShadowStatic(world);
+}
+
+/** A shrunk matrix: an instance drawn as nothing, its place kept. */
+const NOWHERE = Object.freeze(new THREE.Matrix4().makeScale(0, 0, 0).toArray());
+
+/**
+ * Take a SIT box out of the still objects' instances (`moveObjects`): its instances in every block are shrunk to
+ * nothing, and a group of its own draws it, flagged `moving`. Its new meshes are handed to the shadows through
+ * `world.userData.newDynamicCasters`. The instances it leaves are added to `touched`.
+ */
+function loosen(world, parts, sitIndex, slot, touched) {
+  const meshes = parts.byName.get(slot[0]) ?? [];
+  if (!meshes.length) return null;
+  const { offsets, order } = parts.objects.userData;
+  const group = new THREE.Group();
+  group.name = "looseObject";
+  group.matrixAutoUpdate = false;
+  group.userData.sitIndex = sitIndex;
+  const added = [];
+  for (const instanced of meshes) {
+    const { perCopy, places } = instanced.userData;
+    places[slot[1]] = NOWHERE;
+    order.forEach((copy, block) => instanced.setMatrixAt(block * perCopy + slot[1], placement(NOWHERE, offsets[copy], false)));
+    instanced.instanceMatrix.needsUpdate = true;
+    touched.add(instanced);
+    const mesh = new THREE.Mesh(instanced.geometry, instanced.material);
+    mesh.castShadow = instanced.castShadow;
+    mesh.receiveShadow = instanced.receiveShadow;
+    mesh.userData.moving = true;
+    group.add(mesh);
+    added.push(mesh);
+  }
+  parts.objects.parent?.add(group) ?? world.add(group);
+  (world.userData.newDynamicCasters ??= []).push(...added);
+  parts.loose.set(sitIndex, group);
+  return group;
 }
 
 /**
@@ -852,13 +1035,19 @@ function greyMap(material) {
 /** Draw the SIT backdrop models as camera-centred scenery behind the world. */
 export function createBackdrops(build, look) {
   if (!build.backdrops?.length) return null;
-  // An HD backdrop's panels sit in a ring of see-through texels: sealed, so that faces meeting show no seam.
+  // An HD backdrop's panels sit in a ring of see-through texels: sealed, so that faces meeting show no seam. The game's
+  // own RAW backdrop is a keyed cut-out whose silhouette is the skyline: sealing it would smear its rim up into the sky
+  // as a solid band. Its see-through texels only take the colour beside them, so filtering reads the rim, not black.
   const sealed = { ...build.modelTextures };
   for (const name of build.backdrops) {
     for (const mesh of build.models[name]?.meshes ?? []) {
       const image = sealed[mesh.textureName];
-      if (image && image !== build.modelTextures[mesh.textureName]) continue;
-      if (image && hasAlpha(image)) sealed[mesh.textureName] = sealPanels(image);
+      if (!image || image !== build.modelTextures[mesh.textureName] || !hasAlpha(image)) continue;
+      if (image.source === "RAW") {
+        const copy = { ...image, rgba: new Uint8Array(image.rgba) };
+        bleedCutout(copy);
+        sealed[mesh.textureName] = copy;
+      } else sealed[mesh.textureName] = sealPanels(image);
     }
   }
   const library = createModelLibrary(build.models, sealed, look);
@@ -882,6 +1071,8 @@ export function createBackdrops(build, look) {
         alphaTest: source.alphaTest, side: THREE.DoubleSide, depthTest: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
         fog: false,
       });
+      // The panels run round the horizon (S) but not over it (T): the picture's top row is never filtered into its bottom.
+      if (material.map && material.map.wrapT !== THREE.ClampToEdgeWrapping) { material.map.wrapT = THREE.ClampToEdgeWrapping; material.map.needsUpdate = true; }
       installBackdropShader(material, uniforms);
       const mesh = new THREE.Mesh(part.geometry, material);
       // An HD backdrop (a PNG with its own alpha) is see-through, and so drawn in the see-through pass. There it goes
@@ -1038,7 +1229,7 @@ const _target = new THREE.Vector3();
  */
 export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fineRange = FINE_RANGE_FT } = {}) {
   world.userData.animationTime = (world.userData.animationTime ?? 0) + dt;
-  const phase = world.userData.animationTime / 0.5;
+
   const parts = PARTS.get(world);
   // A world without recorded parts is drawn once, as a window around the camera: every block of
   // it is moved each frame to the copy nearest the camera (`placeBlocks`).
@@ -1047,6 +1238,7 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fine
   const sunTurn = world.userData.shadowTurn;
   if (sunTurn) SHADOW_TURN.value.copy(sunTurn);
   if (parts) {
+    if (parts.grass) updateEvoGrass(parts.grass, camera, world.userData.grassPressers ?? null);
     if (parts.backdrops) parts.backdrops.position.copy(camera.position);
     for (const object of parts.placed) {
       if (!object.userData.billboard) continue;
@@ -1058,12 +1250,13 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fine
     }
     for (const mesh of parts.morphing) {
       const n = mesh.userData.frameCount;
-      const p = phase % n, from = Math.floor(p), to = (from + 1) % n, t = p - from;
+      const p = (world.userData.animationTime / (mesh.userData.frameSeconds || 0.5)) % n, from = Math.floor(p), to = (from + 1) % n, t = p - from;
       mesh.morphTargetInfluences.fill(0);
       if (from > 0) mesh.morphTargetInfluences[from - 1] += 1 - t;
       if (to > 0) mesh.morphTargetInfluences[to - 1] += t;
     }
     if (showCopies(parts, camera, viewRange)) bumpShadowStatic(world);
+    if ((parts.forest || parts.falling.length) && placeForest(parts, camera, viewRange, parts.copies.length > 1)) bumpShadowStatic(world);
     for (const chunk of parts.chunks) {
       const dx = Math.abs(chunk.x - camera.position.x), dz = Math.abs(chunk.z - camera.position.z);
       const seen = Math.hypot(dx, dz) < viewRange + chunk.radius;
@@ -1351,7 +1544,7 @@ export function createRoad(road, look) {
  * (the sky dome stays inside it), `options.naturalLight` lights camera-facing scenery as round things (docs/VISUALS.md, "Light").
  * `options.terrainDetail` and `options.reflections` are Community Patch 3's extras (the enhanced look only).
  */
-export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, naturalLight = false, terrainDetail = true, reflections = true } = {}) {
+export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, naturalLight = false, terrainDetail = true, reflections = true, grass: grassRadius = 16 } = {}) {
   const world = new THREE.Group();
   // The world wraps at 8192 ft, so its eight neighbouring copies are drawn too; a stadium stands alone, and so does a
   // level whose edges do not meet (`noWrap`).
@@ -1379,9 +1572,11 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
     world.add(copy);
     tiles.push(copy);
   }
-  // Every other object, in all the copies at once.
-  const objects = placeObjects(library, build.objects, copies, { rounded: naturalLight });
+  // Every other object, in all the copies at once; 4x4 Evolution's trees by chunks around the camera (`createForest`).
+  const objects = placeObjects(library, build.objects.filter((o) => !o.forest), copies, { rounded: naturalLight });
   world.add(objects);
+  const forest = createForest(library, build.objects.filter((o) => o.forest));
+  if (forest) world.add(forest);
   const backdrops = createBackdrops(build, look);
   if (backdrops && showBackdrops && !build.stadium) world.add(backdrops);
   if (!build.stadium) {
@@ -1396,7 +1591,11 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
   // terrain's chunks share their vertices, so any one of them has the whole ground's.
   const vertices = tile.getObjectByName("terrain")?.geometry.attributes.position;
   const ground = vertices ? new THREE.Box3().setFromBufferAttribute(vertices) : new THREE.Box3(new THREE.Vector3(0, 0, -WORLD_FT), new THREE.Vector3(WORLD_FT, 0, 0));
+  // 4x4 Evolution's grass, around the camera (render/evo-grass.js).
+  const grass = grassRadius > 0 && build.grass ? createEvoGrass(build.grass, terrainOfBuild(build), grassRadius) : null;
+  if (grass) world.add(grass.mesh);
   const parts = {
+    grass, forest, falling: [], library,
     objects, byName: new Map(), placed: [], morphing: [], chunks: [], backdrops: backdrops && !build.stadium ? backdrops : null,
     copies: tiles.map((group) => ({
       group, shown: true,

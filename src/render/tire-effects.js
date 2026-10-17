@@ -470,6 +470,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     // The game's rule for dust: which tires raise it this tick (game/tire-effects.js), counted by what each stands on.
     const dusty = tick && flags.dust
       ? dustPuffs({ speedFtS: t.pose.forward ?? t.pose.speed ?? 0, onGround: onGround.map((on, k) => on && state.stood[k] === "dust"), dusty: true, random }) : [];
+    // A vehicle on smaller wheels than a stock truck's raises that much less (game/tire-effects.js `wheelShare`).
+    const wheels = t.wheels ?? 1;
     hubs.forEach((hub, k) => {
       if (state.hubY[k] !== null && dt > 0 && !onGround[k]) state.fall[k] = Math.max(0, (state.hubY[k] - hub[1]) / dt);
       if (dt > 0) state.hubY[k] = hub[1];
@@ -491,7 +493,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       else {
         // Coming to a puddle, a rut runs out into the water.
         const wading = weatherNow === 4 && kind !== TRACK_KINDS.rubber ? puddleRut(rich.puddleAt?.(hub[0], hub[2]) ?? 0) : 1;
-        ruts.lay(state.ruts[k], hub[0], hub[2], kind, (stood === "hard" ? sliding : 1 + RUT.slideDeeper * sliding) * wading, hub[1]);
+        ruts.lay(state.ruts[k], hub[0], hub[2], kind, (stood === "hard" ? sliding : 1 + RUT.slideDeeper * sliding) * wading, hub[1], t.tread ?? 1);
       }
       if (landed) land(hub, stood, state.fall[k], vel, flags, family, type);
       // A wheel meeting water at speed throws a burst, as it always did (not one coming up from under it); one running
@@ -505,11 +507,11 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       const side = k % 2 === 0 ? 1 : -1, out = [forward[1] * side, -forward[0] * side];
       const few = lite ? LITE_SHARE : 1;
       const raised = dusty.reduce((n, tire) => n + (tire === k ? 1 : 0), 0);
-      if (raised) layDust(state, k, hub, floor, vel, out, family, type, raised, few, far);
+      if (raised) layDust(state, k, hub, floor, vel, out, family, type, raised, few * wheels, far);
       else state.dustOwed[k] = 0;
       state.dustAt[k] = [hub[0], hub[2]];
       const thrown = tireThrows(stood, speed, random);
-      if (thrown.puff && lets(flags, thrown.puff) && random() < few) throwPuff(thrown.puff, hub, floor, vel, out, family, type);
+      if (thrown.puff && lets(flags, thrown.puff) && random() < few * wheels) throwPuff(thrown.puff, hub, floor, vel, out, family, type);
       // Standing water is thrown aside in sheets.
       if ((stood === "puddle" || stood === "water") && flags.splash) {
         const puddle = stood === "puddle", bed = floorUnder(hub[0], hub[2], hub[1]);
@@ -529,7 +531,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         const fast = 8 + 22 * sliding;
         const back = [vel[0] + push[0] * fast, vel[1], vel[2] + push[1] * fast];
         const thick = flung.puff === "dust" ? dustOff(hub[0], hub[2], type) : 1;
-        if (flung.puff && thick >= DUST.least && lets(flags, flung.puff === "rubber" ? "dust" : flung.puff) && random() < few) throwPuff(flung.puff, hub, floor, back, out, family, type, 1 + 0.4 * sliding, thick);
+        if (flung.puff && thick >= DUST.least && lets(flags, flung.puff === "rubber" ? "dust" : flung.puff) && random() < few * wheels) throwPuff(flung.puff, hub, floor, back, out, family, type, 1 + 0.4 * sliding, thick);
         for (let n = 0; n < flung.streaks && lets(flags, flung.streak); n++) throwStreak(flung.streak, hub, floor, back, speed + fast, family, type);
       }
     });
@@ -575,14 +577,14 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
     rich.dragIce?.(state.iceDrag, down);
   }
 
-  /** A quad of track between two contact points, one tire's width across, under a hub at height `y`. */
-  function mark(i, tire, x, z, y) {
+  /** A quad of track between two contact points, one tire's width across (`tread` of a stock truck's), under a hub at height `y`. */
+  function mark(i, tire, x, z, y, tread = 1) {
     const state = per[i], last = state.last[tire];
     state.last[tire] = [x, z];
     if (!last) return;
     const dx = x - last[0], dz = z - last[1], length = Math.hypot(dx, dz);
     if (length < TRACK_STEP_FT || length > TRACK_BREAK_FT) { if (length > TRACK_BREAK_FT) state.last[tire] = [x, z]; else state.last[tire] = last; return; }
-    const nx = (-dz / length) * (TRACK_WIDTH_FT / 2), nz = (dx / length) * (TRACK_WIDTH_FT / 2);
+    const nx = (-dz / length) * (TRACK_WIDTH_FT * tread / 2), nz = (dx / length) * (TRACK_WIDTH_FT * tread / 2);
     const corners = [[last[0] - nx, last[1] - nz], [last[0] + nx, last[1] + nz], [x + nx, z + nz], [x - nx, z - nz]].map(([cx, cz]) => [cx, ground(cx, cz), cz]);
     const q = trackHead;
     trackHead = (trackHead + 1) % CLASSIC_TRACK_POOL;
@@ -654,7 +656,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         const family = t.surface?.family ?? "cement", type = t.surface?.type ?? 0;
         const nearCamera = Math.hypot(t.pose.pos[0] - listener[0], t.pose.pos[2] - listener[2]) < TRACK_RANGE_FT;
         if (flags.tracks && nearCamera && keepsTread(family, type)) {
-          hubs.forEach((hub, k) => { if (onGround[k]) mark(i, k, hub[0], hub[2], hub[1]); else state.last[k] = null; });
+          hubs.forEach((hub, k) => { if (onGround[k]) mark(i, k, hub[0], hub[2], hub[1], t.tread ?? 1); else state.last[k] = null; });
         } else state.last.fill(null);
         // Water drops: a wheel in water throws them (every tick, more with speed); a wheel meeting the water at speed throws a burst.
         const speed = Math.hypot(t.pose.speed ?? 0), yaw = t.pose.euler?.[2] ?? 0, forward = [Math.sin(yaw), Math.cos(yaw)];
@@ -674,7 +676,7 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         if (state.timer >= DUST_TICK_S) {
           state.timer %= DUST_TICK_S;
           if (flags.dust && !noDust && Math.hypot(hubs[0][0] - listener[0], hubs[0][2] - listener[2]) < DUST_RANGE_FT) {
-            for (const k of dustPuffs({ speedFtS: t.pose.forward ?? t.pose.speed ?? 0, onGround, dusty: raisesDust(family), random })) {
+            for (const k of dustPuffs({ speedFtS: t.pose.forward ?? t.pose.speed ?? 0, onGround, dusty: raisesDust(family), random, share: t.wheels ?? 1 })) {
               puff(hubs[k][0] + (random() - 0.5), floorUnder(hubs[k][0], hubs[k][2], hubs[k][1]), hubs[k][2] + (random() - 0.5));
             }
           }
@@ -754,7 +756,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
       // What it struck: the ground, or the ice over the water, when the point is down on it; else a thing.
       const onIce = !!rich && iced(bed), floor = onIce ? waterLevel : bed;
       const onGround = where[1] - floor < 1.2;
-      const amount = sparkRules(sparkLevelOf(flags));
+      // A vehicle on smaller wheels than a stock truck's throws that much less (game/tire-effects.js `wheelShare`).
+      const rule = sparkRules(sparkLevelOf(flags)), amount = { ...rule, share: rule.share * (lastTrucks[i]?.wheels ?? 1) };
       if (amount.share > 0) {
         // Under water, nothing that burns; off the ice, chips.
         const kind = rich
@@ -837,7 +840,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
         }
       }
       const underWater = !!rich && waterLevel !== null && weatherNow !== 5 && floorUnder(at[0], at[2], at[1]) < waterLevel && at[1] < waterLevel;
-      const amount = sparkRules(sparkLevelOf(flags));
+      // A vehicle on smaller wheels than a stock truck's throws that much less (game/tire-effects.js `wheelShare`).
+      const rule = sparkRules(sparkLevelOf(flags)), amount = { ...rule, share: rule.share * (lastTrucks[i]?.wheels ?? 1) };
       if (amount.share > 0) {
         // Tires alone throw far fewer than bodywork.
         const share = (hull ? 1 : TIRE_SPARK_SHARE) * amount.share;

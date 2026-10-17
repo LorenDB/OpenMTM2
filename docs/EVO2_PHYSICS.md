@@ -87,6 +87,37 @@ vehicle without race springs keeps its `.TRK` `spring_rate` (the garage only ena
 with race springs; when `setSprings` is called was not traced). **The Shocks setting is not used**: its own text
 says "not hooked up" (`0x5ecdd0`).
 
+### 2.1 Fitted parts (`0x5eaa40`)
+
+A vehicle's parts (the `.TRK`'s `stockPartList[]`, then the garage's) are applied once, after the
+constructor, by `0x5eaa40` (callers `0x507000`, `0x5a6520`, `0x5f6a40`). The parts come from
+`PARTS.POD` `PARTS\PARTS.TXT`: per part `Name`, `Code`, `Type`, `Cost`, then `Aero Mod`, `Brake Mod`,
+`CG Mod`, `Tire CF Mod`, `Torque Mod`, `Weight Mod` (a 0xD8-byte record, the code at +0x40, the six
+modifiers at +0x68..+0x7C in that order), `Models` and the rules fields.
+
+- **Sums** over the fitted parts: aero, brake and torque add up; the aero and brake sums are held
+  in [-1, 1], the torque sum in [-1, 2] (`0x65d74e` -1, `0x65d752` 2). A part's weight modifier
+  between -1 and 1 is a **fraction**, added to a fraction sum (held in [-1, 1]); any other is
+  **pounds**, added to a pound sum. The CG and tire CF sums are added up too but never used here:
+  the parts' grip and CG figures have no effect.
+- `CD` (+0x1224) *= 1 + aero; `max_brake_force_pct` (+0x1238) *= 1 + brake; every entry of the
+  torque table (+0x620, count +0x61C) *= 1 + torque.
+- `dry_weight` (+0x1204) += (dry_weight + front axle weight + rear axle weight) * fraction + pounds.
+- Named parts, by code:
+  - `2LiftKit` ... `14LiftKit`: every wheel's `static_bpos` y (+0x94, +0x1C0, +0x34C, +0x478) is
+    lowered by inches / 12 ft (the body stands that much higher); the axle blocks' copies
+    (+0x2D4, +0x58C) follow. `DropKit` is -4 inches.
+  - `12RaceSprings` ... `36RaceSprings`: both axles' `maxcompr` (+0x2C8, +0x580) = inches / 12.
+  - Tires (`31Tire` ... `44Tire`, `31RaceTire` ..., `SS31Tire` ...): the tire models become
+    `<base>08l.smf` ... `<base>16r.smf` from a fixed base per part (`31x10_`, `33x12_` ..., `38x15_`
+    for `38Tire`), and +0x24A0 = 1.
+  - `Supercharger` (+0x680 = 2), `Turbocharger` (1), `RaceTransferCase` (drive type 1 when it was
+    0), `TractionControlSystem` (+0x128C), `FrontLSD` / `RearLSD` (`slipDiffType` 2), the lights,
+    skid plates, bush guard, antenna, snorkel and winch flags: drawing, sounds and driveline
+    options.
+  - With a positive torque sum the menu's peak torque and power figures (+0x60C..+0x618) are
+    recomputed from the curve (power = rpm * torque / 5252): display only.
+
 ## 3. The step
 
 Each substep, per vehicle (`0x553920`, vtable slot +0x44 of the vehicle class at `0x667fd4`):
@@ -220,20 +251,21 @@ Per tire:
 
 ### 6.3 Gearbox (`0x553fb0`)
 
-Gear indices: 1 reverse, 2 neutral, 3 first, up to `maxGear - 1`; `gear_ratio[]` is indexed the
-same way (the stock `[0, -2.294, 0, 3.059, ...]`).
+**Gear numbers are MTM2's: 1 Park, 2 Reverse, 3 Neutral, 4 first**, up to `maxGear`. The
+constructor fills the ratio table from gear 1 (Park 0, Reverse -2.2, Neutral 0, first 4.01...),
+so a `.TRK`'s `xm.gear_ratio[i]` is gear `i + 1`: the stock `[0, -2.294, 0, 3.059, 1.625, 1,
+0.696]` with `maxGear` 7 is Park, Reverse, Neutral and four forward gears. (The first pass of this
+document read the numbers one lower; corrected.)
 
-- **Automatic** (+0x11F0 set): up one gear when the RPM reaches `upshift_rpm`, the gear is
-  4 or above and under `maxGear`, and the speed is above the upshift speed
+- **Automatic** (+0x11F0 set): up one gear when the RPM reaches `upshift_rpm`, the gear is first
+  or above and under `maxGear`, and the speed is above the upshift speed
   `upshift_rpm * 2pi * tireRadius / (60 * gear_ratio * finalRatio)`. Down one gear when the RPM
-  is under `dnshift_rpm`, the gear is 5 or above, and the speed is under the downshift speed.
-  The constructor starts every vehicle in gear 4 (second), so **the automatic never uses first
-  gear**: it runs from second to top.
-- **Manual**: the shift request (+0x6D8, +1 or -1) moves one gear.
-- With the "skip neutral" setting (`0xcad904` = 1) and the vehicle slow (+0x780 under 3),
-  reverse goes straight to first and back.
-- In reverse, both brake inputs are set to 1 at the end of the gearbox step (**hypothesis**: the
-  controls then drive reverse with the brake key).
+  is under `dnshift_rpm`, the gear is second or above, and the speed is under the downshift speed.
+  The constructor starts every vehicle in first (gear 4).
+- **Manual**: the shift request (+0x6D8, +1 or -1) moves one gear, down to Park.
+- With the "skip neutral" setting (`0xcad904` = 1) and the vehicle slow (+0x780 under 3), Park and
+  Neutral are stepped over (+2 or -2).
+- **Park holds both brakes** (both brake inputs 1 at the end of the step), as in MTM2.
 
 ### 6.4 Centre split and differentials (`0x5589a0`, `0x5587c0`)
 
@@ -243,11 +275,13 @@ same way (the stock `[0, -2.294, 0, 3.059, ...]`).
   threshold of 0, so that branch never applies.)
 - **Axle differential**, by `slipDiffType`:
   - **0 open:** 50/50.
-  - **1 load sensing:** when one tire's load exceeds the other's by 1%, the lighter tire's share
-    drops by `(heavy - light) / (heavy + light)` (at least 0). A tire off the ground resets the
-    axle to 50/50.
+  - **1 force sensing:** the two tires' longitudinal forces of this step (tire +0x68, written by
+    the drive force just before) are compared: when one pulls more than 1% harder, its own share
+    drops by `(more - less) / (more + less)` (at least 0); either not pulling (0 or less) resets the
+    axle to 50/50. (The first pass read +0x68 as the normal load; it is the force.)
   - **2 slip sensing:** when one tire's slip (5.3) exceeds the other's by more than 5, the
-    spinning tire's share drops by `difference / sum`.
+    spinning tire's share drops by `difference / sum`; otherwise 50/50.
+  - The shares sit at axle +0x2A0 (left tire) and +0x2A4 (right tire).
 - **Not traced:** `axleBias` (read at `0x568890`).
 
 ## 7. Hull contacts (`0x558f00`, `0x547f90`)
@@ -366,40 +400,49 @@ original Evo 1 release (2000) is not this build**; its physics may differ again.
 
 ---
 
-## 11. Plan for the code
+## 11. The code (built)
 
-Concise, in order. Each step lands with its tests; nothing goes in that the sections above do
-not state.
+**Built, to be tested.** OpenPhotex `src/sim/evo/` (`evoSim`, docs `SIM_EVO.md`, tests
+`test/sim-evo.test.ts`), OpenMTM2 `PHYSICS_MODELS` and `sim-worker.js`.
 
-**OpenPhotex** (`src/sim/evo/`, pure TS, reusing `sim/mtm2/world` and `sim/mtm2/collide`):
+- **One Evo module, two physics models.** Both games run one vehicle model with the same constants,
+  so OpenPhotex has one module with two rule sets: `EVO1_RULES` and `EVO2_RULES` (the four switches
+  of section 10), chosen with `evoRules("evo1" | "evo2")`. The module reuses MTM2's tire geometry,
+  probes, hull-contact solvers, integration and post-step; the post-step takes the vehicle's own
+  bump travel, articulation limit and spring arm, the contacts Evo's friction factor and mu table.
+- **Every model on every track with every vehicle.** Options lists Auto, Monster Truck Madness 2
+  (the default), Monster Truck Madness, 4x4 Evolution 2 and 4x4 Evolution. Under an Evo model every
+  vehicle drives on Evo's model: an Evo vehicle on its own `.TRK` (`evoSpecFromTrk`, attached by
+  `worker/foreign-truck-build.js`), an MTM truck or a CPR car on MTM2's figures for it
+  (`evoSpecFromMtm2`: 10,000 lb, MTM2's inertia, CG, aero, engine curve every 500 rpm, gears and
+  transfer, springs, grip and rear steering). Under an MTM model every vehicle keeps MTM2's model, as
+  before.
+- **Auto** picks by the player's vehicle: an Evo 2 vehicle Evo 2, an Evo 1 vehicle Evo 1, an MTM1
+  truck (`MTM1:`) Monster Truck Madness, anything else Monster Truck Madness 2
+  (`app/settings.js` `resolvePhysics`).
+- **Gears.** Under an Evo model a vehicle has its own forward gears (`maxGear` less Park, Reverse and
+  Neutral: four on the stock trucks), reached by the automatic box or by Shift Up and Down; the gear
+  strip of the gauges shows every one of them (the simulation's `gears`). An Evo or CPR vehicle gets
+  the gauges in place of the MTM2 cockpit, whose shifter art has three. Under an MTM model every
+  vehicle has MTM2's three-speed box.
+- 4x4 Evolution 2 ships one monster truck, `TRUCK\AMT.TRK` (GMC ARB, 4,720 lb, a flat 957 lb-ft
+  torque table, final drive 7.5, 3 ft of travel). It drives on its own figures like any Evo vehicle;
+  it could also stand in for MTM trucks' figures under Evo physics, which is not done.
 
-1. `rules.ts`: `EVO2_RULES` and `EVO1_RULES` as named switches: `airborneGravity` (1.75 / 1),
-   `defaultCgZ` (2 / 0), `steerRearGripCut` (true / false), `hullFrictionFactor` (1.5 / 0.5).
-   `simRules("evo2" | "evo1")` returns them; `"mtm2"` and `"mtm1"` are unchanged.
-2. `params.ts`: `.TRK` to parameters (2), including the spring formula; a stock-archive test that
-   all 271 Evo `.TRK`s map (121 Evo 1, 150 Evo 2).
-3. `surface.ts`: the tread table (5.1) beside the mu table; weather grip.
-4. `tire.ts`: spring and load (5.1), slip angle and the lateral table (5.2), brakes and drive
-   (5.3), wheelspin; tests from the tables and formulas.
-5. `driveline.ts`: engine, inertia, gearbox, centre split, differentials (6).
-6. `aero.ts`: drag with submersion and the damping moments (8).
-7. `body.ts`: the step order (3), gravity (4), sums, Euler integration with the clamp, rest,
-   catch-up, orientation (9).
-8. Contacts: the MTM2 solvers with `hullFrictionFactor`, damage hook, rollover event (7). The
-   solver geometry is checked by hand against `0x548c00` first.
+**Not reproduced** (OpenPhotex `SIM_EVO.md`): Evo's own catch-up for computer vehicles, the
+misfire, the crash timer (`0x55e240`), the recovery timer, independent suspension, `axleBias`.
+Computer-driven vehicles use MTM2's autopilot. A torque table shorter than the rev range holds its
+last entry. The garage's tire cut is the tread (Shallow, Medium, Deep; Evo's fourth, Studded, has no choice
+yet), and a new profile's is Medium, with Medium suspension (MTM2's own start is Shallow and Soft):
+on snow and ice Evo grips 0.6 Shallow, 0.8 Medium, 0.9 Deep and 1.0 Studded. 4x4 Evolution 2's own "lockers" (ARB Air Lockers, a Drivetrain part) only
+add 0.02 to the tire CF, as many parts do; no part or key locks a differential. Brake balance is the constructor's 0.5 (every stock `.TRK` says 0, which the rule would
+turn into no front grip under braking). The transfer case is the Drive Mode key (R), as the game's
+`keyDriveMode` (`0x489a90`): 2WD, 4WD High, 4WD Low and round again, for a vehicle with four-wheel
+drive (one with `drive_type` 0 stays in 2WD); 4WD High from the start (`0x5ed4b0`). The caption names
+the new mode. MTM2's model has no transfer case: it drives all four wheels. The handbrake is the
+Emergency Brake key (B, or the pad's A button), for an Evo vehicle only; under MTM physics it locks
+the rear brakes.
 
-**OpenMTM2**:
-
-9. `PHYSICS_MODELS` gains `evo2` ("4x4 Evolution 2") and `evo1` ("4x4 Evolution"); the
-   Options list and `physics` console command pick them up.
-10. `sim-worker.js`: each truck picks its model. Evo vehicles under `evo1`/`evo2` run the Evo
-    model with their `.TRK`; MTM and CPR vehicles keep MTM2's vehicle on the chosen world rules.
-    Under `mtm1`/`mtm2` Evo vehicles keep today's mapping.
-11. Controls: brake, handbrake, manual shifting and the transfer case (2WD, 4H, 4L) as inputs;
-    the gauges show real RPM and gear.
-12. Garage: Springs (2) and Brake balance (3.1) as settings; Shocks is not offered (the game
-    ignores it).
-
-**Before step 7 lands:** trace `0x55e240` (crash timer), where Evo 2 moved the recovery timer,
-`axleBias` (`0x568890`) and the misfire condition (`0x5ec870`). Until then the port leaves them
-out and says so in the option's note.
+**Still to do:** garage
+Springs and Brake balance for Evo vehicles; a hand check of the contact solvers' geometry against
+`0x548c00`.

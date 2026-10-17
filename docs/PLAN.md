@@ -232,7 +232,7 @@ Things the port adds on purpose. They are marked here so the original game's spe
 - **Cockpit G key** (done): in the cockpit view G goes round the cockpit, no cockpit with the gauges, no cockpit and no gauges.
 - **Draw distance and track backdrops** (done): Options has a Draw distance slider (counted in terrain cells, see Options and menus below; it sets the camera's far plane, caps the fog and shrinks the sky dome to fit) and a Track backdrops switch, off by default.
 - **POD.INI order and reload** (done): the track and truck lists keep the mount order (POD.INI's, then each archive's own), not the names'; lookups already took the first mounted file. Options, Data has Reload POD.INI: the folder is picked again (a browser keeps no handle on it), archives the file no longer lists are removed, new or changed ones copied, the rest kept.
-- **Ground boxes smoothed** (done, not the game's): the game picks the face a wheel meets from a line through the truck's centre, trying a box's x faces, then y, then z, counting two crossings at most and taking the nearest with no direction test (`0x4a7fc0`, checked against the code), so on a floor of boxes a wheel is often resolved against a side: caught, or shoved sideways (up to 18 ft/s in one frame in a diagonal drive). The port's ground boxes (OpenPhotex `groundBoxesAround` `smoothFt`, `SimBox.openFaces`, `climbFt`) choose the face by where the wheel is: the top when the wheel is over the box and no more than 4 ft below it (so a step that high is climbed), else the nearest side that is not shared with a neighbouring box and that the wheel is just into (a wall). Level boxes (models) keep the game's test.
+- **Ground boxes as the game has them** (2026-10-16): the port's smoothing (open sides between boxes, a 4 ft climb onto any top, the top taken whenever no side qualified) is gone. It lifted a truck that met a tunnel wall on ISLAND onto the deck above it, and carried trucks up SUMMIT1's 8 ft summit step. Every face is solid and the face a point meets is the one its ray from last step crosses (`0x4a52b0`, `0x4a7fc0`, MTM2_PHYSICS.md 14.14): a wheel lands on a top only when its hub was above it, and a hull point only when the truck's raised reference point was, so a step under the hub is climbed and a taller one is a wall. On a floor of boxes a wheel near an edge can still be resolved against a side, as in the game.
 - **Computer trucks and the helicopter** (done, not the game's): a computer truck that misses a checkpoint or comes to rest is always fetched by the helicopter, on Professional too (the game sets it back on the course at once there), and one that stays within 12 ft for 6 s calls it, whatever its speed.
 - **Colour key** (done): a cutout texel is cut when its palette colour is black at five bits a channel (below 8 in red, green and blue), as the game's 16-bit textures hold it: AZTEC.POD's fences key on (7, 7, 7).
 - **Weather picture** (done): Foggy, Dense Fog, Snow and Pitch Black draw no sky, only the fog colour; Rain's fog is drawn at 0.6 of the code's colour; Pitch Black has almost no ambient light, so the headlights light the ground; in Snow the ice over water starts half formed and is full in 50 s.
@@ -337,12 +337,12 @@ Source: JSTrackViewer's `docs/4X4_EVO_TRACK_RENDERING_ANALYSIS.md`, OpenPhotex `
 - **Moving objects** (Evo 1's type 10, The Hill's semis) run as MTM2's do, and what is attached to one (`parent`, a semi's load) goes with it.
 - **Wraps like MTM2:** the world is repeated around itself. Measured on the stock heightfields, the step across the seam is no larger than between ordinary neighbouring corners on Baja Beach (zero), Tri Baja 250, Pikes Peak and Truck Stop 101; Aspen alone does not meet (a median 40 ft step).
 - **Race:** type 2 under the Circuit rules, type 3 under the Rally rules, with every `CCheckpoint` in file order, however many. Computer trucks follow the SIT course, cut to the real lap by the recorded AI lines (`lapRuns`).
-- **Surfaces:** Evo has no known surface table: the ground is Dirt and anything under the water level is water (the port's default).
+- **Surfaces:** each texture's surface value from its `.TEX` record, water under the water level (3.3; `EVO2_EXE_ANALYSIS.md` 4).
 - **Sky:** MTM2's sky and weathers, as on a CPR track. A one-way rally (Pikes Peak) draws its course map with two ends.
 - **Free roam:** a checkbox with its label on the Races screen, in the font of Weather and Laps. A free roam session has no checkpoints, laps, places or results; the clock runs and the pause menu ends it. The player drives alone: no computer trucks, and the Computer Opponents choice is disabled while the box is ticked. It is offered on every track.
 - **Mission tracks** (El Norte, Obs Park) are listed like the others. They have no checkpoints, so they always load as free roam (the box ticked and locked). How the game plays a mission is not known; that is left open.
 - **Accept:** a headless race of eight trucks finishes on ASPEN, THEHILL, TRIBAJA, BAJBEACH and PEAK; ELNORTE and OBSPARK load in free roam, with the player's truck only.
-- **To do later:** the `.SDW` shadow overlay and the small vegetation (neither is in JSTrackViewer), the `.RTD` grid, `.WAT` water animation, Evo trucks, standalone `.LTE` tracks.
+- **To do later:** `.WAT` water animation, standalone `.LTE` tracks. (The `.SDW`, `.RTD`, the grass and Evo trucks are built: 3.1, 3.3.)
 - **Risk:** bridges and tunnels that need more of a model than a flat deck.
 
 #### F5: Z-mode cameras
@@ -694,14 +694,22 @@ builds them (`track-loader.js`, `terrain-builder.js`, `def-loader.js`, `hb-under
   executables decompiled: listed under "Later" in `PLAN.md`, not planned here.
 - Tests: catalog entries, a level builds headless, a free-roam session steps on it.
 
-#### 3.3 Known gap: 4x4 Evolution vegetation (pending, not planned here)
+#### 3.3 4x4 Evolution: vegetation, surfaces, particles and physics
 
-Evo 1 and 2 tracks are missing vegetation support: the small vegetation and its placement
-rules, how the `.VEG` trees and the `.SDW` shadow overlay are really drawn, and whether any of
-it collides. Getting it right means reading the `~/dev/4x4e` and `~/dev/4x4e2` repositories or
-decompiling the Evo executables. That work is expensive, so it is recorded in `docs/PLAN.md`
-under "Pending" beside the TV/F3/HB executables (3.2), with what is missing and where the
-answer lies, and nothing is built on guesses meanwhile.
+**Built, to be tested.** From the decompiled executables (`docs/EVO2_EXE_ANALYSIS.md`,
+`docs/EVO2_PHYSICS.md`; OpenPhotex `src/evo/vegetation.ts` and `src/sim/evo/`):
+
+- **Surfaces:** each `.TEX` texture's own surface value; MTM2's trucks feel mud, snow, ice and rock.
+- **Trees** in their sectors with the game's slot, yaw and height; a forest generated on tracks
+  without a `.VEG` ("Evo forest"); a truck knocks a tree over.
+- **Grass** around the camera by each texture's vegetation class, pressed under trucks ("Evo grass").
+- **Shade** (`.RTD`) and **shadow tiles** (`.SDW`) under a sun.
+- **Particles:** debris by surface from spinning and sliding tires, Autumn's leaves ("Evo particles").
+- **Physics:** "4x4 Evolution 2" and "4x4 Evolution" in Options, Game, beside "Auto (by vehicle)";
+  any model on any track with any vehicle (`EVO2_PHYSICS.md` 11).
+
+Left: the handbrake, gears past third and transfer case keys; Evo garage settings; the `.WAT`
+water animation, the detail texture and water wakes (`EVO2_EXE_ANALYSIS.md` 8.2, 8.4).
 
 ### Before Stage 4: the third play test
 
@@ -776,7 +784,7 @@ Read from `re/` into `MONSTER_EXE_ANALYSIS.md` and `MTM2_PHYSICS.md` (a new "The
 4.1, then 4.3's camera-following block and nearest-copy placement (which alone ends the visible edge), then 4.2 by consumer, most used first: ground boxes and collisions, checkpoints, the course follower.
 
 ### Pending, low priority
-- **Executables not decompiled** (costly; nothing is guessed meanwhile): 4x4 Evolution 1 and 2, for the vegetation (Stage 3.3; the `~/dev/4x4e` and `~/dev/4x4e2` repositories may answer it first); Terminal Velocity, Fury3 and Hellbender, for objectives as checkpoints (Stage 3.2).
+- **Executables not decompiled** (costly; nothing is guessed meanwhile): Terminal Velocity, Fury3 and Hellbender, for objectives as checkpoints (Stage 3.2). (4x4 Evolution 1 and 2 are done: Stage 3.3.)
 - **Game file formats for player data:** decode `player.pro` (the driver profile, versioned, ProjNet.cpp 0x4dae90) and `highscor.mtr` (the Hall of Fame, written by 0x4c7540) so profiles and the Hall of Fame can be imported from, and exported to, a real install. Until then both are JSON in OPFS.
 - **GOODY.BIN blimp** that follows the course on every track but Rumbles (M10, optional).
 

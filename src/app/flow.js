@@ -4,7 +4,7 @@
   button runs this from any screen, as in the game.
 */
 import { currentDriver, getProfiles } from "./profile-store.js";
-import { extensionById } from "../game/extensions/loader.js";
+import { entrantsShortfall, extensionById } from "../game/extensions/loader.js";
 
 /**
  * Remember what the Races screen chose.
@@ -67,6 +67,14 @@ export async function goRace(context) {
   const truck = trucks.find((t) => t.file === driver.lastTruck) ?? trucks[0];
   if (!track || !truck) return context.router.go("race-select", { mode: config.mode }, { replace: true });
   const gameMode = resolveGameMode(config.gameMode, track);
+  // A mode that needs more trucks than were picked (Tag, Hockey: two at least) is not started.
+  const extension = extensionById(gameMode);
+  const watching = spectatorField(config, track, trucks);
+  const short = entrantsShortfall(extension, watching ?? (Array.isArray(config.opponents) ? config.opponents : []), !!watching);
+  if (short !== null) {
+    window.alert(`${extension.name} needs ${short} trucks at least. Pick computer opponents on the Races screen.`);
+    return context.router.go("race-select", { mode: config.mode }, { replace: true });
+  }
   // Spectator mode: the computer's trucks alone, watched. Not in free roam, which has no race to watch.
   const watched = spectatorField(config, track, trucks);
   if (watched) {

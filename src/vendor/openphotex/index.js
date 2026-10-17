@@ -14,11 +14,14 @@ export { rawTextureSide, decodeRawTexture, decodeIndexedImage, applyOpacityPlane
 export { isTiff, decodeTiff } from "./texture/tiff.js";
 export { splitEvoLines, evoLabel, evoNumbers, evoUnquote, evoFieldLine } from "./evo/text.js";
 export { parseEvoLvl, parseEvoWat } from "./evo/lvl.js";
-export { parseEvoTex } from "./evo/tex.js";
-export { parseEvoVeg } from "./evo/veg.js";
+export { parseEvoTex, EVO_VEG_CLASS } from "./evo/tex.js";
+export { parseEvoVeg, evoTreeYaw, evoTreeSlot, EVO_TREE_SECTORS, EVO_TREES_PER_SECTOR, EVO_TREE_SECTOR_FT } from "./evo/veg.js";
+export { parseEvoRtd, evoShadeAt, parseEvoSdw, evoRand, evoGrassPattern, evoGrassCount, evoGrassIndex, evoGenerateTrees, EVO_RTD_SIZE, EVO_RTD_BYTES, EVO_RTD_CELL_FT, EVO_SHADE_LIGHT, EVO_SDW_NONE, EVO_SDW_KEEP, EVO_GRASS_SEED, EVO_GRASS_TUFTS, } from "./evo/vegetation.js";
 export { isEvoSit, evoGameForSitVersion, parseEvoSit, evoTrackTypeName } from "./evo/sit.js";
+export { parseEvoScript } from "./evo/script.js";
 export { isSmfModel, parseSmf, smfTextureReference } from "./evo/smf.js";
 export { truckManifestLines, isEvoTrk, isEvoTrkLines, parseEvoTrk, parseEvoTrkLines, trkSpecValue, EVO_WHEEL_KEYS } from "./evo/trk.js";
+export { parseEvoParts } from "./evo/parts.js";
 export { parseMtmTrkLines, MTM_WHEEL_KEYS } from "./truck/mtm-trk.js";
 export { isCprCarLines, parseCprCarLines, CPR_WHEEL_KEYS_IN_FILE_ORDER } from "./truck/cpr-car.js";
 export { detectTruckManifest, parseTruckManifest } from "./truck/manifest.js";
@@ -71,6 +74,7 @@ export { parseMtmReplay, writeMtmReplay, REPLAY_RING_RECORDS, REPLAY_FRAME_TICKS
 export { modChannels, parseMod, renderMod } from "./audio/mod.js";
 export { parseCockpitLayout, parseCockpitSections } from "./mtm/cockpit.js";
 export * as mtm2Sim from "./sim/mtm2/index.js";
+export * as evoSim from "./sim/evo/index.js";
 export { PodFormatError } from "./errors.js";
 /** The library version, as published in package.json. */
-export const VERSION = "1.1.2";
+export const VERSION = "1.2.0";

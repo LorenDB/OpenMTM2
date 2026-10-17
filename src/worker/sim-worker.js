@@ -9,11 +9,12 @@
 
   Everything here is portable: the same code runs in Node tests through `createSession`.
 */
-import { mtm2Sim as S } from "../vendor/openphotex/index.js";
+import { evoSim as E, mtm2Sim as S } from "../vendor/openphotex/index.js";
 import { createCrossingLog, raceGap, recordCrossings } from "../game/timing.js";
 import { buildRumbleField, createRumbleDriver, rumbleControls } from "../game/rumble-ai.js";
 import { REVERSE_SPEED, TREE_S, createDrag, dragCollision, dragLamps, dragOver, dragPlaces, dragTick, mirrorCourse, stageSpeed, stagingDistance, stillStaging } from "../game/drag-race.js";
 import { createExtensionSession, extensionSessionGround } from "../game/extensions/session-loader.js";
+import { createEvoPathRunner } from "../game/evo-paths.js";
 import { createFlight, departVisual, flightVisual, nearestCourseSpot, stepFlight, timerVisual } from "../game/heli-flight.js";
 
 export const STEP = 1 / 60;
@@ -38,9 +39,14 @@ function snapshot(state) {
     speed: Math.hypot(state.bvel[0], state.bvel[1], state.bvel[2]),
     forward: state.bvel[2],
     gear: state.controls.gear,
+    // How many forward gears the gearbox has: an Evo vehicle's own under Evo physics (its maxGear, past Park, Reverse and
+    // Neutral), MTM2's three otherwise.
+    gears: state.forwardGears ?? 3,
     rpm: state.rpm,
     throttle: state.controls.throttle,
     heliTimer: state.heliTimer,
+    // Evo physics: the transfer case, 0 2WD, 1 4WD High, 2 4WD Low (null under MTM physics).
+    transfer: state.evo?.transfer ?? null,
     // What the instant replay records (game/replay.js).
     bvel: Array.from(state.bvel),
     rates: Array.from(state.rates),
@@ -118,7 +124,11 @@ function takeTouch(t) {
 function soundOf(t, ground) {
   const s = t.state;
   const air = 4 - s.tires.filter((x) => x.onGround).length;
-  const tires = s.tires.map((x) => ({ onGround: x.onGround, grip: x.grip, force: [x.force[0], x.force[1], x.force[2]], spin: x.spin, surface: x.surface, lateral: x.lateral }));
+  // `slip`: the 4x4 Evolution model's wheelspin (0 under MTM physics); `vLat`: the tire's sideways speed, body ft/s.
+  const tires = s.tires.map((x, i) => ({
+    onGround: x.onGround, grip: x.grip, force: [x.force[0], x.force[1], x.force[2]], spin: x.spin, surface: x.surface, lateral: x.lateral,
+    slip: s.evo?.slip[i] ?? 0, vLat: x.velocity[0],
+  }));
   const m = s.matrix, weather = ground.weather ?? 0;
   // In water, for its sounds (0x41bbd0): on a level with water, a tire on a water surface or the body under the level;
   // never in Snow. (A probe's `waterDepth` is no measure of it: it is how deep the probe is in the ground, wet or dry.)
@@ -149,12 +159,6 @@ function soundOf(t, ground) {
 const NO_HEADWAY_FT = 12, NO_HEADWAY_S = 6;
 
 /**
- * Ground boxes are smoothed (not the game's): a side shared with a box no more than this much lower is ignored, so
- * a floor of boxes drives like ground and a step this high can be climbed. `init.groundBoxSmoothFt: null` turns it off.
- */
-const GROUND_BOX_SMOOTH_FT = 4;
-
-/**
  * The index of the course straight a truck at `pos` heading `heading` is on: the nearest one that runs its way.
  * For a grid that stands part way round the course (CART Precision Racing); 0 without one.
  */
@@ -172,17 +176,18 @@ function nearestStraight(course, pos, heading) {
 }
 
 export function createSession(init) {
-  const groundBoxSmoothFt = init.groundBoxSmoothFt === null ? undefined : init.groundBoxSmoothFt ?? GROUND_BOX_SMOOTH_FT;
   // `heightsFt`: corner heights in feet, for a level finer than MTM2's 2 ft steps (CART Precision Racing).
   const terrain = init.heightsFt
-    ? S.createTerrainFt(new Float32Array(init.heightsFt), init.waterLevelFt ?? null)
+    ? S.createTerrainFt(new Float32Array(init.heightsFt), init.waterLevelFt ?? null, init.fineFt ? new Float32Array(init.fineFt) : null)
     : S.createTerrain(new Uint8Array(init.heights), init.waterLevelFt ?? null);
   const surfaces = init.clr && init.textureValues
     ? S.createSurfaceMap(new Uint16Array(init.clr), new Int32Array(init.textureValues))
     : null;
   let weather = init.weather ?? 0;
-  // The physics model's rules (app/settings.js PHYSICS_MODELS): MTM2's unless the race asks for the 1996 game's.
-  const rules = S.simRules(init.rules);
+  // The physics model's rules (app/settings.js PHYSICS_MODELS): MTM2's unless the race asks for the 1996 game's, or for one
+  // of 4x4 Evolution's, whose vehicle model then drives every truck (OpenPhotex evoSim; docs/EVO2_PHYSICS.md).
+  const evoModel = E.isEvoRules(init.rules);
+  const rules = evoModel ? E.evoRules(init.rules) : S.simRules(init.rules);
   const terrainGround = S.createTerrainGround(terrain, surfaces, weather, init.waterLevelFt ?? null, rules);
   // CPR's road layer lies over the terrain and is the ground where it does (OpenPhotex world/road.ts).
   const ground = init.road ? S.createRoadGround(terrainGround, init.road) : terrainGround;
@@ -199,7 +204,12 @@ export function createSession(init) {
   const wallCells = new Map();
   for (const w of init.walls ?? []) {
     const box = S.createBox(w.pos, w.size, 0, [0, 0, w.psi]);
-    const reach = Math.hypot(w.size[0], w.size[2]) * 0.5;
+    // A box turned every way (4x4 Evolution's tilted collision boxes and rock faces, worker/evo-track-build.js): its
+    // matrix as given, row-major with the box's axes as columns; it reaches as far as its whole diagonal.
+    if (w.matrix) { box.matrix.set(w.matrix); box.radius = Math.hypot(...box.half); }
+    // A 4x4 Evolution tree (worker/evo-track-build.js): knocked over, not solid.
+    if (w.tree) box.tree = w.tree;
+    const reach = w.matrix ? Math.hypot(w.size[0], w.size[1], w.size[2]) * 0.5 : Math.hypot(w.size[0], w.size[2]) * 0.5;
     for (let cx = Math.floor((w.pos[0] - reach) / WALL_CELL_FT); cx <= Math.floor((w.pos[0] + reach) / WALL_CELL_FT); cx++) {
       for (let cz = Math.floor((w.pos[2] - reach) / WALL_CELL_FT); cz <= Math.floor((w.pos[2] + reach) / WALL_CELL_FT); cz++) {
         const key = cx * 65536 + cz;
@@ -225,6 +235,39 @@ export function createSession(init) {
       }
     }
   }
+  // 4x4 Evolution's rocks: their steep faces are walls, each its own triangle (OpenPhotex `collideTruckFace`), found by
+  // the same grid of cells as the walls.
+  const faceCells = new Map();
+  const faceData = init.faces ? new Float32Array(init.faces) : null;
+  for (let k = 0; faceData && k + 11 < faceData.length; k += 12) {
+    const at = (o) => [faceData[k + o], faceData[k + o + 1], faceData[k + o + 2]];
+    const face = S.createFace(at(0), at(3), at(6), at(9));
+    if (!face) continue;
+    const { centre, radius } = face;
+    for (let cx = Math.floor((centre[0] - radius) / WALL_CELL_FT); cx <= Math.floor((centre[0] + radius) / WALL_CELL_FT); cx++) {
+      for (let cz = Math.floor((centre[2] - radius) / WALL_CELL_FT); cz <= Math.floor((centre[2] + radius) / WALL_CELL_FT); cz++) {
+        const key = cx * 65536 + cz;
+        if (!faceCells.has(key)) faceCells.set(key, []);
+        faceCells.get(key).push(face);
+      }
+    }
+  }
+  /** The rock faces a truck of radius `r` at (x, z) may touch, each once, onto `out`. */
+  function facesAround(x, z, r, out) {
+    if (!faceCells.size || !(Math.abs(x) < 1e6) || !(Math.abs(z) < 1e6)) return;
+    const seen = new Set();
+    const cells = S.WORLD_FT / WALL_CELL_FT, inWorld = (c) => ((c % cells) + cells) % cells;
+    for (let cx = Math.floor((x - r) / WALL_CELL_FT); cx <= Math.floor((x + r) / WALL_CELL_FT); cx++) {
+      for (let cz = Math.floor((z - r) / WALL_CELL_FT); cz <= Math.floor((z + r) / WALL_CELL_FT); cz++) {
+        for (const face of faceCells.get(inWorld(cx) * 65536 + inWorld(cz)) ?? []) {
+          if (seen.has(face)) continue;
+          seen.add(face);
+          out.push(face);
+        }
+      }
+    }
+  }
+  const nearFaces = [];
   const difficulty = init.difficulty ?? S.DIFFICULTY.INTERMEDIATE;
   const sonicTrack = !!init.sonicTrack;
   // The feet to a ground box's height step: MTM's 2, or a level's own (Hellbender's 1.5).
@@ -236,7 +279,15 @@ export function createSession(init) {
   const movingObjects = [];
   for (const b of init.boxes ?? []) {
     const box = S.createLevelBox(b, b.bounds);
-    if (box) { box.sitIndex = b.sitIndex; levelBoxes.push(box); }
+    if (box) {
+      box.sitIndex = b.sitIndex;
+      // A 4x4 Evolution object's model stands off its box's centre: its origin, in the box's frame (worker/evo-track-build.js).
+      if (b.drawOffset) box.drawOffset = b.drawOffset;
+      // Moved by a 4x4 Evolution object path (game/evo-paths.js): the path's object, or what hangs from it (`attach`); a
+      // `ghost` is moved but met by nothing (its class does not collide).
+      if (b.pathRoot !== undefined) { box.pathRoot = b.pathRoot; box.attach = b.attach ?? null; box.ghost = !!b.ghost; }
+      levelBoxes.push(box);
+    }
     if (box && b.bvel) movingObjects.push({ box, bvel: b.bvel });
   }
   const allRamps = (init.ramps ?? []).map((r) => S.createRamp(r, r.bounds)).filter(Boolean);
@@ -253,12 +304,29 @@ export function createSession(init) {
 
   const specs = init.trucks ?? [{ truck: init.truck, start: init.start, autopilot: init.autopilot }];
   const trucks = specs.map((spec, i) => {
-    const params = S.createTruckParams(
-      // `tire`: another game's vehicle rolls on its own tires' size (worker/foreign-truck-build.js); an MTM truck has none.
-      { wheelAnchors: spec.truck.anchors, scrapePoints: spec.truck.scrapePoints, tireRadiusFt: spec.truck.tire?.radiusFt, tireWidthFt: spec.truck.tire?.widthFt },
-      { difficulty, autoShift: init.autoShift ?? true, ...spec.setup },
-    );
-    const state = S.createTruckState(spec.start.pos, spec.start.heading ?? 0, S.GEAR.FIRST, params);
+    const setup = { difficulty, autoShift: init.autoShift ?? true, ...spec.setup };
+    let params, state;
+    if (evoModel) {
+      // An Evo vehicle drives on its own .TRK figures (`truck.evo`); any other on MTM2's figures for it, its MTM2 grip
+      // factor included (OpenPhotex evoSpecFromMtm2: the port's rule). An MTM truck rolls on MTM2's 3 by 4 ft tires.
+      const cpuSonicPro = !!spec.autopilot && difficulty === S.DIFFICULTY.PROFESSIONAL && sonicTrack;
+      const evoSpec = spec.truck.evo ?? E.evoSpecFromMtm2({
+        wheelAnchors: spec.truck.anchors, scrapePoints: spec.truck.scrapePoints, suspension: setup.suspension,
+        transferSetting: setup.transferSetting, difficulty, gripK: cpuSonicPro ? S.TIRE_GRIP_K_SONIC_PRO : S.TIRE_GRIP_K,
+      });
+      params = E.createEvoParams(evoSpec, rules,
+        { tireRadiusFt: spec.truck.tire?.radiusFt ?? S.TRUCK.tireRadiusFt, tireWidthFt: spec.truck.tire?.widthFt ?? S.TRUCK.tireWidthFt },
+        { difficulty, cpu: !!spec.autopilot, autoShift: setup.autoShift, tread: setup.tireCut ?? (spec.truck.evo ? 1 : 0) });
+      state = E.createEvoTruckState(spec.start.pos, spec.start.heading ?? 0, S.GEAR.FIRST, params);
+      state.forwardGears = Math.max(1, params.evo.spec.maxGear - 3);
+    } else {
+      params = S.createTruckParams(
+        // `tire`: another game's vehicle rolls on its own tires' size (worker/foreign-truck-build.js); an MTM truck has none.
+        { wheelAnchors: spec.truck.anchors, scrapePoints: spec.truck.scrapePoints, tireRadiusFt: spec.truck.tire?.radiusFt, tireWidthFt: spec.truck.tire?.widthFt },
+        setup,
+      );
+      state = S.createTruckState(spec.start.pos, spec.start.heading ?? 0, S.GEAR.FIRST, params);
+    }
     if (init.startOnNearestSegment) state.ap.segment = nearestStraight(course, spec.start.pos, spec.start.heading ?? 0);
     // A Rumble needs no course: its computer trucks drive to the zone (rumble-ai.js).
     const autopilot = !!spec.autopilot && (course.length > 0 || init.race?.mode === "summit" || !!extensionPayload);
@@ -271,7 +339,7 @@ export function createSession(init) {
     // A foot under the body's origin: a step up to about a wheel's height is climbed, a taller face is not ground.
     const ownGround = meshGround ? meshGround.below(() => state.pos[1] - 1) : extensionGround;
     const ctx = { ground: ownGround, human: i === 0 && !autopilot, difficulty, sonicTrack, recovery };
-    return { state, params, autopilot, recovery, ctx, radius: S.truckRadius(params), nearBoxes: [], dmg: new Map(), snd: { impact: 0, hit: null, splash: false, surface: 1 }, safe: copyState(state), sinceSafe: 0 };
+    return { state, params, autopilot, recovery, ctx, evoVehicle: !!spec.truck.evo, radius: S.truckRadius(params), nearBoxes: [], dmg: new Map(), snd: { impact: 0, hit: null, splash: false, surface: 1 }, safe: copyState(state), sinceSafe: 0 };
   });
   const player = trucks[0];
   // Traffic (MTM2_PHYSICS.md 14.25): every truck sees the others' last values.
@@ -340,6 +408,103 @@ export function createSession(init) {
   const listed = [];
   /** Boxes whose pose changed since the last `advance` reply. */
   const dirty = new Set();
+
+  /*
+    4x4 Evolution 2's object paths (game/evo-paths.js; docs/EVO2_EXE_ANALYSIS.md 6.7): each moves its object's box, and
+    the boxes that hang from it at their places against it, every step.
+  */
+  const pathRuns = (init.paths ?? []).map((p) => {
+    const runner = createEvoPathRunner(p.path, {
+      ground: { height: (x, z) => ground.height(x, z), normal: (x, z) => ground.normal(x, z, [0, 1, 0]) }, bottom: p.bottom ?? 0,
+    });
+    const members = levelBoxes.filter((b) => b.pathRoot === p.sitIndex);
+    const root = members.find((b) => b.sitIndex === p.sitIndex);
+    return runner && root ? { runner, number: p.number, root, members } : null;
+  }).filter(Boolean);
+  const mul = (m, v) => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+  const mulM = (a, b) => [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]));
+  /** Puts a path's boxes where its runner says, their velocity from the move (so a truck is pushed as by a moving box). */
+  function placePath(run, still = false) {
+    const { pos, matrix } = run.runner.pose();
+    for (const box of run.members) {
+      let at = pos, m = matrix;
+      if (box !== run.root && box.attach) {
+        const off = mul(matrix, box.attach.pos);
+        at = [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
+        m = mulM(matrix, box.attach.matrix);
+      }
+      // The box's centre: the model's origin less its draw offset, in the box's frame.
+      const o = box.drawOffset ?? [0, 0, 0];
+      const c = mul(m, [-o[0], -o[1], -o[2]]);
+      const centre = [at[0] + c[0], at[1] + c[1], at[2] + c[2]];
+      for (let i = 0; i < 3; i++) box.vel[i] = still ? 0 : (centre[i] - box.pos[i]) / STEP;
+      box.pos[0] = centre[0]; box.pos[1] = centre[1]; box.pos[2] = centre[2];
+      box.matrix.set(m);
+      dirty.add(box);
+    }
+  }
+  // Each object starts where its path starts, not where the SIT shows it.
+  for (const run of pathRuns) placePath(run, true);
+
+  /*
+    The track's script (OpenPhotex parseEvoScript), as 4x42.exe runs it every frame (0x455140, docs/EVO2_EXE_ANALYSIS.md
+    6.7): every rule whose conditions hold (one with none, always) acts that frame; `raise(flag, d)` queues a flag for
+    `d` seconds, `once` (a frame), `forever` or `clear` (taken away), and the queue is taken in after the rules
+    (0x44ff50), so a rule sees a flag from the next frame. What the port acts on is objectsIntersect (a vehicle,
+    `vehicleN`, inside a named trigger box), flags, start/stop/togglePathObject and Message; the rest (money, objectives,
+    secrets, tides) is the career's.
+  */
+  const script = init.script ?? null;
+  /** Flag name to `{ kind: "seconds" | "once" | "forever", left }`. */
+  const scriptFlags = new Map();
+  const raised = [];
+  const scriptMessages = [];
+  let lastMessage = null;
+  const triggerByName = new Map((script?.triggers ?? []).map((t) => [t.name, { ...t, matrix: S.eulerToMatrix(t.orient[0], t.orient[1], t.orient[2], new Array(9)) }]));
+  const insideTrigger = (trigger, p) => {
+    const d = [p[0] - trigger.pos[0], p[1] - trigger.pos[1], p[2] - trigger.pos[2]];
+    const m = trigger.matrix;
+    return [0, 1, 2].every((a) => Math.abs(m[a] * d[0] + m[3 + a] * d[1] + m[6 + a] * d[2]) <= trigger.size[a] / 2);
+  };
+  const conditionHolds = (c) => {
+    let value = false;
+    if (c.call?.name === "objectsIntersect") {
+      const [a = "", b = ""] = c.call.args.map((x) => x.toLowerCase());
+      const vehicle = /^vehicle(\d+)$/.exec(b) ? b : /^vehicle(\d+)$/.exec(a) ? a : null;
+      const other = vehicle === b ? a : b;
+      const t = vehicle ? trucks[Number(vehicle.slice(7)) - 1] : null;
+      const trigger = triggerByName.get(other);
+      value = !!(t && trigger && insideTrigger(trigger, t.state.pos));
+    } else if (c.flag) value = scriptFlags.has(c.flag.toLowerCase());
+    // Another call as a condition (none in the stock scripts) holds not.
+    return c.negate ? !value : value;
+  };
+  const pathByNumber = (n) => pathRuns.find((r) => r.number === Number(n))?.runner ?? null;
+  function stepScript() {
+    if (!script) return;
+    // Flags of a while run down; one of a frame is gone (0x44ff50).
+    for (const [name, flag] of scriptFlags) {
+      if (flag.kind === "once") scriptFlags.delete(name);
+      else if (flag.kind === "seconds" && (flag.left -= STEP) < 0) scriptFlags.delete(name);
+    }
+    let said = null;
+    for (const rule of script.rules) {
+      if (!rule.conditions.every(conditionHolds)) continue;
+      for (const { name, args } of rule.actions) {
+        if (name === "raise") {
+          const flag = String(args[0] ?? "").toLowerCase(), d = String(args[1] ?? "once").toLowerCase();
+          raised.push([flag, d === "forever" ? { kind: "forever" } : d === "clear" ? null : d === "once" ? { kind: "once" } : { kind: "seconds", left: Number(d) || 0 }]);
+        } else if (name === "startPathObject") pathByNumber(args[0])?.start();
+        else if (name === "stopPathObject") pathByNumber(args[0])?.stop();
+        else if (name === "togglePathObject") pathByNumber(args[0])?.toggle();
+        else if (name === "Message" && args[0]) said = String(args[0]);
+      }
+    }
+    for (const [name, flag] of raised.splice(0)) { if (flag) scriptFlags.set(name, flag); else scriptFlags.delete(name); }
+    // A message is shown once while a rule keeps saying it.
+    if (said !== lastMessage && said) scriptMessages.push(said);
+    lastMessage = said;
+  }
   let time = 0;
   for (const t of trucks) t.previous = snapshot(t.state);
   let started = false;
@@ -363,6 +528,7 @@ export function createSession(init) {
     };
     const nearTruck = (box) => trucks.some((t) => near(t.state.pos[0], t.state.pos[2], t.radius, box));
     for (const box of levelBoxes) {
+      if (box.ghost) continue;
       const moving = Math.hypot(box.vel[0], box.vel[1], box.vel[2]) > 0.1;
       if (moving || nearTruck(box) || listed.some((o) => near(o.pos[0], o.pos[2], o.radius, box))) listed.push(box);
     }
@@ -373,6 +539,28 @@ export function createSession(init) {
   }
 
   // Top-crush cars (14.27): the truck is held up by the body and the cab, and flattens the cab.
+  /**
+   * 4x4 Evolution's trees (docs/EVO2_EXE_ANALYSIS.md 2.5): a tree inside a truck's hull footprint is knocked over and no
+   * longer met. The game makes it a falling object with the truck's velocity; how the truck feels it is not traced, so here
+   * it does not. `fallen` collects them for the drawing.
+   */
+  const knocked = new Set();
+  let fallen = [];
+  function knockTree(t, box) {
+    if (knocked.has(box.tree)) return;
+    const s = t.state, m = s.matrix;
+    const dx = box.pos[0] - s.pos[0], dy = box.pos[1] - s.pos[1], dz = box.pos[2] - s.pos[2];
+    const x = m[0] * dx + m[3] * dy + m[6] * dz, z = m[2] * dx + m[5] * dy + m[8] * dz;
+    t.footprint ??= (() => {
+      const pts = t.params.scrapePoints.length ? t.params.scrapePoints : t.params.hubs;
+      return { x0: Math.min(...pts.map((p) => p[0])) - 1, x1: Math.max(...pts.map((p) => p[0])) + 1, z0: Math.min(...pts.map((p) => p[2])) - 1, z1: Math.max(...pts.map((p) => p[2])) + 1 };
+    })();
+    const f = t.footprint;
+    if (x < f.x0 || x > f.x1 || z < f.z0 || z > f.z1 || Math.abs(dy) > box.half[1] + 10) return;
+    knocked.add(box.tree);
+    const v = [m[0] * s.bvel[0] + m[1] * s.bvel[1] + m[2] * s.bvel[2], m[6] * s.bvel[0] + m[7] * s.bvel[1] + m[8] * s.bvel[2]];
+    fallen.push({ id: box.tree, pos: [box.pos[0], box.pos[1] - box.half[1], box.pos[2]], dir: v, speed: Math.hypot(v[0], v[1]) });
+  }
   const crushCars = (init.topCrush ?? []).map((car) => S.createTopCrush(car, car.bodyBounds ?? null, car.cabBounds ?? null));
   const crushCtx = { groundNormal: (x, z) => ground.normal(x, z, [0, 0, 0]), dt: STEP, edges: S.createEdgeState() };
   /** The pair tests (14.14, 14.17, 14.19, 14.20, 14.21), trucks first in list order. */
@@ -401,12 +589,18 @@ export function createSession(init) {
     for (const [ti, t] of trucks.entries()) {
       t.nearBoxes.length = 0;
       if (t.state.heliTimer > 0) continue;
-      if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxSmoothFt, groundBoxStepFt);
+      if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxStepFt);
       wallsAround(t.state.pos[0], t.state.pos[2], t.radius, t.nearBoxes);
       // Each test is made with the truck as the copy nearest the thing it is tested against (OpenPhotex world/wrap.ts):
       // what stands across the world's seam is met as what stands beside the truck is.
       const near = (thing, test) => S.withNearest(t.state, thing.pos[0], thing.pos[2], test);
-      for (const box of t.nearBoxes) near(box, () => S.collideTruckImmovableBox(t.state, t.params, box, STEP));
+      for (const box of t.nearBoxes) {
+        if (box.tree) { near(box, () => knockTree(t, box)); continue; }
+        near(box, () => S.collideTruckImmovableBox(t.state, t.params, box, STEP));
+      }
+      nearFaces.length = 0;
+      facesAround(t.state.pos[0], t.state.pos[2], t.radius, nearFaces);
+      for (const face of nearFaces) S.withNearest(t.state, face.centre[0], face.centre[2], () => S.collideTruckFace(t.state, t.params, face, STEP));
       for (const box of listed) {
         const collide = () => near(box, () => S.collideTruckBox(t.state, t.params, box, STEP));
         if (box === extensionSession?.specialBox) extensionSession.collideSpecial(ti, box, collide);
@@ -422,13 +616,21 @@ export function createSession(init) {
     }
     const all = listed.length ? [...listed, ...grounds] : listed;
     extensionSession?.addSpecialWalls?.(all, listed);
-    for (let i = 0; i < all.length; i++) {
-      for (let j = i + 1; j < all.length; j++) S.collideBoxes(all[i], all[j], STEP);
+    // Two boxes that never move never meet (OpenPhotex collideBoxes returns at once): each pair has a moving one first.
+    const moving = all.filter((box) => box.dynamic), still = all.filter((box) => !box.dynamic);
+    for (let i = 0; i < moving.length; i++) {
+      for (let j = i + 1; j < moving.length; j++) S.collideBoxes(moving[i], moving[j], STEP);
+      for (const box of still) S.collideBoxes(moving[i], box, STEP);
     }
   }
 
   /** A moved box's pose for drawing. */
-  const boxPose = (box) => ({ sitIndex: box.sitIndex, pos: [...box.pos], matrix: Array.from(box.matrix), euler: Array.from(box.euler) });
+  /** A box's pose for drawing: at its model's origin (`drawOffset`, in the box's frame) where that is not its centre. */
+  const boxPose = (box) => {
+    const pos = [...box.pos], o = box.drawOffset, m = box.matrix;
+    if (o) for (let i = 0; i < 3; i++) pos[i] += m[i * 3] * o[0] + m[i * 3 + 1] * o[1] + m[i * 3 + 2] * o[2];
+    return { sitIndex: box.sitIndex, pos, matrix: Array.from(m), euler: Array.from(box.euler) };
+  };
 
   /** A truck's recovery context, aimed at its course segment when it has one (10.3). */
   function recoveryOf(t) {
@@ -622,6 +824,18 @@ export function createSession(init) {
         // The keyboard routine always runs; a joystick then overwrites it (MONSTER_EXE_ANALYSIS.md §7).
         S.applyKeyboard(t.state.controls, keys, controlCtx);
         if (joystick) S.applyJoystick(t.state.controls, joystick, controlCtx);
+        // An Evolution truck's handbrake: under its own physics the game's (rear brakes locked, rear grip a tenth);
+        // under MTM physics the rear brakes locked.
+        if (t.evoVehicle) {
+          const handbrake = !!keys.handbrake || !!joystick?.handbrake;
+          if (t.state.evo) t.state.evo.handbrake = handbrake;
+          else if (handbrake) t.state.controls.brakeRear = 1;
+        }
+        // The Drive Mode key (0x489a90): the transfer case 2WD, 4WD High, 4WD Low and round, under Evo physics; a vehicle
+        // without four-wheel drive (drive_type 0) stays in 2WD. MTM2's model drives all four wheels and has no transfer case.
+        if (keys.driveMode && t.state.evo) {
+          t.state.evo.transfer = t.params.evo.spec.driveType === 0 ? 0 : (t.state.evo.transfer + 1) % 3;
+        }
         if (t.apLevel === 1 && course.length && go) {
           // Speed control only: the autopilot drives the pedals, the player the wheel.
           const { steer, rearSteer } = t.state.controls;
@@ -663,9 +877,15 @@ export function createSession(init) {
         t.held = held;
       });
     }
-    keys.shiftUp = keys.shiftDown = false;
+    keys.shiftUp = keys.shiftDown = keys.driveMode = false;
     if (joystick) joystick.shiftUp = joystick.shiftDown = false;
     for (const t of trucks) t.previous = snapshot(t.state);
+    // 4x4 Evolution 2's object paths and the track's script run from the start, as the game's (0x4f3680).
+    stepScript();
+    for (const run of pathRuns) {
+      if (run.runner.step(STEP)) placePath(run);
+      else for (const box of run.members) box.vel.fill(0);
+    }
     // Moving objects move before the frame's list is built, once the race runs.
     if (go) {
       for (const { box, bvel } of movingObjects) {
@@ -679,7 +899,8 @@ export function createSession(init) {
       // The player's helicopter holds the truck still and carries it itself (game/heli-flight.js).
       if (t.flight) { flyTruck(t); continue; }
       extensionSession?.afterTruckStep?.(t);
-      S.stepTruck(t.state, t.params, t.ctx, STEP);
+      if (evoModel) E.stepEvoTruck(t.state, t.params, t.ctx, STEP);
+      else S.stepTruck(t.state, t.params, t.ctx, STEP);
       t.snd.impact = Math.max(t.snd.impact, t.state.impactForce);
       t.snd.splash = t.snd.splash || t.state.splash;
     }
@@ -747,7 +968,9 @@ export function createSession(init) {
     heliCalls = (heliCalls + 1) % 3;
     const driven = course.length ? S.orientedCourse(course, apCtx.reversed) : [];
     const here = t.state.pos;
-    const spot = nearestCourseSpot(driven, here, (x, z) => ground.height(x, z))
+    // An extension may name its own spot (Hockey: the rink's centre).
+    const spot = extensionSession?.heliSpot?.(trucks.indexOf(t))
+      ?? nearestCourseSpot(driven, here, (x, z) => ground.height(x, z))
       ?? { pos: [here[0], ground.height(here[0], here[2]), here[2]], heading: t.state.euler[2] };
     t.flight = createFlight(t.state, spot, { teryl: heliCalls === 2, height: (x, z) => ground.height(x, z) });
     t.state.heliTimer = 1;
@@ -867,13 +1090,18 @@ export function createSession(init) {
     while (time + STEP <= target) { step(input); steps++; }
     const boxes = [...dirty].map(boxPose);
     dirty.clear();
+    const messages = scriptMessages.splice(0);
     const poses = trucks.map((t) => ({ previous: t.previous, current: snapshot(t.state), sound: soundOf(t, ground), damage: damageOf(t), touch: takeTouch(t) }));
     return {
       previous: poses[0].previous, current: poses[0].current, alpha: (target - time) / STEP, time, steps, boxes,
       others: poses.slice(1).map((x) => x.current), poses, race: raceView(),
       // How far each top-crush car's cab is flattened: 0 intact, 1 as flat as it goes (its roof 0.25 ft over the body).
       crush: crushCars.map(crushShare),
+      // 4x4 Evolution trees knocked over since the last reply: `{ id, pos, dir, speed }`, game feet.
+      fallen: fallen.length ? (() => { const out = fallen; fallen = []; return out; })() : null,
       gold: { reversed: !!apCtx.reversed, apLevel: player.apLevel, slew: gold.slew, weather },
+      // The track script's Message() lines since the last reply (4x4 Evolution 2).
+      messages: messages.length ? messages : null,
     };
   }
 

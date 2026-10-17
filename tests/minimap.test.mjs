@@ -45,3 +45,10 @@ test("the map turns with the truck so that its heading is up", () => {
   const side = toMapFrame(0, 100, 0, 0, Math.PI / 2);
   near(side[0], -100); near(side[1], 0);
 });
+
+test("a Rumble's map takes a track build's checkpoint gates (position, full size) as well as simulation boxes", async () => {
+  const { boxCorners } = await import("../src/render/minimap.js");
+  const gate = { position: [100, 50, 200], size: [40, 10, 20], angles: [0, 0, 0] };
+  assert.deepEqual(boxCorners(gate), [[80, 190], [120, 190], [120, 210], [80, 210]]);
+  assert.deepEqual(boxCorners({ pos: [100, 50, 200], half: [20, 5, 10] }), boxCorners(gate));
+});

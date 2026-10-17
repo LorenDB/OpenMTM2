@@ -219,3 +219,19 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _origin = new THREE.Vector3();
 const _size = new THREE.Vector2();
+
+/**
+ * Whether the ground between a point and the horizon toward the sun hides the sun (scene frame in, game frame out).
+ * `heightAt(x, z)` is the ground's height in game feet at a point inside the world.
+ */
+export function sunBlocked(heightAt, origin, direction, wraps = true) {
+  // As far as the far corner of the world: a mountain across the map hides the sun too.
+  for (let t = 16; t < 12000; t += 16 + t * 0.02) {
+    const x = origin.x + direction.x * t, y = origin.y + direction.y * t, z = -(origin.z + direction.z * t);
+    // A level drawn once has nothing past its edges.
+    if (!wraps && (x < 0 || x >= 8192 || z < 0 || z >= 8192)) return false;
+    const wrap = (v) => ((v % 8192) + 8192) % 8192;
+    if (y < heightAt(wrap(x), wrap(z))) return true;
+  }
+  return false;
+}

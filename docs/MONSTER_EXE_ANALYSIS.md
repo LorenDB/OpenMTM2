@@ -487,7 +487,15 @@ Exactly (`0x41b330`, from the code):
   it loses 1 s and the score gains 10 in state 2 or loses 1 in state 0 (the doubles at
   `0x6078b8` and `0x6078c0` are 50 and 10). A score can go negative.
 - The sounds `buzzer3.wav` (knock-off), `buzz3.wav` (-1) and `shutter.wav` (+10) play for the
-  human driver only.
+  human driver only. The scoring code calls `0x42a090(truck, code)` with -2 for a knock-off, -1 for
+  each point lost off the summit and +1 for each +10. It plays only for the local player's truck
+  (`0xa2fd70`) with sound on (`0x63f4f0`, `0x657420` set, `0x6573ac` clear). One handle
+  (`0x671898`) holds the last scoring sound:
+  - -2: the previous scoring sound is stopped (`0x4641a0`), then `buzzer3.wav` plays at gain 1.4;
+  - -1: `buzz3.wav` at gain 1.5, skipped while the previous scoring sound still plays (`0x464450`);
+  - +1: `shutter.wav` at gain 1.25, skipped likewise.
+  The gain is stored at the voice's `+0x70` (`0x463dd0`, section 13). They are flat, not placed
+  in the world. There is no scoring or knock-off commentary.
 - The round: when the countdown ends, `0x6407ac` is set to `laps * 60` seconds (laps being the
   Rumble's minutes, default 5) and the race ends when it runs out. Every truck's course (the
   SIT's 12-segment arena path) is followed by the CPU autopilot as in a Circuit, with its target
@@ -1092,8 +1100,8 @@ CPU trucks and the player's autopilot use the same code.
 - **Professional takes course 2.** At the race start (outside a drag race) every truck is put on
   course 2 when the difficulty is Professional (`0x6407bc` = 2) and the SIT has a second course
   with segments (`0x71a6f4`), otherwise on course 1. Each course is `0x6d68` bytes from
-  `0x70cc28` (1-based), the truck's course index is `+0xfb4`, and `0x486630` re-picks the nearest
-  segment, on any course, when a truck strays more than 160 ft from its own.
+  `0x70cc28` (1-based), the truck's course index is `+0xfb4`, and `0x486630` re-picks a segment
+  on the truck's own course when it strays from its segment (MTM2_PHYSICS.md 14.24).
 - **The grid** (0x4195d0): the drivers take the SIT's start slots in order, then the positions
   and headings are shuffled among them by a random permutation, so the player starts in a
   random one of the first `drivers` slots.

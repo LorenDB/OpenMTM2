@@ -78,7 +78,9 @@ export function createRoadGround(base, road) {
         const t = triangleAt(x, z, limit);
         return t >= 0 && found >= base.height(x, z) ? t : -1;
     }
+    // A view asks the road ground (`outer`, which a host may give its rules) and then the base.
     const view = (limit) => ({
+        get rules() { return outer.rules ?? base.rules; },
         get waterLevelFt() { return base.waterLevelFt; },
         get weather() { return base.weather; },
         set weather(value) { base.weather = value; },
@@ -101,7 +103,7 @@ export function createRoadGround(base, road) {
             return t < 0 ? base.surface(x, y, z) : Number(road.surfaceValues[t] ?? 100);
         },
     });
-    return {
+    const outer = {
         below: view,
         get waterLevelFt() { return base.waterLevelFt; },
         get weather() { return base.weather; },
@@ -126,4 +128,5 @@ export function createRoadGround(base, road) {
             return t < 0 ? base.surface(x, y, z) : Number(road.surfaceValues[t] ?? 100);
         },
     };
+    return outer;
 }

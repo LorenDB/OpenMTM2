@@ -1,7 +1,9 @@
 /*
   Fly-by (not the game's): the selected track with no truck and no race on it, and a camera to fly
   through it (game/fly-camera.js). The track is drawn as the race draws it: its sky and weather, its
-  moving models, its music and ambience, the sun's shadows and flare in the enhanced look.
+  moving models, its music and ambience, and every picture setting the race has (the graphics preset, the port's
+  scenery, the sun's shadows and flare in the enhanced look, water reflections, anti-aliasing, V-sync and the frame
+  rate limit), on the app's one renderer.
 
   Three ways of flying (game/input/fly-controls.js): Traxx (JSTrackViewer's keys and mouse),
   Terminal Velocity and Hellbender. C goes round them, as do Options, Controls and the console's
@@ -21,14 +23,24 @@ import { soundRange } from "../../game/sound-model.js";
 import { WEATHER_NAMES, isUnderwater, resolveWeather, waterOffsetFt } from "../../game/weather.js";
 import { loadFont } from "../../render/bitmap-text.js";
 import { createCaption } from "../../render/caption.js";
-import { SunFlare } from "../../render/sun-flare.js";
+import { SunFlare, sunBlocked } from "../../render/sun-flare.js";
+import { applyGraphics } from "../../game/graphics.js";
+import { graphicsHardware } from "../../app/graphics-hardware.js";
+import { setLightsInFog } from "../../render/atmosphere.js";
+import { trackVisuals, visualSettings } from "../../game/visuals.js";
+import { createScenery } from "../../render/scenery.js";
+import { enableSunShadows } from "../../render/sun-shadows.js";
+import { createRelief } from "../../game/terrain-relief.js";
+import { createWaterMirror } from "../../render/water-mirror.js";
 import { createTrackWorld, disposeObject, moveObjects, skyColor, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createWaterSurface } from "../../render/water-effects.js";
 import { toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
 import { createWeatherScene } from "../../render/weather-scene.js";
 import { terrainOfBuild } from "../../shared/build-terrain.js";
+import { mtm2Sim } from "../../vendor/openphotex/index.js";
 import { CONSOLE_KEYS, createConsole, distanceCommand } from "../console.js";
 import { el } from "../dom.js";
+import { GRASS_RADII, grassLevel } from "../../render/evo-grass.js";
 
 const TERRAIN_CELL_FT = 32;
 /** Where the camera starts: this far behind the course's first point and this high above the ground, ft. */
@@ -39,7 +51,10 @@ export default async function mount(container, context, params) {
   const { track } = params;
   const t = context.t;
   const leave = () => context.router.go("race-select", { mode: track?.raceType }, { replace: true });
-  const canvas = el("canvas", { class: "race-canvas" });
+  // The app's one renderer and its canvas (render/xr/xr-host.js), as the race draws with.
+  const host = await context.xr.host();
+  const { renderer, canvas } = host;
+  canvas.className = "race-canvas";
   const loading = el("div", { class: "race-loading" }, el("p", { class: "race-loading-text" }, `Loading ${track.name}…`));
   const pauseMenu = el("div", { class: "race-pause", hidden: true });
   const caption = createCaption(await loadFont(context.assets, "FNT2_480"));
@@ -48,6 +63,8 @@ export default async function mount(container, context, params) {
 
   let disposed = false;
   const cleanups = [];
+  // The renderer is the app's: it is handed back, with the headset's rig taken out of the scene, whatever happens.
+  cleanups.push(() => host.release());
   const release = (f) => { try { f(); } catch (error) { console.error(error); } };
   const unmount = () => {
     if (disposed) return;
@@ -56,12 +73,18 @@ export default async function mount(container, context, params) {
   };
 
   let weatherId = resolveWeather(params.weather ?? context.settings.weather ?? 0, track.weatherMask);
-  const mtm1Options = { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap };
+  const mtm1Options = { sky: context.settings.mtm1EarthSky === true };
+  // As the race: Auto picks again for this machine, and the light in the fog is set before any material is made.
+  applyGraphics(context.settings, graphicsHardware());
+  setLightsInFog(visualSettings(context.settings).weather);
   let build;
   try {
     build = await context.assets.call("trackRender", {
+      evoForest: context.settings.evoForest !== false,
       path: track.path, scope: track.scope, detailLevel: context.settings.detailLevel, raceType: track.raceType,
-      truckFiles: [], weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap, smoothTiles: context.settings.look === "enhanced",
+      truckFiles: [], weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap ?? context.settings.terrainOverlap !== false, smoothTiles: context.settings.look === "enhanced",
+      visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
+      sunShadows: context.settings.look === "enhanced",
     });
   } catch (error) {
     console.error(error);
@@ -72,8 +95,6 @@ export default async function mount(container, context, params) {
   if (disposed) return { unmount };
 
   const look = context.settings.look === "enhanced" ? "enhanced" : "classic";
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   const scene = new THREE.Scene();
   let drawnCells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
   const drawDistance = drawnCells * TERRAIN_CELL_FT;
@@ -88,12 +109,16 @@ export default async function mount(container, context, params) {
   const sunTravel = sun.position.clone().negate();
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
   scene.add(sun, ambientLight);
+  // What "Natural light" changes of the world itself (docs/VISUALS.md, "Light"): it is the enhanced look's.
+  const naturalLight = look === "enhanced" && visualSettings(context.settings).light;
   const world = createTrackWorld(build, look, {
-    backdrops: !!context.settings.backdrops, drawDistance,
+    backdrops: !!context.settings.backdrops, drawDistance, naturalLight,
     terrainDetail: context.settings.terrainDetail !== false, reflections: context.settings.reflections !== false,
+    grass: GRASS_RADII[grassLevel(context.settings)],
   });
   scene.add(world);
-  cleanups.push(() => { disposeObject(scene); renderer.dispose(); });
+  // The headset rig leaves the scene before the scene is disposed of.
+  cleanups.push(() => { host.release(); disposeObject(scene); });
 
   // Sound: the world's ambience and music, heard from the camera.
   context.menuMusic?.stop();
@@ -116,23 +141,49 @@ export default async function mount(container, context, params) {
     context.menuMusic?.start();
   });
 
-  let flare = null;
+  let flare = null, shadows = null, flareBlocked = () => false;
   const effectsArt = await context.assets.call("effectsArt").catch(() => null);
+  const terrain = terrainOfBuild(build);
+  // With "Smooth terrain" the ground drawn is not quite the ground under it (game/terrain-relief.js).
+  const relief = build.relief ? createRelief({ heights: build.heights, ...build.relief }) : null;
+  // The port's own weather, ground and water, each where its switch is on (render/scenery.js; docs/VISUALS.md).
+  const scenery = createScenery({
+    scene, camera, world, sun, build, settings: context.settings, ground: relief ? relief.heightAt : groundHeightFn(terrain), relief,
+    ambient: ambientLight, renderer, look,
+  });
+  cleanups.push(() => scenery.dispose());
   const weatherScene = createWeatherScene({
     scene, camera, world, sun, ambient: ambientLight, skyAverage: background, look, drawDistance, backdrops: !!context.settings.backdrops,
-    art: effectsArt, onLightning: () => worldAudio.thunder(),
+    art: effectsArt, onSun: (_, shadow) => shadows?.follow(sun, shadow), onLightning: () => worldAudio.thunder(),
+    volume: scenery.volume, groundSurface: scenery.groundSurface, lightRig: scenery.lightRig,
+    groundDetail: scenery.groundDetail, dressGround: scenery.dressGround, gloss: scenery.gloss, water: scenery.water, richLamps: visualSettings(context.settings).lamps,
   });
-  // The water as the race draws it: its animated surface, rising and falling with the weather.
-  const water = world.getObjectByName("water");
-  const waterSurface = createWaterSurface(water, effectsArt, look);
-  cleanups.push(() => waterSurface?.dispose());
-  let waterClock = 0;
+  // The water as the race draws it: the port's own surface or the game's frames, rising and falling with the weather.
+  const waters = [];
+  world.traverse((object) => { if (object.name === "water") waters.push(object); });
+  const water = waters[0] ?? null;
+  const waterSurface = scenery.water ?? createWaterSurface(waters, effectsArt, look);
+  if (!scenery.water) cleanups.push(() => waterSurface?.dispose());
+  let waterClock = 0, waterLevelNow = build.waterLevelFt ?? null;
+  // MTM2's water reflections (Options, Advanced), on the game's own water, as in the race.
+  const waterMirror = context.settings.waterReflections && !scenery.water && waterSurface?.material && waters.length
+    ? createWaterMirror({ renderer, scene, levelAt: () => (weatherScene.weather === 5 ? null : waterLevelNow), hide: () => waters }) : null;
+  if (waterMirror) { waterMirror.dress(waterSurface.material); cleanups.push(() => waterMirror.dispose()); }
   weatherScene.set(weatherId);
   cleanups.push(() => weatherScene.dispose());
   const celestial = (weather) => (weather <= 1 ? "sun" : weather === 7 ? "moon" : "none");
+  // The enhanced look: the sun's shadows, and the sun, moon and lens flare, hidden behind the hills as in the race.
   if (look === "enhanced") {
+    shadows = enableSunShadows({ renderer, scene, camera, world, sun, trucks: [], natural: !!scenery.lightRig });
+    shadows.follow(sun, scenery.lightRig?.rig?.shadow ?? 1);
+    cleanups.push(() => shadows?.dispose?.());
     const data = await context.assets.call("flare").catch(() => null);
-    if (data) { flare = new SunFlare(world, data); flare.setMode(celestial(weatherId)); cleanups.push(() => flare.dispose()); }
+    if (data) {
+      flare = new SunFlare(world, data);
+      flare.setMode(celestial(weatherId));
+      flareBlocked = (origin, direction) => sunBlocked((x, z) => mtm2Sim.groundHeightAt(terrain, x, z), origin, direction, true);
+      cleanups.push(() => flare.dispose());
+    }
   }
   const setWeather = async (next) => {
     weatherId = next;
@@ -144,7 +195,6 @@ export default async function mount(container, context, params) {
   };
 
   // The camera starts behind the course's first point, looking along it; without a course, at the middle of the world.
-  const terrain = terrainOfBuild(build);
   const groundAt = groundHeightFn(terrain);
   // The level's moving objects (trains): no simulation runs here, so the fly-by steps them (game/level-movers.js).
   const movers = createLevelMovers(build.sim, terrain);
@@ -158,6 +208,8 @@ export default async function mount(container, context, params) {
   const flyer = createFlyController({
     canvas, settings: context.settings, save: () => saveSettings(context.settings), course: build.sim.course, courseOpen: !!build.sim.courseOpen,
     groundAt, say, blocked: () => paused || !!gameConsole?.open, baseFov: BASE_FOV,
+    // The list of keys in the game's font, as the race's rows are.
+    font: await loadFont(context.assets, "FNT1_480"),
   });
   const fly = flyer.fly;
   const startAt = [first[0] - Math.sin(yaw) * START_BACK_FT, 0, first[2] - Math.cos(yaw) * START_BACK_FT];
@@ -197,7 +249,10 @@ export default async function mount(container, context, params) {
 
   const resize = () => {
     const { clientWidth: w, clientHeight: h } = canvas;
+    // A headset sizes its own pictures; the canvas is left alone while it is drawn to.
+    if (host.presenting) return;
     renderer.setSize(w, h, false);
+    scenery.setSize(canvas.width, canvas.height);
     camera.aspect = w / Math.max(1, h);
     camera.updateProjectionMatrix();
   };
@@ -310,10 +365,11 @@ export default async function mount(container, context, params) {
   say(`${t("Fly-by")}: ${FLY_SCHEME_NAMES[flyer.scheme]}. ${FLY_HELP[flyer.scheme]}. O: keys`, 6);
 
   const target = new THREE.Vector3(), forwardVector = new THREE.Vector3();
-  let frame = 0, last = performance.now();
-  const loop = (now) => {
-    frame = requestAnimationFrame(loop);
-    const dt = Math.min(0.1, (now - last) / 1000);
+  let last = performance.now();
+  /** One frame from the app's renderer (V-sync as Options has it); the frame rate limit leaves out frames that come too soon. */
+  const loop = (_dt, now) => {
+    if (context.settings.fpsLimit && now - last < 1000 / Math.max(10, context.settings.fpsLimitValue ?? 60) - 1) return;
+    const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
     last = now;
     const cells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
     if (cells !== drawnCells) {
@@ -336,24 +392,35 @@ export default async function mount(container, context, params) {
       }
       // The level's own sounds are placed in the one world, wherever the camera has flown to.
       worldAudio.update(dt, [wrapFt(fly.pos[0]), fly.pos[1], wrapFt(fly.pos[2])], movedPositions);
-      weatherScene.update(dt, []);
       waterClock += dt;
-      if (water) water.position.y = waterOffsetFt(waterClock, weatherScene.weather);
-      waterSurface?.update(dt, weatherScene.weather);
+      const bob = waterOffsetFt(waterClock, weatherScene.weather);
+      for (const plane of waters) plane.position.y = bob;
+      waterLevelNow = water ? water.userData.levelFt + bob : null;
+      weatherScene.update(dt, [], { floorFt: waterLevelNow, viewHeight: canvas.height });
     }
-    weatherScene.setUnderwater(isUnderwater(camera.position.y, water ? water.userData.levelFt + water.position.y : null, weatherScene.weather));
+    const under = isUnderwater(camera.position.y, water ? water.userData.levelFt + water.position.y : null, weatherScene.weather);
+    weatherScene.setUnderwater(under);
+    // How far under the eye is, for the lens: it comes on over the first half foot (docs/VISUALS.md, "Under water").
+    scenery.underwater(under && water ? (water.userData.levelFt + water.position.y - camera.position.y) / 0.5 : 0);
     // The sky goes with the camera, up and down too: however high it flies, the dome is never reached.
     const sky = world.getObjectByName("sky");
     // A sky fixed in the world (a Terminal Velocity or Hellbender level's ceiling) stays where it is: it can be reached.
     if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
+    // After the sky is placed: the port's water shows it.
+    waterSurface?.update(paused ? 0 : dt, weatherScene.weather, { sun, light: weatherScene.lightLevel(), sky, fog: scene.fog, background, levelFt: water ? water.userData.levelFt + water.position.y : null });
     updateTrackWorld(world, camera, paused ? 0 : dt);
-    flare?.update(camera, sunTravel, true, weatherScene.weather <= 1, () => false);
-    renderer.render(scene, camera);
+    if (shadows) {
+      shadows.setupMaterials();
+      shadows.invalidateDynamic();
+      shadows.update();
+    }
+    flare?.update(camera, sunTravel, true, weatherScene.weather <= 1 && context.settings.sunFlare !== false, flareBlocked);
+    waterMirror?.render(camera);
+    scenery.draw(camera);
     flare?.render(renderer, camera);
     caption.update(dt);
   };
-  frame = requestAnimationFrame(loop);
-  cleanups.push(() => cancelAnimationFrame(frame));
+  host.start(scene, loop);
 
   window.__openmtm2Fly = { scene, camera, renderer, fly, build };
   cleanups.push(() => { delete window.__openmtm2Fly; });

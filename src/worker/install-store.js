@@ -105,10 +105,11 @@ export async function copyInstall({ files, podIni, exeVersion = null, weatherArt
 /**
  * Reload POD.INI from the player's folder, picked again: archives it no longer lists are removed,
  * new or changed ones (by size or modification time) are copied, the rest stay as they are, and
- * the mount order becomes the new file's. Returns the manifest with `added`, `removed` and `kept`
- * archive names.
+ * the mount order becomes the new file's. `force` copies every archive again, whatever its size and
+ * date (Reload POD.INI: a POD rebuilt with the same name, size and date is still read afresh).
+ * Returns the manifest with `added`, `removed` and `kept` archive names.
  */
-export async function syncInstall({ files, podIni, exeVersion = null, weatherArt = [] }, onProgress) {
+export async function syncInstall({ files, podIni, exeVersion = null, weatherArt = [], force = false }, onProgress) {
   const old = await readManifest();
   const before = new Map((old?.archives ?? []).map((a) => [a.name, a]));
   const wanted = new Set(files.map((f) => f.name));
@@ -116,7 +117,7 @@ export async function syncInstall({ files, podIni, exeVersion = null, weatherArt
     const had = before.get(name);
     return !!had && had.size === file.size && had.modified != null && had.modified === (file.lastModified ?? null);
   };
-  const changed = files.filter((f) => !same(f));
+  const changed = force ? files : files.filter((f) => !same(f));
   const removed = [...before.keys()].filter((name) => !wanted.has(name));
   // No manifest while the copy runs: an interrupted reload reads as no install, not as a broken one.
   await removePath(MANIFEST);
@@ -139,7 +140,7 @@ export async function syncInstall({ files, podIni, exeVersion = null, weatherArt
     installedAt: new Date().toISOString(),
   };
   await writeBytesToFile(MANIFEST, new TextEncoder().encode(JSON.stringify(manifest, null, 2)));
-  return { ...manifest, added: changed.map((f) => f.name), removed, kept: files.filter(same).map((f) => f.name) };
+  return { ...manifest, added: changed.map((f) => f.name), removed, kept: force ? [] : files.filter(same).map((f) => f.name) };
 }
 
 export async function copyFile(file, path, onChunk) {

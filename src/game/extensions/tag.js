@@ -31,6 +31,7 @@ export const TAG_EXTENSION = Object.freeze({
   ]),
   acceptsTrack: () => true,
   trackLocked: false,
+  minEntrants: 2,
   weather: null,
   detailLevel: null,
 });

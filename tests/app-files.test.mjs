@@ -120,8 +120,8 @@ test("the walk stops at the first file that cannot be had", async () => {
   await assert.rejects(crawl(root, async () => { throw new Error("no page"); }), /no page/);
 });
 
-/** Every file under a folder of the repository, as paths from the repository's root. */
-const filesUnder = (dir) => readdirSync(join(REPO, dir), { withFileTypes: true })
+/** Every file under a folder of the repository, as paths from the repository's root (the Finder's .DS_Store left out). */
+const filesUnder = (dir) => readdirSync(join(REPO, dir), { withFileTypes: true }).filter((entry) => entry.name !== ".DS_Store")
   .flatMap((entry) => (entry.isDirectory() ? filesUnder(`${dir}/${entry.name}`) : [`${dir}/${entry.name}`]));
 
 test("the app itself: the walk from index.html reaches every script and stylesheet it has", async () => {

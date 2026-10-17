@@ -10,6 +10,7 @@ import { toSceneMatrix, nearestCopy } from "../shared/scene-frame.js";
 import { mtm2Sim } from "../vendor/openphotex/index.js";
 import { smoothNormals } from "../shared/smooth-normals.js";
 import { BAR_HALF_WIDTH_FT, SHOCK_HALF_WIDTH_FT, ribbonCorners, ribbonNormal, suspensionParts } from "../game/suspension.js";
+import { EVO_BAR_HALF_FT, EVO_SHOCK_HALF_FT, evoSuspensionParts, stripCorners } from "../game/evo-suspension.js";
 import { BRAKE_ON, beamShows, blinkOn, lampHeading, lampLevel, lampTone, lensGlow, lightIntensity, throwsBeam } from "../game/truck-lights.js";
 import { createModelLibrary, dataTexture } from "./track-scene.js";
 import { BEAM_AXIS, BEAM_INTENSITY, SHAFT_INTENSITY, aimShaft, beamGeometry, beamMaterial, shaftGeometry, shaftMaterial } from "./light-beam.js";
@@ -37,7 +38,7 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
   const bodyGroup = meshesOf(library, truck.parts.body);
   // How strongly each part shines with "Glossy paint" (render/gloss.js): the body's paint in full.
   bodyGroup.userData.gloss = GLOSS.body;
-  // The body, which "Truck reflections" draws again (render/truck-reflection.js).
+  // The body, which "MTM2 Truck reflections" draws again (render/truck-reflection.js).
   bodyGroup.userData.body = true;
   root.add(bodyGroup);
   // The body's vertices are copied so that damage can move them (and repair put them back).
@@ -67,8 +68,9 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
     root.add(pivot);
     return { pivot, spin, hub };
   });
-  const axles = [0, 2].map(() => {
-    const g = meshesOf(library, truck.parts.axle);
+  // An Evolution truck's own axle models, front and rear (game/evo-suspension.js), else MTM's one axle model for both.
+  const axles = [0, 2].map((_, k) => {
+    const g = meshesOf(library, (k === 0 ? truck.parts.axleFront : truck.parts.axleRear) ?? truck.parts.axle);
     g.userData.gloss = GLOSS.gear;
     root.add(g);
     return g;
@@ -77,6 +79,8 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
   // The suspension parts between the axles and the body: bars and shocks are ribbons that face the
   // viewer, the driveshafts are a model stretched between the transfer case and each axle (game/suspension.js).
   const suspension = truck.suspension;
+  // 4x4 Evolution 2's bars and shocks: flat strips, not ribbons that face the viewer.
+  const evoSuspension = !suspension ? truck.evoSuspension ?? null : null;
   const ribbons = (name, count, half) => {
     const data = truck.textures[name];
     const geometry = new THREE.BufferGeometry();
@@ -92,8 +96,8 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
     root.add(mesh);
     return { mesh, half, count };
   };
-  const bars = suspension ? ribbons(suspension.barTexture, 4, BAR_HALF_WIDTH_FT) : null;
-  const shocks = suspension ? ribbons(suspension.shockTexture, 8, SHOCK_HALF_WIDTH_FT) : null;
+  const bars = suspension ? ribbons(suspension.barTexture, 4, BAR_HALF_WIDTH_FT) : evoSuspension ? ribbons(evoSuspension.barTexture, 4, EVO_BAR_HALF_FT) : null;
+  const shocks = suspension ? ribbons(suspension.shockTexture, 8, SHOCK_HALF_WIDTH_FT) : evoSuspension ? ribbons(evoSuspension.shockTexture, 8, EVO_SHOCK_HALF_FT) : null;
   const shafts = suspension && truck.parts.driveshaft ? [0, 1].map(() => { const g = meshesOf(library, truck.parts.driveshaft); root.add(g); return g; }) : [];
   const eye = new THREE.Vector3(), up = new THREE.Vector3(), forward = new THREE.Vector3(0, 0, 1);
   // `update` moves the root once a frame, and sparks then ask where a dozen hull points are. Each ask used to
@@ -264,17 +268,17 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
         braking: (pose.brakeRear ?? 0) > BRAKE_ON, reverse: pose.gear === 2,
         air: env.air ?? (env.night ? 1 : 0), daylight: env.daylight ?? (env.night ? 0.25 : 1),
       }, env.clockMs ?? 0, viewerLocal, camera?.position ?? null);
-      if (!suspension) return;
-      const parts = suspensionParts({
-        axles: [0, 1].map((k) => ({ z: tires[k * 2].hub[2], travel: pose.axles[k].travel, articulation: pose.axles[k].articulation })),
-        axlebar: suspension.axlebar, driveshaft: suspension.driveshaft,
-      });
+      if (!suspension && !evoSuspension) return;
+      const axleNow = [0, 1].map((k) => ({ z: tires[k * 2].hub[2], travel: pose.axles[k].travel, articulation: pose.axles[k].articulation }));
+      const parts = suspension
+        ? suspensionParts({ axles: axleNow, axlebar: suspension.axlebar, driveshaft: suspension.driveshaft })
+        : { ...evoSuspensionParts({ axles: axleNow, ...evoSuspension }), shafts: [] };
       // The viewer in the body's own game axes (the scene's z is mirrored).
       const viewer = viewerLocal;
-      for (const { mesh, half, count, list } of [{ ...bars, list: parts.bars }, { ...shocks, list: parts.shocks }]) {
+      for (const { mesh, half, list, plane } of [{ ...bars, list: parts.bars, plane: "xy" }, { ...shocks, list: parts.shocks, plane: "xz" }]) {
         const array = mesh.geometry.getAttribute("position").array, normals = mesh.geometry.getAttribute("normal").array;
         list.forEach(([a, b], q) => {
-          ribbonCorners(a, b, half, viewer).forEach((c, k) => array.set([c[0], c[1], -c[2]], (q * 4 + k) * 3));
+          (suspension ? ribbonCorners(a, b, half, viewer) : stripCorners(a, b, half, plane)).forEach((c, k) => array.set([c[0], c[1], -c[2]], (q * 4 + k) * 3));
           const n = ribbonNormal(a, b, viewer);
           for (let k = 0; k < 4; k++) normals.set([n[0], n[1], -n[2]], (q * 4 + k) * 3);
         });

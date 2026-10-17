@@ -32,7 +32,8 @@ test("profiles: stored data is repaired, the garage kept in range, races counted
   const p = normalizeProfiles({ current: 9, drivers: [{ name: "Bo", garage: { suspension: 7, transferSetting: 1234, tireCut: 2 }, races: 3.9, wins: -1 }, { name: "" }] });
   assert.equal(p.drivers.length, 1);
   assert.equal(p.current, 0);
-  assert.deepEqual(p.drivers[0].garage, { suspension: 0, transferSetting: 1200, tireCut: 2 });
+  // Out of range, the suspension takes a new driver's, Medium.
+  assert.deepEqual(p.drivers[0].garage, { suspension: 1, transferSetting: 1200, tireCut: 2 });
   assert.equal(p.drivers[0].races, 3);
   assert.equal(p.drivers[0].wins, 0);
   recordRace(p.drivers[0], 1);

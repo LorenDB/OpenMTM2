@@ -17,9 +17,19 @@
   Evo's world is MTM2's: 256 cells of 32 ft, x, height, z, the same headings. A placement's
   `wOrient` is (pitch, roll, heading), which is the game's theta, phi, psi.
 
+  What 4x4 Evolution 2 does (docs/EVO2_EXE_ANALYSIS.md):
+    - Each texture's surface is the first number of its .TEX record (MTM2's type * 100 + depth),
+      and water lies under the level's water height (4.1, 4.2).
+    - Trees stand in 512 ft sectors; a tree's model slot is its index in its sector & 3, its yaw
+      its byte * pi / 128, and its model's base is drawn at its stored height + treeBiasY (2.2).
+      A level without a .VEG gets trees generated from each texture's vegetation class (2.3).
+    - The .RTD shade map darkens the terrain to 0.35 and the .SDW swaps a cell's tile for its
+      pre-shadowed copy from the .TEX shadow group, under a sun (3.1, 3.2).
+    - Grass is drawn per cell from a fixed pattern by the texture's vegetation class (2.4):
+      `grass` hands the renderer what it needs.
+
   What the port decides, since Evo's own rules are not known here:
-    - MTM2 trucks race, eight at most, with MTM2's physics. The ground is Dirt everywhere and
-      water under the level's water height.
+    - Eight trucks at most race; the physics is the one the race picks (Options, Game).
     - Objects collide as the SIT says (`collisionOf`): rocks are driven on by their own
       surface, authored collision boxes are decks or obstacles, the rest are upright boxes
       around their models, trees their trunks alone. A boxed object the course runs through
@@ -27,18 +37,28 @@
     - A gate is at least GATE_MIN wide and tall, and is turned to face the way the course runs.
     - The sky and the weathers are MTM2's. The world wraps at its edges, as MTM2's does.
 
-  Not drawn yet: the `.SDW` shadow overlay, the small vegetation, the `.WAT` water animation.
+    - A generated forest takes the level's own tree models (Evo's default deftree.smf ships in no
+      install), the game's default sizes and spacing, and a seed from the track's name.
+    - Shade and shadow tiles are drawn in Clear, Cloudy and Dusk weather (Evo's weather numbers
+      for its own test are not all identified), and only where the port draws no sun shadows of
+      its own (the enhanced look's would shade the same ground twice).
+    - A truck that meets a tree knocks it over (2.5) and goes on: the game's effect on the truck and the fall's motion
+      are not traced, so the tree simply topples away from the truck (render side) and stops counting.
+
+  Not drawn yet: the `.WAT` water animation.
 */
 import {
-  decodeActPalette, decodeRawTexture, lapRuns, matchEvoAiLineName, mtm2Sim, parseEvoAiLine, parseEvoLvl, parseEvoSit, parseEvoTex,
-  parseEvoVeg, podPathTitle, rawTextureSide,
+  EVO_SDW_NONE, EVO_SHADE_LIGHT, decodeActPalette, decodeRawTexture, evoGenerateTrees, evoSim, evoGrassPattern, evoShadeAt, evoTreeSlot, evoTreeYaw,
+  lapRuns, matchEvoAiLineName, mtm2Sim, parseEvoAiLine, parseEvoLvl, parseEvoRtd, parseEvoSdw, parseEvoScript, parseEvoSit, parseEvoTex, parseEvoVeg,
+  podPathTitle, rawTextureSide,
 } from "../vendor/openphotex/index.js";
 import { weatherSkyStem } from "../game/weather.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { alongCourse } from "./cpr-road.js";
 import { decodeSmfModel, loadEvoModelTextures, loadEvoTexture } from "./evo-models.js";
 import { createPaletteResolver } from "./palette-resolver.js";
-import { buildTerrainAtlas, buildTerrainMesh } from "./terrain-mesh.js";
+import { loadHdSky } from "./weather-art.js";
+import { buildFineTerrainMesh, buildTerrainAtlas, buildTerrainMesh } from "./terrain-mesh.js";
 import { loadRaceVehicles } from "./track-build.js";
 import { buildTruckRender } from "./truck-build.js";
 
@@ -64,12 +84,22 @@ const COURSE_SAMPLE_FT = 8;
 const stemOf = (name) => podPathTitle(name).toUpperCase().replace(/\.[^.]*$/, "");
 const isCheckpoint = (box) => box.sourceClass === "CCheckpoint" || box.boxType === CHECKPOINT_TYPE;
 const isFacing = (box) => box.sourceClass === "CNonCollideFacing" || box.boxType === 8;
-/** Rocks and wood, as surface values. */
-const ROCKS = 1200, WOOD = 1100;
-/** An authored collision box no higher than this is a surface to drive on; a higher one an obstacle. */
-const DECK_MAX_HEIGHT_FT = 6;
+/** Rocks, as a surface value. */
+const ROCKS = 1200;
 /** The trunk box of an Evo 1 tree, whose own box sizes are not read: its height. */
 const TRUNK_HEIGHT_FT = 20;
+/** Weathers with a sun, where the shade map and the shadow tiles show (OpenPhotex WEATHER: Clear, Cloudy, Dusk). */
+const SUNNY = new Set([0, 1, 6]);
+/** The .VEG the game assumes when a level has none (0x673538 and following). */
+const DEFAULT_VEG = Object.freeze({
+  maxTrees: 20000, treeLine: 1000, minDistanceSquared: { sparse: 10000, medium: 1600, dense: 400 },
+  treeSizes: [0, 1, 2, 3].map(() => ({ sizeX: 80, sizeY: 128, biasY: -28 })),
+  vegSizes: [0, 1, 2, 3].map(() => ({ min: 2, max: 4, bias: 0 })),
+});
+/** Tree models of 4x4 Evolution 2 a generated forest may borrow when a level has none of its own. */
+const EVO2_TREE_MODELS = ["PINE80.SMF", "PINE100.SMF"];
+/** A stable seed from a track's name. */
+const seedOf = (name) => [...name].reduce((h, ch) => (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0, 7);
 
 /**
  * How an object collides, from what the SIT says of it:
@@ -94,6 +124,22 @@ function collisionOf(box, hasModel) {
 }
 const isTree = (name) => /TREE|PINE|PALM|JUNGLE|BUSH|SHRUB|PLANT/i.test(name ?? "");
 
+/** Faces steeper than this from level (its normal's upward part under cos 50 degrees) are walls. */
+const WALL_NORMAL_Y = Math.cos((50 * Math.PI) / 180);
+/**
+ * A steep triangle (world points `w`, game feet) as a wall face for the simulation (OpenPhotex `createFace`): its
+ * corners and the way out of it (`out`, from the model's own normals), or null for a face that is not steep or too
+ * small. The simulation meets the triangle itself: nothing of it reaches past its edges.
+ */
+function steepFace(w, out) {
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const n = cross(sub(w[1], w[0]), sub(w[2], w[0]));
+  const area = Math.hypot(...n);
+  if (!(area > 0.25) || Math.abs(n[1] / area) >= WALL_NORMAL_Y) return null;
+  return [...w[0], ...w[1], ...w[2], ...out];
+}
+
 /** One of the level's 256 x 256 16-bit grids, from DATA\, or null. */
 async function readGrid(vfs, name, stem, extension) {
   const bytes = (name ? await vfs.read(`DATA\\${podPathTitle(name)}`) : null) ?? (await vfs.read(`DATA\\${stem}${extension}`));
@@ -110,11 +156,16 @@ async function loadEvoLevel(vfs, sitPath, sitBytes) {
   return { title, stem, sit, lvl: parseEvoLvl(lvlBytes, lvlName) };
 }
 
-/** MTM2's sky for the weather, as on its own old levels (its 16 colours sit at 192 to 207 of its palette, drawn from 230 on). */
-async function loadEvoSky(vfs, lvl, weather) {
+/**
+ * MTM2's sky for the weather, as on its own old levels (its 16 colours sit at 192 to 207 of its palette, drawn from 230 on).
+ * With "CP3 HD weather" (`hdWeather`) the HD sky art first, as on an MTM2 track (worker/weather-art.js `loadHdSky`).
+ */
+async function loadEvoSky(vfs, lvl, weather, { hdWeather = false } = {}) {
   const stem = weatherSkyStem(weather, MTM_SKY);
   if (stem) {
     const mtm = vfs.scoped?.("MTM") ?? vfs;
+    const hd = await loadHdSky(mtm, stem, weather, { on: hdWeather });
+    if (hd) return hd;
     const raw = await mtm.read(`ART\\${stem}.RAW`), act = await mtm.read(`ART\\${stem}.ACT`);
     const colours = act && decodeActPalette(act);
     if (raw && colours && rawTextureSide(raw.length)) {
@@ -128,9 +179,9 @@ async function loadEvoSky(vfs, lvl, weather) {
   return own ? { name: stemOf(lvl.skyName), width: own.width, height: own.height, rgba: own.rgba } : null;
 }
 
-export async function buildEvoSky(vfs, sitPath, sitBytes, weather) {
+export async function buildEvoSky(vfs, sitPath, sitBytes, weather, { hdWeather = false } = {}) {
   const { lvl } = await loadEvoLevel(vfs, sitPath, sitBytes);
-  return loadEvoSky(vfs, lvl, weather);
+  return loadEvoSky(vfs, lvl, weather, { hdWeather });
 }
 
 /** The recorded laps of a track, each distinct one once (OpenPhotex `parseEvoAiLine`). */
@@ -160,7 +211,7 @@ function scaled(matrix, sx, sy, sz) {
  * @param {string} sitPath
  * @param {Uint8Array} sitBytes
  */
-export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles = [], weather = 0, tileOverlap = true } = {}) {
+export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles = [], weather = 0, hdWeather = false, tileOverlap = true, forest = true, sunShadows = false, smoothTerrain = false } = {}) {
   const { title, stem, sit, lvl } = await loadEvoLevel(vfs, sitPath, sitBytes);
   const game = `EVO${sit.game}`;
   const mtm = vfs.scoped?.("MTM") ?? vfs;
@@ -169,7 +220,8 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
   // Terrain.
   const rawHeights = await readGrid(vfs, lvl.heightName, stem, ".RAW");
   if (!rawHeights) throw new Error(`${lvl.heightName || `${stem}.RAW`}: not a 256 x 256 heightfield.`);
-  const heightsFt = Float32Array.from({ length: GRID * GRID }, (_, i) => (rawHeights[i * 2] | (rawHeights[i * 2 + 1] << 8)) / HEIGHT_DIVISOR);
+  const rawCorners = Uint16Array.from({ length: GRID * GRID }, (_, i) => rawHeights[i * 2] | (rawHeights[i * 2 + 1] << 8));
+  const heightsFt = Float32Array.from(rawCorners, (v) => v / HEIGHT_DIVISOR);
   const clrBytes = await readGrid(vfs, lvl.clrName, stem, ".CLR");
   const clr = new Uint16Array(GRID * GRID);
   if (clrBytes) for (let i = 0; i < clr.length; i++) clr[i] = clrBytes[i * 2] | (clrBytes[i * 2 + 1] << 8);
@@ -181,18 +233,68 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     if (!image) missing.add(`ART\\${podPathTitle(record.name)}`);
     tiles.push(image);
   }
+  // Under a sun, the .SDW swaps a cell's tile for its copy with the shadow painted in (the .TEX shadow group, whose
+  // indices run on from the ordinary group's); the simulation keeps the .CLR's surfaces.
+  const sunny = SUNNY.has(weather);
+  // Where the port draws the sun's shadows (`sunShadows`, the enhanced look), the painted ones would shade the ground a
+  // second time under them: the shadow tiles and the shade map are left off, as MTM2's .LTE is in that look.
+  const painted = sunny && !sunShadows;
+  const sdwBytes = painted && tex.shadow?.length ? await vfs.read(`DATA\\${stem}.SDW`) : null;
+  const sdw = sdwBytes ? parseEvoSdw(sdwBytes) : null;
+  let drawnClr = clr;
+  // What ground each drawn tile is, for the ground's grain and dust (render/scenery.js): a shadow tile is the ground of the
+  // tile it stands in for (the shadow group's own surface numbers are not reliable: 0 or one value for all).
+  const surfaceOf = (slot) => tex.ordinary[slot]?.surfaceValue ?? tex.ordinary[slot]?.param0 ?? DIRT;
+  let slotValues = null;
+  if (sdw) {
+    for (const record of tex.shadow) tiles.push(await loadEvoTexture(vfs, record.name));
+    drawnClr = clr.slice();
+    slotValues = Int32Array.from(tiles, (_, slot) => (slot < tex.ordinary.length ? surfaceOf(slot) : DIRT));
+    const valued = new Uint8Array(tiles.length);
+    for (let i = 0; i < drawnClr.length; i++) {
+      const word = sdw[i];
+      if (word === EVO_SDW_NONE || word >= tiles.length || !tiles[word]) continue;
+      // The cell keeps its turn and mirror (bits 12-15).
+      drawnClr[i] = (clr[i] & 0xf000) | word;
+      if (!valued[word]) { valued[word] = 1; slotValues[word] = surfaceOf(clr[i] & 0xfff); }
+    }
+  }
   const atlas = buildTerrainAtlas(tiles);
   // The tiles overlap by two pixels at each edge, as MTM2's do.
-  const mesh = buildTerrainMesh({ heights: null, heightsFt, clr, lte: null, atlas, tileInset: tileOverlap === false ? 0 : 2 });
+  // 4x4 Evolution 2 at its high detail smooths the ground into a 4 x 4 grid a cell, and drives on it too
+  // (docs/EVO2_EXE_ANALYSIS.md 5a): with "Smooth terrain" the port does both.
+  const fineFt = smoothTerrain && sit.game === 2 ? Float32Array.from(evoSim.evoSmoothHeights(rawCorners), (v) => v / HEIGHT_DIVISOR) : null;
+  const tileInset = tileOverlap === false ? 0 : 2;
+  const mesh = fineFt
+    ? buildFineTerrainMesh({ fineFt, sub: evoSim.EVO_SUB, clr: drawnClr, atlas, tileInset })
+    : buildTerrainMesh({ heights: null, heightsFt, clr: drawnClr, lte: null, atlas, tileInset });
   // A zero-opacity water colour declares a height but draws no water.
   const waterLevelFt = lvl.water && lvl.water.color?.[3] > 0 && lvl.water.height > 0 ? lvl.water.height / WATER_DIVISOR : null;
-  const terrain = mtm2Sim.createTerrainFt(heightsFt, waterLevelFt);
+  const terrain = mtm2Sim.createTerrainFt(heightsFt, waterLevelFt, fineFt);
   const groundAt = (x, z) => mtm2Sim.terrainHeightAt(terrain, x, z);
+  // The shade map (.RTD): under a sun, a vertex in shade takes 0.35 of the light; under water the light fades to nothing
+  // over 50 ft (0x46c030). The mesh's vertices are in scene feet with z mirrored (shared/scene-frame.js).
+  const rtdBytes = painted ? await vfs.read(`DATA\\${stem}.RTD`) : null;
+  const rtd = rtdBytes ? parseEvoRtd(rtdBytes) : null;
+  let shaded = false;
+  if (rtd || waterLevelFt !== null) {
+    const { positions, shade } = mesh;
+    for (let v = 0; v < shade.length; v++) {
+      const x = positions[v * 3], y = positions[v * 3 + 1], z = -positions[v * 3 + 2];
+      let light = rtd && evoShadeAt(rtd, x, z) ? EVO_SHADE_LIGHT : 1;
+      if (waterLevelFt !== null && y < waterLevelFt) light *= 1 - Math.min(50, waterLevelFt - y) / 50;
+      if (light !== 1) shaded = true;
+      shade[v] = light;
+    }
+  }
 
-  // Vegetation (Evo 2).
+  // Vegetation: the level's .VEG, or the game's defaults with a generated forest (2.3).
   const vegBytes = await vfs.read(`DATA\\${stem}.VEG`);
   let veg = null;
   try { veg = vegBytes ? parseEvoVeg(vegBytes, `${stem}.VEG`) : null; } catch { veg = null; }
+  const vegClassOfCell = new Uint8Array(GRID * GRID);
+  for (let i = 0; i < vegClassOfCell.length; i++) vegClassOfCell[i] = tex.ordinary[clr[i] & 0xfff]?.vegClass ?? 0;
+  const cellOf = (x, z) => ((Math.floor(z / 32) & 255) << 8) | (Math.floor(x / 32) & 255);
 
   // Models, once each.
   const models = {};
@@ -207,12 +309,28 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
   };
   for (const box of sit.boxes) if (box.modelName) await loadModel(box.modelName);
   for (const name of veg?.treeModels ?? []) if (name) await loadModel(name);
+  // A level without a .VEG: its own tree models (Evo 1's trees are SIT objects), else Evo 2's pines when installed.
+  let forestModels = [];
+  if (!veg) {
+    forestModels = [...new Set(sit.boxes.map((b) => (b.modelName ? modelFile(b.modelName) : "")).filter((f) => isTree(f) && models[f]?.meshes.length))];
+    if (!forestModels.length) {
+      for (const name of EVO2_TREE_MODELS) if ((await loadModel(name))?.meshes.length) forestModels.push(name);
+    }
+  }
+  // AI life's bird (game/evo-life.js): LIFE.POD's, on a level of either game where it is installed.
+  const birdModel = (await vfs.read("MODELS\\BIRD.SMF")) ? await loadModel("BIRD.SMF") : null;
   for (const file of Object.keys(models)) if (!models[file]?.meshes.length) delete models[file];
   const modelTextures = await loadEvoModelTextures(vfs, models, missing);
 
   // The course: the first one, cut to the lap by the recorded laps.
   const aiLines = await loadAiLines(vfs, stem);
   const runs = lapRuns(sit.courses[0]?.segments ?? [], aiLines);
+  // AI life (game/evo-life.js): the flocks follow the computer drivers' line (the game's AI path), and start at a checkpoint
+  // without one; the game has none on a level of fewer than 3 checkpoints.
+  const checkpointPositions = sit.boxes.filter((b) => isCheckpoint(b) && b.position).map((b) => [...b.position]);
+  const life = birdModel?.meshes.length && checkpointPositions.length >= 3
+    ? { model: "BIRD.SMF", path: (aiLines[0]?.points ?? []).map((p) => [p[0], p[1], p[2]]), checkpoints: checkpointPositions }
+    : null;
   const course = runs.map((g) => ({
     startFt: [g.start[0], g.start[1], g.start[2]], endFt: [g.end[0], g.end[1], g.end[2]],
     // As MTM2's stock straights are written; Evo's own speed limits are in units not known here, so none is taken.
@@ -242,6 +360,8 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
   const objects = [];
   const statics = [];
   const movers = [];
+  /** The rocks' steep faces, 12 numbers each (`steepFace`). */
+  const faces = [];
   const meshPositions = [];
   const meshValues = [];
   /** A triangle given in an object's own frame, as ground where it faces up enough to stand on. */
@@ -257,7 +377,23 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     meshValues.push(value);
   };
   const byId = new Map(sit.boxes.filter((b) => b.instanceId !== null && b.instanceId !== undefined).map((b) => [b.instanceId, b]));
-  const isMover = (box) => !!box && box.boxType === 10 && !!box.bvel;
+  // Evo 2 reads MTM's type 10 as a CTrain (0x41d560) with its trainVelocity, and moves it as MTM2 does (0x5517fb list,
+  // stepped by x and z at the ground's height, wrapping round the world).
+  const isMover = (box) => !!box && (box.boxType === 10 || box.sourceClass === "CTrain") && !!box.bvel;
+  // Object paths (game/evo-paths.js; OpenPhotex `paths`): each moves a box, counted from 1, and what hangs from it
+  // (`parent`, by instance) goes with it, held where it stands against it (a helicopter's rotors).
+  const sitIndexOfId = new Map(sit.boxes.map((b, i) => [b.instanceId, i]));
+  const pathOfRoot = new Map();
+  (sit.paths ?? []).forEach((p, k) => { if (p.object > 0 && p.points.length >= 4 && sit.boxes[p.object - 1]?.position) pathOfRoot.set(p.object - 1, k); });
+  const movedBy = new Map([...pathOfRoot.keys()].map((i) => [i, i]));
+  for (let changed = true; changed;) {
+    changed = false;
+    sit.boxes.forEach((b, i) => {
+      const up = b.parent ? sitIndexOfId.get(b.parent) : undefined;
+      if (up !== undefined && movedBy.has(up) && !movedBy.has(i)) { movedBy.set(i, movedBy.get(up)); changed = true; }
+    });
+  }
+  const pathRuns = [];
   sit.boxes.forEach((box, sitIndex) => {
     if (!box.position) return;
     const [theta = 0, phi = 0, psi = 0] = box.orient ?? [];
@@ -267,23 +403,54 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     const model = file ? models[file] : null;
     const parent = box.parent ? byId.get(box.parent) : null;
     const kind = collisionOf(box, !!model);
+    // Moved by a path: a box the simulation puts where its path says each step, solid where its class is (game/evo-paths.js).
+    if (movedBy.has(sitIndex)) {
+      // `moving`: drawn by itself, not among the still objects' instances, which a move would make the shadows redraw (render/track-scene.js).
+      if (model) objects.push({ model: file, type: box.boxType ?? 0, sitIndex, billboard: isFacing(box), matrix: toSceneMatrix(rotation, pos), moving: true });
+      const bounds = model?.bounds ?? (box.size ? { min: box.size.map((v) => -v / 2), max: box.size.map((v) => v / 2) } : null);
+      if (!bounds) return;
+      const c = [0, 1, 2].map((a) => (bounds.min[a] + bounds.max[a]) / 2);
+      const root = movedBy.get(sitIndex);
+      const entry = {
+        positionFt: [0, 1, 2].map((i) => pos[i] + rotation[i * 3] * c[0] + rotation[i * 3 + 1] * c[1] + rotation[i * 3 + 2] * c[2]),
+        theta, phi, psi, mass: 0, type: 0, priority: 0, bounds, sitIndex, bvel: null, hitSound: null, modelName: file,
+        drawOffset: c.map((v) => -v), ghost: kind === "none", pathRoot: root,
+      };
+      if (root === sitIndex) {
+        pathRuns.push({ path: sit.paths[pathOfRoot.get(sitIndex)], number: pathOfRoot.get(sitIndex) + 1, sitIndex, bottom: -bounds.min[1] });
+      } else {
+        // Where it stands against the path's object, in that object's frame.
+        const r = sit.boxes[root];
+        const [rt = 0, rp = 0, rs = 0] = r.orient ?? [];
+        const rm = mtm2Sim.eulerToMatrix(rt, rp, rs, new Array(9));
+        const d = [0, 1, 2].map((a) => pos[a] - r.position[a]);
+        entry.attach = {
+          pos: [0, 1, 2].map((col) => rm[col] * d[0] + rm[3 + col] * d[1] + rm[6 + col] * d[2]),
+          matrix: [0, 1, 2].flatMap((row) => [0, 1, 2].map((col) => rm[row] * rotation[col] + rm[3 + row] * rotation[3 + col] + rm[6 + row] * rotation[6 + col])),
+        };
+      }
+      movers.push(entry);
+      return;
+    }
     if (!model) {
       if (kind === "box" && box.size) {
-        // An authored collision box (Evo 2's CCollisionBox): a low one is a surface to drive on (planks, ramps, decks),
-        // laid as it is turned; a tall one is an upright obstacle.
-        const [sx, sy, sz] = box.size.map((v) => v / 2);
-        if (box.size[1] <= DECK_MAX_HEIGHT_FT) {
-          const top = [[-sx, sy, -sz], [sx, sy, -sz], [sx, sy, sz], [-sx, sy, sz]];
-          addGround(rotation, pos, top[0], top[1], top[2], WOOD);
-          addGround(rotation, pos, top[0], top[2], top[3], WOOD);
-        } else statics.push({ pos, size: [box.size[0], box.size[1], box.size[2]], psi });
+        // An authored collision box (Evo 2's CCollisionBox): a solid box turned as the SIT turns it, its sides walls and
+        // its top driven on through the simulation's box contacts, as MTM2's boxes are. Decks and piers are such boxes, a
+        // few feet thick, and a quarter of the stock ones are tilted or rolled on their side (SHTARTC's ramp is a
+        // 4.5 x 121 x 36.5 slab rolled 103 degrees). A deck drawn as a surface alone had no sides to meet.
+        statics.push({ pos, size: [box.size[0], box.size[1], box.size[2]], psi, matrix: Array.from(rotation) });
       } else if (kind === "trunk") statics.push({ pos: [pos[0], pos[1] + TRUNK_HEIGHT_FT / 2, pos[2]], size: [TRUNK_FT, TRUNK_HEIGHT_FT, TRUNK_FT], psi: 0 });
       return;
     }
-    objects.push({ model: file, type: box.boxType ?? 0, sitIndex, billboard: isFacing(box), matrix: toSceneMatrix(rotation, pos) });
     // A moving object (Evo 1 keeps MTM's type 10: The Hill's semis) runs on its velocity as in MTM2, and what is
     // attached to it (a semi's load, `parent`) goes with it: the same velocity, turned into the child's own frame.
     const carrier = isMover(box) ? box : isMover(parent) ? parent : null;
+    // `frameSeconds`: an animated model's time a frame, the SIT's timePerFrame (0x41def0 steps dt / timePerFrame).
+    objects.push({
+      model: file, type: box.boxType ?? 0, sitIndex, billboard: isFacing(box), matrix: toSceneMatrix(rotation, pos),
+      ...(model.keyframes && box.timePerFrame > 0 ? { frameSeconds: box.timePerFrame } : {}),
+      ...(carrier && model.bounds ? { moving: true } : {}),
+    });
     if (carrier && model.bounds) {
       let bvel = [carrier.bvel[0], carrier.bvel[1], carrier.bvel[2]];
       if (carrier !== box) {
@@ -296,6 +463,43 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
       return;
     }
     if (kind === "none" || !model.bounds) return;
+    // A boxed object with a mass and no parent moves when hit (4x42.exe lists every object of mass over 0 without a parent
+    // as a moving one, 0x552fe0; the rest are static, 0x553110): signposts, fences, crates, barrels, buses. It is MTM2's
+    // level box, the SIT's mass in slugs as MTM2's (a mailbox 6.2, 200 lb), at least 1 so that it is stepped as a body; the
+    // simulation's box stands round the model's own box, and its pose is given back at the model's origin (`drawOffset`).
+    const mass = Number(box.sourceFields?.mass ?? 0);
+    if (kind === "box" && mass > 0 && !box.parent) {
+      const { min, max } = model.bounds;
+      const c = [0, 1, 2].map((a) => (min[a] + max[a]) / 2);
+      const centre = [0, 1, 2].map((i) => pos[i] + rotation[i * 3] * c[0] + rotation[i * 3 + 1] * c[1] + rotation[i * 3 + 2] * c[2]);
+      movers.push({
+        positionFt: centre, theta, phi, psi, mass: Math.max(1, mass), type: 0, priority: 0, bounds: model.bounds, sitIndex,
+        bvel: null, hitSound: null, modelName: file, drawOffset: c.map((v) => -v),
+      });
+      return;
+    }
+    /**
+     * The model's steep faces (more than 50 degrees from level) as walls: each its own triangle, faced the way the
+     * model's normals there point (outward; the winding where they say nothing).
+     */
+    const steepAsWalls = () => {
+      const turn = (v) => [0, 1, 2].map((i) => rotation[i * 3] * v[0] + rotation[i * 3 + 1] * v[1] + rotation[i * 3 + 2] * v[2]);
+      for (const mesh of model.meshes) {
+        const p = mesh.positions, nv = mesh.normals;
+        for (let k = 0; k + 8 < p.length; k += 9) {
+          // The model's meshes are in the scene's frame (z mirrored); back to the game's.
+          const w = [0, 3, 6].map((o) => turn([p[k + o], p[k + o + 1], -p[k + o + 2]]).map((v, i) => v + pos[i]));
+          // Front-facing in the scene is clockwise in the game's frame (the mirror), so the winding's way out is the
+          // reverse of the corners' cross product.
+          const e1 = [0, 1, 2].map((i) => w[1][i] - w[0][i]), e2 = [0, 1, 2].map((i) => w[2][i] - w[0][i]);
+          const wound = [-(e1[1] * e2[2] - e1[2] * e2[1]), -(e1[2] * e2[0] - e1[0] * e2[2]), -(e1[0] * e2[1] - e1[1] * e2[0])];
+          const smooth = nv ? turn([0, 3, 6].reduce((a, o) => [a[0] + nv[k + o], a[1] + nv[k + o + 1], a[2] - nv[k + o + 2]], [0, 0, 0])) : null;
+          const out = smooth && Math.hypot(...smooth) > 0.3 ? smooth : wound;
+          const face = steepFace(w, out);
+          if (face) faces.push(...face);
+        }
+      }
+    };
     /** The model's faces as ground: driven on by its own surface. */
     const surfaceAsGround = (value) => {
       for (const mesh of model.meshes) {
@@ -306,8 +510,8 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
         }
       }
     };
-    // Evo 2's collisionType 1: every rock and coral.
-    if (kind === "mesh") { surfaceAsGround(ROCKS); return; }
+    // Evo 2's collisionType 1: every rock and coral. Its faces that look up enough are ground; the steep ones are walls.
+    if (kind === "mesh") { surfaceAsGround(ROCKS); steepAsWalls(); return; }
     const { min, max } = model.bounds;
     const sin = Math.sin(psi), cos = Math.cos(psi);
     const cx = (min[0] + max[0]) / 2, cy = (min[1] + max[1]) / 2, cz = (min[2] + max[2]) / 2;
@@ -320,25 +524,51 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     statics.push({ pos: centre, size, psi });
   });
 
-  // Evo 2's trees: a model by the record's value, scaled to the size the level asks, standing on the ground
-  // (JSTrackViewer's reading of the record; the yaw from the value is its convention too).
-  for (const tree of veg?.trees ?? []) {
-    if (!veg.treeModels.length) break;
-    const slot = (tree.value & 3) % veg.treeModels.length;
-    const file = modelFile(veg.treeModels[slot] ?? "");
+  // Trees (2.2): the model by the tree's index in its sector, its yaw from its byte, scaled to the slot's size, its base at
+  // the stored height plus treeBiasY. A level without a .VEG gets a generated forest (2.3).
+  // `forest` (Options, "Evo forest"): whether a level without a .VEG gets one.
+  const vegUsed = veg ?? (forest && forestModels.length ? { ...DEFAULT_VEG, treeModels: forestModels.slice(0, 4) } : null);
+  const blockers = statics.map((b) => ({ x: b.pos[0], z: b.pos[2], r: Math.hypot(b.size[0], b.size[2]) / 2 + 20 }));
+  const trees = veg ? veg.trees : vegUsed ? evoGenerateTrees({
+    heightAt: groundAt,
+    vegClassAt: (x, z) => vegClassOfCell[cellOf(x, z)],
+    blocked: (x, z) => blockers.some((b) => Math.hypot(x - b.x, z - b.z) < b.r),
+    waterLevelFt, maxTrees: vegUsed.maxTrees, treeLine: vegUsed.treeLine, minDistanceSquared: vegUsed.minDistanceSquared,
+    biasY: vegUsed.treeSizes.map((t) => t.biasY),
+  }, seedOf(stem)) : [];
+  for (const tree of trees) {
+    const names = vegUsed.treeModels;
+    if (!names.length) break;
+    const slot = evoTreeSlot(tree.index);
+    const file = modelFile(names[slot % names.length] ?? "");
     const model = models[file];
     if (!model?.bounds) continue;
     const { min, max } = model.bounds;
-    const height = max[1] - min[1], width = Math.max(1e-3, max[0] - min[0]);
-    const want = veg.treeSizes?.[slot] ?? null;
-    const sy = want && height > 0 ? want.sizeY / height : 1, sxz = want ? want.sizeX / width : sy;
-    const ground = groundAt(tree.x, tree.z);
-    const yaw = ((tree.value >> 4) & 15) * (Math.PI / 8);
-    // The models are centred on their origin, not standing on it.
-    const matrix = toSceneMatrix(mtm2Sim.eulerToMatrix(0, 0, yaw, new Array(9)), [tree.x, ground - min[1] * sy, tree.z]);
-    objects.push({ model: file, type: 0, billboard: false, matrix: scaled(matrix, sxz, sy, sxz) });
-    statics.push({ pos: [tree.x, ground + (height * sy) / 2, tree.z], size: [TRUNK_FT, height * sy, TRUNK_FT], psi: 0 });
+    const height = max[1] - min[1], width = Math.max(1e-3, max[0] - min[0]), depth = Math.max(1e-3, max[2] - min[2]);
+    const want = vegUsed.treeSizes?.[slot] ?? null;
+    const sy = want && height > 0 ? want.sizeY / height : 1;
+    const sx = want ? want.sizeX / width : sy, sz = want ? want.sizeX / depth : sy;
+    const base = tree.y + (want?.biasY ?? 0);
+    const matrix = toSceneMatrix(mtm2Sim.eulerToMatrix(0, 0, evoTreeYaw(tree.value), new Array(9)), [tree.x, base - min[1] * sy, tree.z]);
+    // A tree is knocked over by a truck (2.5): `tree` names it for the simulation and the drawing (`sitIndex`).
+    const id = `t${objects.length}`;
+    // `forest`: drawn by sectors around the camera (render/track-scene.js `createForest`), not over every copy of the world.
+    objects.push({ model: file, type: 0, billboard: false, matrix: scaled(matrix, sx, sy, sz), sitIndex: id, forest: true });
+    statics.push({ pos: [tree.x, base + (height * sy) / 2, tree.z], size: [TRUNK_FT, height * sy, TRUNK_FT], psi: 0, tree: id });
   }
+
+  // Grass (2.4): the pattern, each cell's class, the grass texture (a 2 x 2 atlas of slots) and the slots' biases.
+  const grassName = veg?.grassTexture ?? lvl.vegTexture ?? null;
+  const grassImage = grassName ? await loadEvoTexture(vfs, grassName) : null;
+  const grassSizes = (vegUsed ?? DEFAULT_VEG).vegSizes;
+  const pattern = evoGrassPattern(grassSizes, seedOf(stem));
+  const grass = grassImage && vegClassOfCell.some((c) => c > 0) ? {
+    texture: { rgba: grassImage.rgba, width: grassImage.width, height: grassImage.height },
+    x: pattern.x, z: pattern.z, size: pattern.size, slot: pattern.slot,
+    bias: Float32Array.from([0, 1, 2, 3], (k) => grassSizes[k]?.bias ?? 0),
+    vegClass: vegClassOfCell,
+    waterLevelFt,
+  } : null;
 
   // Checkpoints, in file order, however many.
   const checkpointBoxes = sit.boxes.filter((box) => isCheckpoint(box) && box.position).map((box) => {
@@ -361,6 +591,12 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
   // MTM2's trucks, blimp and helicopter.
   const truckPalettes = createPaletteResolver(mtm, "MTM2", null);
   const { blimp, heli } = await loadRaceVehicles(mtm, truckPalettes);
+  // The track's script (OpenPhotex parseEvoScript): its rules, and the trigger boxes they name (worker/sim-worker.js).
+  const scriptBytes = await vfs.read(`SCRIPTS\\${stem}.SC`);
+  const script = scriptBytes ? parseEvoScript(scriptBytes, `${stem}.SC`) : null;
+  const triggers = sit.boxes.filter((b) => b.sourceClass === "CTriggerBox" && b.position && b.size).map((b) => ({
+    name: (b.name ?? "").toLowerCase(), pos: [...b.position], size: [...b.size], orient: [...(b.orient ?? [0, 0, 0])],
+  }));
   const truckModels = {};
   for (const file of truckFiles.map((f) => podPathTitle(f).toUpperCase())) {
     if (!(file in truckModels)) truckModels[file] = await buildTruckRender(mtm, file, truckPalettes);
@@ -369,19 +605,26 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
   return {
     problems: [...missing].sort(),
     title, game, musicName: null, trackName: sit.trackName, tileOverlap: tileOverlap !== false,
-    terrain: { ...mesh, atlas: { rgba: atlas.rgba, width: atlas.width, height: atlas.height }, normalAtlas: null, detail: null },
+    terrain: {
+      ...mesh, hasLte: shaded, shadeLit: shaded,
+      // The atlas with its layout, as MTM2's (worker/track-build.js), so the ground is drawn from a mipmapped stack of its
+      // tiles (render/ground-detail.js `createGroundTiles`); `slotValues`: each drawn tile's surface, shadow tiles included.
+      atlas: { rgba: atlas.rgba, width: atlas.width, height: atlas.height, tileSide: atlas.tileSide, padding: atlas.padding, slots: atlas.rects.length, slotValues },
+      normalAtlas: null, detail: null,
+    },
+    grass,
     groundBoxes: null, road: null,
     // The world wraps as MTM2's does: across the seam the stock heightfields step no more than between any two
     // neighbouring corners (Baja Beach, Tri Baja 250, Pikes Peak, Truck Stop 101; Aspen alone does not meet).
-    heights: null, heightsFt, waterLevelFt, stadium: null, sunVector: null,
-    models, soundObjects: [], trackLights: [], modelTextures, objects, blimp, heli,
+    heights: null, heightsFt, fineFt, waterLevelFt, stadium: null, sunVector: null,
+    models, soundObjects: [], trackLights: [], modelTextures, objects, blimp, heli, life,
     originals: sit.boxes.map((b) => (b.position ? [b.position[0], b.position[1], b.position[2], b.orient?.[0] ?? 0, b.orient?.[1] ?? 0, b.orient?.[2] ?? 0] : [0, 0, 0, 0, 0, 0])),
     backdrops: [], truckModels, trucks: [],
-    sky: await loadEvoSky(vfs, lvl, weather),
+    sky: await loadEvoSky(vfs, lvl, weather, { hdWeather }),
     startLightColours: null,
     sim: {
-      // No surface table is known for Evo: one texture slot, Dirt.
-      clr: new Uint16Array(GRID * GRID), textureValues: Int32Array.of(DIRT),
+      // Each texture's surface from its .TEX record (4.1); a level without one is Dirt.
+      clr, textureValues: tex.ordinary.length ? Int32Array.from(tex.ordinary, (r) => r.surfaceValue ?? r.param0 ?? DIRT) : Int32Array.of(DIRT),
       ra0: null, ra1: null, boxes: movers, ramps: [], course, proCourse: null, sonicTrack: false,
       // The grid may stand anywhere on the course.
       startOnNearestSegment: true,
@@ -389,9 +632,15 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
       /** A one-way course (a rally from A to B): the map draws it with two ends. */
       courseOpen,
       /** Surfaces a truck drives on over the terrain (rocks, planks), each triangle with its surface value. */
+      /** Object paths (game/evo-paths.js): each with its object's sitIndex, its number for the script, its bottom. */
+      paths: pathRuns,
+      /** The script's rules and the trigger boxes they name. */
+      script: script?.rules.length ? { rules: script.rules, triggers } : null,
       meshGround: meshValues.length ? { positions: new Float32Array(meshPositions), surfaceValues: new Int32Array(meshValues) } : null,
       /** Solid scenery as upright boxes (the simulation's static boxes, as CPR's walls are). */
       walls: statics,
+      /** The rocks' steep faces as walls (OpenPhotex `collideTruckFace`): 12 numbers each, its corners and the way out. */
+      faces: faces.length ? new Float32Array(faces) : null,
       grid,
       checkpoints: mtm2Sim.buildCheckpoints(checkpointBoxes),
       start: grid.length ? { file: null, pos: grid[0].pos, heading: grid[0].heading } : null,

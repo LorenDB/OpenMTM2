@@ -7,7 +7,7 @@
   plain data with typed arrays, listed by `transferablesOf` for postMessage.
 */
 import { rumbleGrid } from "../game/race-setup.js";
-import { loadWeatherArt } from "./weather-art.js";
+import { loadHdSky, loadWeatherArt } from "./weather-art.js";
 import { weatherSkyStem } from "../game/weather.js";
 import { BOX_LIGHT, BOX_MOVING, decodeActPalette, decodeRawTexture, isEvoSit, mtm2Sim, normalizePodPath, podPathTitle, rawTextureSide } from "../vendor/openphotex/index.js";
 import { buildEvoSky, buildEvoTrackRender } from "./evo-track-build.js";
@@ -40,10 +40,9 @@ import { buildCprRoadLayer, cprLapCheckpointBoxes } from "./cpr-road.js";
 
 /**
  * MTM1's choices for drawing a track (Options, Advanced): `sky` MTM1's flat sky in place of MTM2's dome (an MTM1 track's
- * own, any other track EARTHSKY: `loadSky`), `overlap` MTM2's two-pixel overlap of an MTM1 track's ground tiles, which
- * MTM1 does not have.
+ * own, any other track EARTHSKY: `loadSky`).
  */
-const MTM1_DEFAULTS = Object.freeze({ sky: false, overlap: false });
+const MTM1_DEFAULTS = Object.freeze({ sky: false });
 /** The sky art's palette slots (240 to 255) and where a level's sky .ACT keeps their sixteen colours (192 to 207). */
 const SKY_FIRST_SLOT = 240, SKY_GRADIENT_AT = 192, SKY_GRADIENT_COLOURS = 16;
 
@@ -249,12 +248,12 @@ export async function loadRex(mtm, truckPalettes) {
  *   and the weather, `puddles` the map of where rain stands, `snow` the depth of settled snow
  *   on every vertex of the terrain.
  */
-export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {}, smoothTiles = false, hdWeather = false, originalBackdrops = false } = {}) {
+export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType = "circuit", truckFiles = [], weather = 0, mtm1 = MTM1_DEFAULTS, tileOverlap, visuals = {}, smoothTiles = false, hdWeather = false, originalBackdrops = false, evoForest = true, sunShadows = false } = {}) {
   // A Terminal Velocity, Fury3 or Hellbender level has no SIT: it is named by its LVL (worker/tv-track-build.js).
   if (/\.LVL$/i.test(sitPath)) return withMtm1Sky(vfs, await buildTvTrackRender(vfs, sitPath, { truckFiles, tileOverlap }), weather, mtm1);
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
   const sitBytes = await vfs.read(sitPath);
-  if (sitBytes && isEvoSit(sitBytes)) return withMtm1Sky(vfs, await buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, tileOverlap }), weather, mtm1);
+  if (sitBytes && isEvoSit(sitBytes)) return withMtm1Sky(vfs, await buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, hdWeather, tileOverlap, forest: evoForest, sunShadows, smoothTerrain: !!visuals.smoothing }), weather, mtm1);
   const level = await loadLevel(vfs, sitPath);
   const { sit } = level;
   // A CART Precision Racing track (docs/PLAN.md F3): its own art and palettes, a finer heightfield and a road layer.
@@ -301,9 +300,9 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     row0: arena.y - Math.trunc(arena.sy / 2), row1: arena.y + Math.trunc(arena.sy / 2),
   };
   // CPR's lighting file is not MTM2's and its levels have no ground boxes.
-  // MTM1 does not overlap its ground tiles (unless the option asks for MTM2's two pixels).
-  // `tileOverlap` (the console's `overlap`) says so outright for this race, whatever the track.
-  const tileInset = (tileOverlap ?? !(sit.origin === "MTM1" && !mtm1?.overlap)) ? 2 : 0;
+  // MTM2 overlaps its ground tiles by two pixels; MTM1 does not. `tileOverlap` (Options, Game, "Terrain overlap", or the
+  // console's `overlap`) says which for this race, whatever the track; unsaid, a track draws as its own game did.
+  const tileInset = (tileOverlap ?? sit.origin !== "MTM1") ? 2 : 0;
   const groundBoxes = cpr ? null : buildGroundBoxMesh(level.groundBoxes, atlas, level.lte, level.heights, cells);
   const road = cpr ? await buildCprRoadLayer(vfs, level) : null;
   // The ground of a CPR track as the simulation has it: the terrain, and the road layer over it.
@@ -713,7 +712,7 @@ export async function originalBackdrop(vfs, name) {
 export async function buildSky(vfs, sitPath, weather, mtm1 = MTM1_DEFAULTS, { hdWeather = false } = {}) {
   if (/\.LVL$/i.test(sitPath)) return (await withMtm1Sky(vfs, { sky: await buildTvSky(vfs, sitPath) }, weather, mtm1)).sky;
   const sitBytes = await vfs.read(sitPath);
-  if (sitBytes && isEvoSit(sitBytes)) return (await withMtm1Sky(vfs, { sky: await buildEvoSky(vfs, sitPath, sitBytes, weather) }, weather, mtm1)).sky;
+  if (sitBytes && isEvoSit(sitBytes)) return (await withMtm1Sky(vfs, { sky: await buildEvoSky(vfs, sitPath, sitBytes, weather, { hdWeather }) }, weather, mtm1)).sky;
   const level = await loadLevel(vfs, sitPath);
   return loadSky(level.sit.origin === "CPR" ? vfs.scoped?.("MTM") ?? vfs : vfs, level, weather, mtm1, { hdWeather });
 }
@@ -738,14 +737,8 @@ export async function loadSky(vfs, level, weather = 0, mtm1 = MTM1_DEFAULTS, { h
   if (!stem || !level.palette) return null;
   // Community Patch 3 HD sky art (AUTHORING_HD_ART.md §4): with "CP3 HD weather" the WeatherArt folder's, or the port's
   // own copy (worker/weather-art.js); then an archive's ART\<stem>.PNG or .TGA. Cloudy greys it, as the engine does.
-  const hd = (await weatherArt(stem, { on: hdWeather })) ?? await loadArtTexture(vfs, `${stem}.PNG`, null, { hdOnly: true });
-  if (hd) {
-    if (weather === 1) for (let i = 0; i < hd.rgba.length; i += 4) {
-      const grey = Math.trunc((hd.rgba[i] + hd.rgba[i + 1] + hd.rgba[i + 2]) / 3);
-      hd.rgba[i] = hd.rgba[i + 1] = hd.rgba[i + 2] = grey;
-    }
-    return { name: stem, ...hd };
-  }
+  const hd = await loadHdSky(vfs, stem, weather, { on: hdWeather, weatherArt });
+  if (hd) return hd;
   let raw = await vfs.read(`ART\\${stem}.RAW`);
   let act = await vfs.read(`ART\\${stem}.ACT`);
   if (!raw || !act) {

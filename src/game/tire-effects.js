@@ -38,18 +38,47 @@ export const raisesDust = (family) => family === "dirt" || family === "gravel";
 export const keepsTread = (family, type) => family === "dirt" || family === "gravel" || type === 9;
 
 /**
- * Which tires puff this tick: each tire on a dusty surface above 10 mph, plus a second puff at its place
- * with even odds above 20 mph. Returns a list of tire indices (a repeated index is the second puff).
+ * MTM2's stock tire, the measure of every other (the simulation's 3 ft radius and 4 ft width, OpenPhotex mtm2Sim TRUCK).
+ * The dust and sparks of the game and the port are a monster truck's; a vehicle on smaller wheels throws less.
  */
-export function dustPuffs({ speedFtS, onGround, dusty, random }) {
+export const STOCK_TIRE = Object.freeze({ radiusFt: 3, widthFt: 4 });
+/**
+ * How much dust and how many sparks a vehicle's tires throw against a stock MTM2 truck's: the volume of its tire (radius
+ * squared times width) over the stock tire's, from 0.02 to 2. A vehicle with no tire size of its own (an MTM truck) is 1.
+ * A 4x4 Evolution pickup on 1.3 ft by 0.9 ft tires throws about a twentieth; Evo 2's AMT monster truck about as much.
+ */
+export function wheelShare(tire) {
+  const r = tire?.radiusFt, w = tire?.widthFt;
+  if (!(r > 0) || !(w > 0)) return 1;
+  return Math.min(2, Math.max(0.02, (r * r * w) / (STOCK_TIRE.radiusFt ** 2 * STOCK_TIRE.widthFt)));
+}
+
+/**
+ * How wide a vehicle's tire tracks are against a stock MTM2 truck's: its tire's width over the stock tire's, from 0.1 to
+ * 2. A vehicle with no tire size of its own (an MTM truck) is 1. A 4x4 Evolution pickup on 0.8 ft tires leaves a track
+ * a fifth as wide.
+ */
+export function treadShare(tire) {
+  const w = tire?.widthFt;
+  if (!(w > 0)) return 1;
+  return Math.min(2, Math.max(0.1, w / STOCK_TIRE.widthFt));
+}
+
+/**
+ * Which tires puff this tick: each tire on a dusty surface above 10 mph, plus a second puff at its place
+ * with even odds above 20 mph. Returns a list of tire indices (a repeated index is the second puff). `share`
+ * (`wheelShare`) is the chance each is kept: 1 for a stock truck.
+ */
+export function dustPuffs({ speedFtS, onGround, dusty, random, share = 1 }) {
   if (!dusty) return [];
   const mph = Math.abs(speedFtS) * MPH_PER_FTS;
   if (mph <= DUST_SLOW_MPH) return [];
   const out = [];
+  const keep = () => share >= 1 || random() < share;
   onGround.forEach((on, i) => {
     if (!on) return;
-    out.push(i);
-    if (mph > DUST_FAST_MPH && random() < 0.5) out.push(i);
+    if (keep()) out.push(i);
+    if (mph > DUST_FAST_MPH && random() < 0.5 && keep()) out.push(i);
   });
   return out;
 }

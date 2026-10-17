@@ -5,6 +5,7 @@
   place number beside it (its name too when the Names key is on); the player's label is
   brighter. The road is the straights' end points joined in order into a closed loop (0x4e1e90),
   with a second outline 48 ft either side of it along each corner's bisector (0x4e2160).
+  A Summit Rumble has no course to show: its map is the summit and the scoring zone (6.3) round the trucks.
 */
 import { drawText, textWidth } from "./bitmap-text.js";
 
@@ -64,13 +65,29 @@ export function toMapFrame(x, z, px, pz, psi) {
   return [dx * c - dz * s, dx * s + dz * c];
 }
 
-/** `open`: a one-way course (a rally from A to B) is drawn with its start and its end closed off, not joined. */
-export function createCourseMap(course, { font = null, open = false } = {}) {
+/**
+ * A box's four corners `[x, z]` feet, the box's angles left out as the scoring test leaves them (6.3): a simulation box
+ * (`{ pos, half }`) or a track build's checkpoint gate (`{ position, size }`, full sizes).
+ */
+export function boxCorners(box) {
+  const pos = box.pos ?? box.position, half = box.half ?? box.size.map((v) => v / 2);
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => [pos[0] + sx * half[0], pos[2] + sz * half[2]]);
+}
+
+/**
+ * `open`: a one-way course (a rally from A to B) is drawn with its start and its end closed off, not joined.
+ * `areas`: a Summit Rumble's `{ zone, summit }` boxes (`{ pos, half }`, feet), drawn in place of the course.
+ */
+export function createCourseMap(course, { font = null, open = false, areas = null } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "race-minimap";
   canvas.hidden = true;
   const ctx = canvas.getContext("2d");
-  const loop = courseLoop(course);
+  // A box with neither shape is left out, so a level whose gates are missing still draws its trucks.
+  const usable = (box) => !!(box && (box.pos ?? box.position) && (box.half ?? box.size));
+  if (areas) areas = { zone: usable(areas.zone) ? areas.zone : null, summit: usable(areas.summit) ? areas.summit : null };
+  const zoneMap = !!(areas?.zone || areas?.summit);
+  const loop = zoneMap ? [] : courseLoop(course);
   const offsets = loop.length > 2 ? edgeOffsets(loop, MAP_HALF_WIDTH_FT, open) : [];
   let shown = false, blink = 0;
 
@@ -87,16 +104,39 @@ export function createCourseMap(course, { font = null, open = false } = {}) {
     setVisible(on) { shown = !!on; canvas.hidden = !shown; },
     /**
      * `trucks`: `{ pos, heading, place, label }` in game feet, the player first; `label` (a truck's or a driver's
-     * name, or null) is shown with the place (the Names key, game/names.js).
+     * name, or null) is shown with the place (the Names key, game/names.js). `focus`: the truck the map centres on
+     * (the watched one in spectator mode). `state`: on a Rumble, the focused truck's scoring state (2 in the zone).
      */
-    set(trucks, dt = 0.016) {
+    set(trucks, dt = 0.016, { focus = 0, state = 0 } = {}) {
       if (!shown) return;
       const [w, h] = fit();
       ctx.clearRect(0, 0, w, h);
-      const me = trucks[0];
+      const me = trucks[focus] ?? trucks[0];
       if (!me) return;
       const k = (h / 480) * MAP_PIXELS_PER_FOOT, cx = w * MAP_ORIGIN[0], cy = h * MAP_ORIGIN[1];
       const px = (x, z) => { const [r, u] = toMapFrame(x, z, me.pos[0], me.pos[2], me.heading); return [cx + r * k, cy - u * k]; };
+      if (zoneMap) {
+        ctx.lineWidth = Math.max(1, h / 480);
+        const outline = (box) => {
+          ctx.beginPath();
+          boxCorners(box).forEach(([x, z], i) => { const [sx, sy] = px(x, z); if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy); });
+          ctx.closePath();
+        };
+        if (areas.summit) {
+          outline(areas.summit);
+          ctx.fillStyle = state === 1 ? "rgba(225,225,225,.28)" : "rgba(225,225,225,.12)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(225,225,225,.85)";
+          ctx.stroke();
+        }
+        if (areas.zone) {
+          outline(areas.zone);
+          ctx.fillStyle = state === 2 ? "rgba(255,214,64,.55)" : "rgba(255,214,64,.25)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,214,64,.95)";
+          ctx.stroke();
+        }
+      }
       if (loop.length > 2) {
         ctx.lineWidth = Math.max(1, h / 480);
         ctx.strokeStyle = "rgba(225,225,225,.85)";
@@ -131,7 +171,7 @@ export function createCourseMap(course, { font = null, open = false } = {}) {
         ctx.fillStyle = `rgb(${pulse},${pulse},${pulse})`;
         for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) ctx.fillRect(x + (dx - 0.5) * unitPx, y + (dy - 0.5) * unitPx, unitPx, unitPx);
         const label = t.label ? `${t.label} (${t.place})` : String(t.place);
-        const colour = i === 0 ? "#ffffff" : "#b5b5b5";
+        const colour = i === focus ? "#ffffff" : "#b5b5b5";
         if (font) {
           const s = unitPx * 0.6, width = textWidth(font, label, s), left = x - width / 2, top = y + 3 * unitPx;
           drawText(ctx, font, label, left + unitPx, top + unitPx, { color: "#000", scale: s });

@@ -10,6 +10,10 @@ export const ACTIONS = Object.freeze([
   { id: "right", label: "Turn Right" },
   { id: "shiftUp", label: "Shift Up" },
   { id: "shiftDown", label: "Shift Down" },
+  // 4x4 Evolution's own (its "Emergency Brake"): held, the rear brakes lock; only an Evolution truck has one.
+  { id: "handbrake", label: "Emergency Brake" },
+  // 4x4 Evolution's own: the transfer case, 2WD, 4WD High, 4WD Low, round again (Evo physics, a four-wheel-drive vehicle).
+  { id: "driveMode", label: "Drive Mode" },
   { id: "helicopter", label: "Helicopter" },
   { id: "autoStage", label: "Auto Stage" },
   { id: "horn", label: "Horn" },
@@ -37,6 +41,8 @@ export const DEFAULT_BINDINGS = Object.freeze({
   right: Object.freeze(["ArrowRight", "KeyD"]),
   shiftUp: Object.freeze(["KeyQ", "PageUp"]),
   shiftDown: Object.freeze(["KeyZ", "PageDown"]),
+  handbrake: Object.freeze(["KeyB"]),
+  driveMode: Object.freeze(["KeyR"]),
   helicopter: Object.freeze(["KeyH"]),
   // The game's own key is S, which is Brake here (WASD).
   autoStage: Object.freeze(["KeyT"]),

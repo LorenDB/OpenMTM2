@@ -48,3 +48,16 @@ test("stock checkpoint and truck models in feet", { skip: skipWithoutStock("TPAR
   assert.ok(body.bounds.max[1] - body.bounds.min[1] < 9);
   assert.ok(body.meshes.length > 0 && body.textureNames.length > 0);
 });
+
+test("an Evo model's faces back to back in one plane (a board, a banner) are found, a crossed card is not", async () => {
+  const { hasBackToBackFaces } = await import("../src/worker/evo-models.js");
+  // A quad's front (+z) and the same quad's back (-z), both in z = 0.
+  const front = [0, 0, 0, 1, 0, 0, 0, 1, 0], back = [0, 0, 0, 0, 1, 0, 1, 0, 0];
+  assert.equal(hasBackToBackFaces(new Float32Array([...front, ...back])), true);
+  // Two cards crossed at right angles, each one-faced.
+  const across = [0, 0, 0, 0, 1, 0, 0, 0, 1];
+  assert.equal(hasBackToBackFaces(new Float32Array([...front, ...across])), false);
+  // The same face twice, or its back an inch away, is not a back to back pair.
+  assert.equal(hasBackToBackFaces(new Float32Array([...front, ...front])), false);
+  assert.equal(hasBackToBackFaces(new Float32Array([...front, 0, 0, 1, 0, 1, 1, 1, 0, 1])), false);
+});

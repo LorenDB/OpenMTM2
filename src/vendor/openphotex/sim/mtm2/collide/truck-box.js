@@ -1,7 +1,7 @@
 import { truckRadius } from "../truck/recovery.js";
 import { truckWeight } from "../truck/dynamics.js";
 import { INV_G } from "../constants.js";
-import { HULL_ORDER, TOP_FIRST_ORDER, WHEEL_ORDER, depthInside, faceNormal, nearestFace } from "./faces.js";
+import { HULL_ORDER, WHEEL_ORDER, depthInside, faceNormal, nearestFace } from "./faces.js";
 const toWorld = (m, x, y, z) => [m[0] * x + m[1] * y + m[2] * z, m[3] * x + m[4] * y + m[5] * z, m[6] * x + m[7] * y + m[8] * z];
 const toBody = (m, x, y, z) => [m[0] * x + m[3] * y + m[6] * z, m[1] * x + m[4] * y + m[7] * z, m[2] * x + m[5] * y + m[8] * z];
 /** The sphere and separating-axis early out (§14.14 step 1). */
@@ -80,17 +80,6 @@ export function collideTruckImmovableBox(s, p, box, dt) {
         tireContactPoint(s, p, box, i, { pushable: false, mEff: 0, box: null, truck: null }, dt);
     }
 }
-/**
- * Whether the truck is under a smoothed ground box: its centre below the box's bottom. Such a box is a bridge or an
- * overhang to that truck, not a floor: its top carries none of its wheels, and its bottom, open to a truck that stands
- * on a floor of boxes, is a ceiling for this one.
- */
-function underBox(s, box) {
-    if (box.openFaces === undefined)
-        return false;
-    const rel = toBody(box.matrix, s.pos[0] - box.pos[0], s.pos[1] - box.pos[1], s.pos[2] - box.pos[2]);
-    return rel[1] < -box.half[1];
-}
 /** Hull points 1 to 12: rays from last step's reference point through each point now. */
 function hullPoints(s, box, pair, dt) {
     const m = s.matrix, bm = box.matrix, half = box.half;
@@ -102,16 +91,12 @@ function hullPoints(s, box, pair, dt) {
         prevRef = toBody(bm, rel[0] - (iv[0] - box.vel[0]) * dt + lift[0], rel[1] - (iv[1] - box.vel[1]) * dt + lift[1], rel[2] - (iv[2] - box.vel[2]) * dt + lift[2]);
     };
     reference();
-    // Under the box its bottom is there (a ceiling), and is tried first as the game tries it.
-    const under = underBox(s, box);
-    const order = box.openFaces && !under ? TOP_FIRST_ORDER : HULL_ORDER;
-    const open = under ? (box.openFaces ?? 0) & ~(1 << 2) : box.openFaces ?? 0;
     for (let j = 0; j < 12; j++) {
         const body = [s.points[j * 3], s.points[j * 3 + 1], s.points[j * 3 + 2]];
         const w = toWorld(m, body[0], body[1], body[2]);
         const cur = toBody(bm, rel[0] + w[0], rel[1] + w[1], rel[2] + w[2]);
         const dir = unit([cur[0] - prevRef[0], cur[1] - prevRef[1], cur[2] - prevRef[2]]);
-        const { face } = nearestFace(half, prevRef, dir, true, order, open);
+        const { face } = nearestFace(half, prevRef, dir, true, HULL_ORDER);
         if (face < 0)
             continue;
         const depth = depthInside(half, cur, face);
@@ -166,42 +151,6 @@ function unit(v) {
     return l === 0 ? [0, 1, 0] : [v[0] / l, v[1] / l, v[2] / l];
 }
 /**
- * The face of a smoothed ground box (`groundBoxesAround`'s `smoothFt`) a wheel meets, by where the
- * wheel is rather than by the game's line from the truck's centre. The game tries a box's x faces,
- * then y, then z, counts two crossings at most and takes the nearest with no direction test
- * (`0x4a7fc0`), so near a thick box's edge the line misses the top and the wheel is resolved
- * against a side: a shove sideways. Here the top carries a wheel that is over the box and no more
- * than `climbFt` below it (a step that high is climbed); deeper, or beside the box, the nearest
- * closed side the wheel is just into (no deeper than `maxWallDepth`) is a wall. -1: no face.
- */
-function smoothedFace(box, contactAt, maxWallDepth) {
-    const half = box.half, open = box.openFaces ?? 0;
-    const top = contactAt(3);
-    const over = Math.abs(top[0]) < half[0] && Math.abs(top[2]) < half[2];
-    if (over && half[1] - top[1] <= (box.climbFt ?? 0))
-        return 3;
-    let best = -1, bestDepth = Infinity;
-    for (const f of [0, 1, 4, 5]) {
-        if (open & (1 << f))
-            continue;
-        const c = contactAt(f);
-        const depth = depthInside(half, c, f);
-        // Into the wall, but only just: a point far inside that face's plane is on the box's other side, not in it.
-        if (!(depth > 0 && depth < bestDepth && depth <= maxWallDepth))
-            continue;
-        if (Math.abs(c[0]) >= half[0] || Math.abs(c[1]) >= half[1] || Math.abs(c[2]) >= half[2])
-            continue;
-        best = f;
-        bestDepth = depth;
-    }
-    if (best >= 0)
-        return best;
-    // Deep in a box and over it (a floor the truck fell into): the top. Below the box altogether there is no face: once
-    // this took the top for any tire under the box's footprint, and a truck driving under a bridge of boxes was thrown
-    // into the air.
-    return over && top[1] > -half[1] ? 3 : -1;
-}
-/**
  * Where tire `i`'s hub was last step, world feet (tire +0x24, §14.14 step 3): the truck's last position and rotation,
  * and the hub as the step began. The wheels' rays start here, not at the truck's centre.
  */
@@ -225,12 +174,7 @@ function wheelSuspension(s, p, box, i, side) {
     const off = toWorld(m, Math.cos(art) * w * side * 0.5, Math.sin(art) * w * side * 0.5, 0);
     // Moved half the tire's width out along the axle.
     const origin = toBody(bm, from[0] - box.pos[0] + off[0], from[1] - box.pos[1] + off[1], from[2] - box.pos[2] + off[2]);
-    // A smoothed ground box carries a wheel on its top only (see `smoothedFace`).
-    const smoothed = box.openFaces !== undefined;
-    // A box over the truck carries none of its wheels.
-    if (smoothed && underBox(s, box))
-        return;
-    const face = smoothed ? 3 : nearestFace(half, origin, dir, false, WHEEL_ORDER).face;
+    const face = nearestFace(half, origin, dir, false, WHEEL_ORDER).face;
     if (face < 0)
         return;
     const out = faceNormal(face);
@@ -246,8 +190,6 @@ function wheelSuspension(s, p, box, i, side) {
     const point = [px, ay + r * ny, az + r * nz];
     const pw = toWorld(m, point[0], point[1], point[2]);
     const pb = toBody(bm, s.pos[0] + pw[0] - box.pos[0], s.pos[1] + pw[1] - box.pos[1], s.pos[2] + pw[2] - box.pos[2]);
-    if (smoothed && !(Math.abs(pb[0]) < half[0] && Math.abs(pb[2]) < half[2] && half[1] - pb[1] <= (box.climbFt ?? 0)))
-        return;
     const pen = -(depthInside(half, pb, face) / inY);
     if (!(t.penetration < pen))
         return;
@@ -283,11 +225,7 @@ function tireContactPoint(s, p, box, i, pair, dt) {
         const pb = toBody(bm, s.pos[0] + pw[0] - box.pos[0], s.pos[1] + pw[1] - box.pos[1], s.pos[2] + pw[2] - box.pos[2]);
         return { out, outWorld, point, pb };
     };
-    if (underBox(s, box))
-        return;
-    const face = box.openFaces !== undefined
-        ? smoothedFace(box, (f) => contactAt(f).pb, p.tireRadiusFt * 2)
-        : nearestFace(half, origin, unit(ray), false, WHEEL_ORDER).face;
+    const face = nearestFace(half, origin, unit(ray), false, WHEEL_ORDER).face;
     if (face < 0)
         return;
     const { out, outWorld, point, pb } = contactAt(face);

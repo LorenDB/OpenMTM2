@@ -85,7 +85,8 @@ const FACE_Y_DOWN = [1, 2, 11, 12];
 const FACES_Y_UP = [[3, 4, 5, 6], [5, 6, 7, 8], [7, 8, 9, 10]];
 /** `rhoA` per body axis for this step (§14.7.1). Tires are FR, FL, RR, RL. */
 export function fluidAreas(s, p, ground) {
-    const dry = [TRUCK.aeroArea[0], TRUCK.aeroArea[1], TRUCK.aeroArea[2]];
+    const area = p.aeroArea ?? TRUCK.aeroArea;
+    const dry = [area[0], area[1], area[2]];
     const rhoA = [0, 0, 0];
     const tires = s.tires;
     if (tires.some((t) => t.waterDepth > 0)) {

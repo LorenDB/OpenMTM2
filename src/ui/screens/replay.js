@@ -4,7 +4,7 @@
   VCR controls: play, pause, rewind, fast forward, slow, frame step, zoom, rotate, save and open.
   The camera is any of the ten views on any truck. Damage is replayed from the damage codes.
 */
-import { dustLevel, sparkLevel } from "../../game/tire-effects.js";
+import { dustLevel, sparkLevel, treadShare, wheelShare } from "../../game/tire-effects.js";
 import { terrainOfBuild } from "../../shared/build-terrain.js";
 import * as THREE from "three";
 import { el } from "../dom.js";
@@ -38,6 +38,7 @@ import { createFpsCounter } from "../fps-counter.js";
 import { saveSettings } from "../../app/settings.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
 import { createExtensionScene } from "../../render/extensions/loader.js";
+import { GRASS_RADII, grassLevel } from "../../render/evo-grass.js";
 
 /** A terrain cell's side: the draw distance is set in cells. */
 const TERRAIN_CELL_FT = 32;
@@ -68,11 +69,14 @@ export default async function mount(container, context, { replay }) {
   // Dust, tracks, sparks and sun shadows read off the film ("Replay effects", docs/VISUALS.md); off, a replay is drawn as it first was.
   const replayFx = visualSettings(context.settings).replay;
   const build = await context.assets.call("trackRender", {
-    mtm1: { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap },
+    evoForest: context.settings.evoForest !== false,
+    mtm1: { sky: context.settings.mtm1EarthSky === true }, tileOverlap: context.settings.terrainOverlap !== false,
     path, scope: trackInfo.scope, detailLevel: replay.detailLevel ?? context.settings.detailLevel, raceType: trackInfo.raceType ?? "circuit", truckFiles, weather: replay.weather,
     // A replay's weather never changes, so the puddle map is built only for one recorded in Rain.
     visuals: trackVisuals(context.settings, { weather: replay.weather ?? 0, weatherMask: 0 }),
     smoothTiles: context.settings.look === "enhanced",
+    // Sun shadows are drawn: a 4x4 Evolution level's painted ones are left off (worker/evo-track-build.js).
+    sunShadows: context.settings.look === "enhanced" && replayFx,
   }).catch((err) => { loading.textContent = `The replay's track could not be built: ${err.message}`; return null; });
   if (disposed || !build) return { unmount };
   loading.hidden = true;
@@ -100,6 +104,7 @@ export default async function mount(container, context, { replay }) {
   const world = createTrackWorld(build, look, {
     backdrops: !!context.settings.backdrops, drawDistance, naturalLight,
     terrainDetail: context.settings.terrainDetail !== false, reflections: context.settings.reflections !== false,
+    grass: GRASS_RADII[grassLevel(context.settings)],
   });
   scene.add(world);
   const extensionScene = createExtensionScene(scene, world, replay.extension);
@@ -112,7 +117,7 @@ export default async function mount(container, context, { replay }) {
     if (!model) return null;
     const object = createTruckObject(model, model.anchors, look, { richLamps: visualSettings(context.settings).lamps });
     scene.add(object.object);
-    return { ...object, model, tireRadius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft) };
+    return { ...object, model, tireRadius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft), wheels: wheelShare(model.tire), tread: treadShare(model.tire) };
   });
   const terrain = terrainOfBuild(build);
   // With "Smooth terrain" the ground drawn is not quite the ground the trucks were recorded on (game/terrain-relief.js):
@@ -390,7 +395,7 @@ export default async function mount(container, context, { replay }) {
           // A wheel is on the ground when its tread is at it, at the deck of a bridge it is on, or at the ice.
           const tires = pose.tires.map((tire, k) => { const hub = drawn[i].tireHub(k); return { ...tire, onGround: hub[1] - drawn[i].tireRadius - standOn(hub[0], hub[2], hub[1]) < ON_GROUND_FT }; });
           const type = madeOf ? mtm2Sim.surfaceType(madeOf.surface(pose.pos[0], pose.pos[1] + 100, pose.pos[2])) : 0;
-          return { object: drawn[i], pose: { ...pose, tires, forward: pose.speed }, surface: { family: surfaceFamily(type), type }, tires: null, radius: drawn[i].tireRadius };
+          return { object: drawn[i], pose: { ...pose, tires, forward: pose.speed }, surface: { family: surfaceFamily(type), type }, tires: null, radius: drawn[i].tireRadius, wheels: drawn[i].wheels, tread: drawn[i].tread };
         }),
       });
       // Where a hull point is down on the ground while the truck moves, it scrapes: sparks, clods or chips by what it scrapes on.

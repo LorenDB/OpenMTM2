@@ -206,3 +206,58 @@ export function buildTerrainMesh({ heights, heightsFt = null, clr, lte, atlas, f
   }
   return { positions, normals, uvs, shade, indices, hasLte: !!hasLte };
 }
+
+/**
+ * The terrain mesh over a fine grid (4x4 Evolution 2's smoothed ground, docs/EVO2_EXE_ANALYSIS.md 5a): `fineFt` has
+ * `sub` heights a cell side, rows along z, as `mtm2Sim.createTerrainFt`'s fine grid. Each 32 ft cell is `sub` x `sub`
+ * sub-cells of two triangles each, split by the sub-cell's parity as the game splits them, its tile stretched over the
+ * cell as on the coarse mesh. Normals by central differences over the fine grid. The same shape of result as
+ * `buildTerrainMesh`.
+ */
+export function buildFineTerrainMesh({ fineFt, sub = 4, clr, atlas, tileInset = 2 }) {
+  const side = GRID * sub, mask = side - 1, step = CELL_FT / sub, n = sub + 1;
+  const perCell = n * n, cells = GRID * GRID;
+  const positions = new Float32Array(cells * perCell * 3);
+  const normals = new Float32Array(cells * perCell * 3);
+  const uvs = new Float32Array(cells * perCell * 2);
+  const shade = new Float32Array(cells * perCell).fill(1);
+  const indices = new Uint32Array(cells * sub * sub * 6);
+  const h = (r, c) => fineFt[(r & mask) * side + (c & mask)];
+  const tile = new Float32Array(8);
+  let ii = 0;
+  for (let row = 0; row < GRID; row++) {
+    for (let col = 0; col < GRID; col++) {
+      const cell = row * GRID + col, base = cell * perCell;
+      // The tile's corners v0..v3 at (row, col), (row, col + 1), (row + 1, col + 1), (row + 1, col), stretched bilinearly.
+      cellTileUvs(clr[cell], atlas, tile, tileInset);
+      for (let j = 0; j <= sub; j++) {
+        for (let i = 0; i <= sub; i++) {
+          const v = base + j * n + i, r = row * sub + j, c = col * sub + i, a = i / sub, b = j / sub;
+          positions[v * 3] = c * step;
+          positions[v * 3 + 1] = h(r, c);
+          positions[v * 3 + 2] = -(r * step);
+          const dx = (h(r, c + 1) - h(r, c - 1)) / (2 * step), dz = (h(r + 1, c) - h(r - 1, c)) / (2 * step);
+          const len = Math.hypot(dx, 1, dz);
+          normals[v * 3] = -dx / len; normals[v * 3 + 1] = 1 / len; normals[v * 3 + 2] = dz / len;
+          for (let k = 0; k < 2; k++) {
+            const top = tile[k] * (1 - a) + tile[2 + k] * a, bottom = tile[6 + k] * (1 - a) + tile[4 + k] * a;
+            uvs[v * 2 + k] = top * (1 - b) + bottom * b;
+          }
+        }
+      }
+      for (let j = 0; j < sub; j++) {
+        for (let i = 0; i < sub; i++) {
+          const v00 = base + j * n + i, v01 = v00 + 1, v10 = v00 + n, v11 = v10 + 1;
+          if ((((row * sub + j) ^ (col * sub + i)) & 1) === 0) {
+            indices[ii++] = v00; indices[ii++] = v01; indices[ii++] = v11;
+            indices[ii++] = v00; indices[ii++] = v11; indices[ii++] = v10;
+          } else {
+            indices[ii++] = v00; indices[ii++] = v01; indices[ii++] = v10;
+            indices[ii++] = v01; indices[ii++] = v11; indices[ii++] = v10;
+          }
+        }
+      }
+    }
+  }
+  return { positions, normals, uvs, shade, indices, hasLte: false, indicesPerCell: sub * sub * 6 };
+}

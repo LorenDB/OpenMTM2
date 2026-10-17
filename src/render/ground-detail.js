@@ -26,10 +26,21 @@ const glsl = (n) => n.toFixed(5);
 /** How many mip levels further down a tile's texels have run together into its colour: a 64 texel tile is 8 across there. */
 const FLAT_LEVELS = 3;
 
-const VERTEX_PARS = "varying vec3 vDetWorld;\nvarying vec3 vDetUp;";
-const VERTEX = "\tvDetWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\n\tvDetUp = normalize( mat3( modelMatrix ) * normal );";
+/*
+  Which tile a point reads is found from where it falls in the atlas. With several samples a point (MSAA) a point on a
+  cell's edge is shaded where its pixel's centre is, which may lie outside the cell, its atlas place then past the
+  tile's padding and in the next slot: far off, where cells are a few pixels across, those points drew a line of
+  another tile's colour along every cell edge, grey bands toward the horizon. The atlas place is read at a covered
+  sample instead (centroid); how fast it crosses the screen is still taken from three.js's own, which runs on evenly.
+*/
+const SLOT_UV_PARS = "#ifdef USE_MAP\n\tcentroid varying vec2 vSlotUv;\n#endif";
+const SLOT_UV = "#ifdef USE_MAP\n\tvSlotUv = vMapUv;\n#endif";
+
+const VERTEX_PARS = `varying vec3 vDetWorld;\nvarying vec3 vDetUp;\n${SLOT_UV_PARS}`;
+const VERTEX = `\tvDetWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\n\tvDetUp = normalize( mat3( modelMatrix ) * normal );\n${SLOT_UV}`;
 
 const FRAGMENT_PARS = /* glsl */ `
+${SLOT_UV_PARS}
 varying vec3 vDetWorld;
 varying vec3 vDetUp;
 uniform sampler2D uDetShare;
@@ -64,17 +75,17 @@ vec2 detGrain( float feet, vec3 weight ) {
 /* In place of three.js's own read of the map. */
 const MAP = /* glsl */ `
 #ifdef USE_MAP
-  vec2 detPx = vMapUv * uDetAtlas.xy;
+  vec2 detPx = vSlotUv * uDetAtlas.xy;
   vec2 detCell = floor( detPx / uDetAtlas.z );
   float detSlot = detCell.y * uDetTile.y + detCell.x;
   #ifdef DET_TILES
     // The tile's own square, 0 to 1. How fast it crosses the screen is taken from the atlas, where it runs on evenly
     // from a cell into the next: taken from the square it would jump at every cell's edge.
     vec2 detLocal = ( detPx - detCell * uDetAtlas.z - uDetAtlas.w ) / uDetTile.x;
-    vec2 detAcross = dFdx( detPx ) / uDetTile.x, detDown = dFdy( detPx ) / uDetTile.x;
+    vec2 detAcross = dFdx( vMapUv * uDetAtlas.xy ) / uDetTile.x, detDown = dFdy( vMapUv * uDetAtlas.xy ) / uDetTile.x;
     vec4 sampledDiffuseColor = textureGrad( uDetTiles, vec3( detLocal, detSlot ), detAcross, detDown );
   #else
-    vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+    vec4 sampledDiffuseColor = texture2D( map, vSlotUv );
   #endif
   float detShare = texelFetch( uDetShare, ivec2( int( detSlot + 0.5 ), 0 ), 0 ).r;
   vec3 detN = normalize( vDetUp );
@@ -214,6 +225,7 @@ export function createGroundDetail({ world, atlas, textureValues = null, rendere
 
 /* The tiles alone, for the ground without "Ground detail": the stack's read in place of the atlas's, nothing over it. */
 const TILES_PARS = /* glsl */ `
+${SLOT_UV_PARS}
 uniform highp sampler2DArray uGndTiles;
 // the atlas's width and height in texels, a slot's pitch, the padding round a tile
 uniform vec4 uGndAtlas;
@@ -222,11 +234,11 @@ uniform vec2 uGndTile;
 `;
 const TILES_MAP = /* glsl */ `
 #ifdef USE_MAP
-  vec2 gndPx = vMapUv * uGndAtlas.xy;
+  vec2 gndPx = vSlotUv * uGndAtlas.xy;
   vec2 gndCell = floor( gndPx / uGndAtlas.z );
   vec2 gndLocal = ( gndPx - gndCell * uGndAtlas.z - uGndAtlas.w ) / uGndTile.x;
   vec4 sampledDiffuseColor = textureGrad( uGndTiles, vec3( gndLocal, gndCell.y * uGndTile.y + gndCell.x ),
-    dFdx( gndPx ) / uGndTile.x, dFdy( gndPx ) / uGndTile.x );
+    dFdx( vMapUv * uGndAtlas.xy ) / uGndTile.x, dFdy( vMapUv * uGndAtlas.xy ) / uGndTile.x );
   diffuseColor *= sampledDiffuseColor;
 #endif
 `;
@@ -252,6 +264,9 @@ export function createGroundTiles({ world, atlas, renderer, look = "classic" }) 
     dressed.add(material);
     return addShaderHook(material, "ground-tiles", 20, (shader) => {
       Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", `#include <common>\n${SLOT_UV_PARS}`)
+        .replace("#include <project_vertex>", `#include <project_vertex>\n${SLOT_UV}`);
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${TILES_PARS}`)
         .replace("#include <map_fragment>", TILES_MAP);

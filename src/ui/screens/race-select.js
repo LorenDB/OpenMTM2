@@ -9,9 +9,9 @@ import { el } from "../dom.js";
 import { currentDriver, getProfiles } from "../../app/profile-store.js";
 import { saveSettings } from "../../app/settings.js";
 import { setRaceConfig } from "../../app/flow.js";
-import { GAME_MODES, raceTypeName, trackPreviewBmp } from "../../game/menu-data.js";
+import { GAME_MODES, raceTypeName, trackInfoRows, trackPreviewBmp } from "../../game/menu-data.js";
 import { WEATHER_NAMES, allowedWeathers, resolveWeather } from "../../game/weather.js";
-import { availableExtensions, extensionById, extensionLength, lengthLabel as extensionLengthLabel, setExtensionSetting, trackForExtension } from "../../game/extensions/loader.js";
+import { availableExtensions, entrantsShortfall, extensionById, extensionLength, lengthLabel as extensionLengthLabel, setExtensionSetting, trackForExtension } from "../../game/extensions/loader.js";
 import { playMenuSound } from "../../audio/menu-sounds.js";
 import { frame, uiImageUrl } from "../frame.js";
 
@@ -82,6 +82,8 @@ export default async function mount(container, context) {
   const tableBody = el("tbody");
   const table = el("table", { class: "race-track-table", role: "listbox", "aria-label": "Tracks" }, tableBody);
   const preview = el("img", { class: "track-preview", alt: "" });
+  // In the picture's place, for a track whose SIT names none: its name and what its SIT says of it.
+  const info = el("div", { class: "track-info", hidden: true });
   const opponentsButton = el("button", { class: "opponents-button" }, "Computer Opponents");
   // Free Roam driving: the mode, or a track with no race on it in the Race mode. No opponents, no laps.
   // Fly-by (ui/screens/fly-by.js): the track with no truck on it and a camera to fly through it.
@@ -140,10 +142,26 @@ export default async function mount(container, context) {
     const url = name ? await uiImageUrl(context.assets, name) : null;
     if (request !== previewRequest) return;
     preview.hidden = !url;
+    info.hidden = !!url;
     if (url) { preview.src = url; preview.alt = `${track.name} preview`; }
+    else {
+      preview.removeAttribute("src");
+      info.replaceChildren(el("div", { class: "track-info-name" }, track.name),
+        el("dl", {}, ...trackInfoRows(track, { type: typeLabel(track), units: settings.units }).flatMap(([label, value]) => [el("dt", {}, context.t(label)), el("dd", { title: value }, value)])));
+    }
+    // The location is in the facts already.
+    localeLabel.hidden = !url || !(track.locale ?? "").trim();
   };
   // An MTM1 track's zoom map (MTM1_MONSTER_EXE_ANALYSIS.md 2.10): the button is there when the map the SIT names is.
   const zoomButton = el("button", { class: "race-zoom", hidden: true, title: "The track's map and description" }, context.t("Zoom"));
+  // The track's place (the SIT's Race Track Locale), left of Zoom in the picture's bottom corner.
+  const localeLabel = el("span", { class: "race-locale", hidden: true });
+  const previewFoot = el("div", { class: "race-preview-foot" }, localeLabel, zoomButton);
+  const showLocale = () => {
+    const locale = (track.locale ?? "").trim();
+    localeLabel.textContent = locale;
+    localeLabel.hidden = !locale;
+  };
   let zoomRequest = 0;
   const showZoom = async () => {
     const request = ++zoomRequest, item = track;
@@ -163,7 +181,10 @@ export default async function mount(container, context) {
   /** The Race button reads Fly-by in the Fly-by mode, where it starts a visit and not a race. */
   const updateGoButton = () => {
     goButton.textContent = isFlyBy() ? context.t("Fly-by") : "Race";
-    goButton.disabled = !playable(track);
+    // A mode that needs more trucks (Tag, Hockey: two at least) waits for the opponents.
+    const short = entrantsShortfall(extensionById(gameMode), opponentsNow(), spectator);
+    goButton.disabled = !playable(track) || short !== null;
+    goButton.title = short !== null ? `${extensionById(gameMode).name} needs ${short} trucks at least: pick computer opponents.` : "";
   };
   const remember = () => {
     const value = Math.max(1, Math.min(99, Math.trunc(Number(laps.value)) || lengthFor(gameMode, track)));
@@ -215,6 +236,7 @@ export default async function mount(container, context) {
     showSelected();
     show();
     showZoom();
+    showLocale();
     showPreview();
     remember();
   };
@@ -304,6 +326,7 @@ export default async function mount(container, context) {
   showSelected();
   show();
   showZoom();
+  showLocale();
   await showPreview();
   remember();
 
@@ -325,7 +348,7 @@ export default async function mount(container, context) {
     ui.regions.lengthLabel.append(lengthLabel);
     ui.regions.length.append(laps);
     ui.regions.opponents.append(opponentsButton);
-    ui.regions.preview.append(preview, zoomButton);
+    ui.regions.preview.append(preview, info, previewFoot);
     ui.regions.selected.append(selectedLabel);
     ui.regions.weatherLabel.append(el("span", { class: "race-length-label" }, context.t("Weather")));
     ui.regions.weather.append(weather);
@@ -338,7 +361,7 @@ export default async function mount(container, context) {
     ui.regions.list.append(selectedLabel, listHead, table,
       el("div", { class: "form-row" },
         el("label", {}, lengthLabel, " ", laps), el("label", {}, "Weather ", weather), el("label", {}, modeLabel, " ", modeSelect), opponentsButton),
-      el("div", { class: "track-preview-modern" }, preview, zoomButton),
+      el("div", { class: "track-preview-modern" }, preview, info, previewFoot),
       el("div", { class: "screen-actions" }, goButton));
   }
   return { unmount: ui.unmount };
@@ -407,7 +430,7 @@ async function chooseOpponents(trucks, playerTruck, initial, full = 8, watching 
         return el("option", { value: file }, item?.name ?? file);
       }));
       availableHead.textContent = `Available trucks: ${availableList.options.length}`;
-      selectedHead.textContent = `Selected opponents: ${selected.length}`;
+      selectedHead.textContent = `Selected opponents: ${selected.length}/${full}`;
     };
     const add = () => {
       for (const option of availableList.selectedOptions) {

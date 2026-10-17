@@ -120,8 +120,8 @@ export async function openPodManager(context) {
     });
     await run("Copying...", async () => {
       const done = await context.assets.call("addPods", { files });
-      const said = [`${done.added.length} added`];
-      if (done.skipped) said.push(`${done.skipped} already there`);
+      const said = [`${done.added.length - (done.replaced?.length ?? 0)} added`];
+      if (done.replaced?.length) said.push(`${done.replaced.length} read again (${done.replaced.join(", ")})`);
       if (done.failed.length) said.push(done.failed.join(" "));
       if (problems.length) said.push(problems.join(" "));
       return `${said.join(", ")}.`;

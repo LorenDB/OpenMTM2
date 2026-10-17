@@ -96,7 +96,7 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 /* On a drag strip the Christmas tree sits in the top right, so the counter drops below it. */
 .drag-tree:not([hidden]) ~ .fps-counter { top: 84px; }
 .race-gauges { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; pointer-events: none; }
-.race-pause { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0, 0, 0, 0.55); }
+.race-pause { position: absolute; z-index: 10; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0, 0, 0, 0.55); }
 .race-pause[hidden], .race-loading[hidden] { display: none; }
 .load-report { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; padding: 18px 22px; }
 .load-report h1 { margin: 0 0 6px; font-size: 20px; color: var(--accent, #f2c14e); }
@@ -174,6 +174,13 @@ table.results tr.player td { color: var(--accent); font-weight: 600; }
 .stage-panel-opponents .opponents-button:hover { background: rgba(255, 255, 255, 0.16); }
 .track-preview { display: block; width: 100%; height: 100%; object-fit: fill; image-rendering: auto; }
 .track-preview-modern { width: 257px; height: 210px; margin: 12px 0; background: #000; }
+.track-preview[hidden], .track-info[hidden] { display: none; }
+/* A track without a picture: its facts in the picture's place. */
+.track-info { box-sizing: border-box; width: 100%; height: 100%; overflow: hidden; padding: 6px 8px 22px; color: #fff; font-size: 11px; line-height: 1.25; background: linear-gradient(#10183a, #050812); text-shadow: 0 1px 2px #000; }
+.track-info-name { margin: 0 0 5px; font-size: 14px; font-weight: 700; color: #ffd84a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-info dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; margin: 0; }
+.track-info dt { color: #9fb2ff; }
+.track-info dd { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .race-length { text-align: center; }
 .stage-panel-lengthLabel { display: grid; place-items: center end; padding: 0 4px 0 0; border: 0; background: transparent; }
 .race-length-label { color: #fff; font-weight: 700; text-shadow: 0 1px 3px #000; }
@@ -340,8 +347,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 .opt-page > .opt-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
 .opt-page > .opt-switches:empty { display: none; }
 .opt-page > .bindings { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
-.extension-options-panel { display: grid; gap: 6px; align-content: start; padding: 12px; border: 1px solid var(--panel-edge); border-radius: 8px; }
-.extension-options-panel h3, .extension-options-panel p { margin: 0; }
 .opt-page > .bindings .form-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; height: 36px; margin: 0; padding: 0 10px; border: 1px solid var(--panel-edge); border-radius: 6px; }
 /* On the modern stage the controls that sit in the art's openings have no box of their own either. */
 .stage-modern :is(.stage-panel-name, .stage-panel-skill, .stage-panel-truck, .stage-panel-message, .stage-panel-sonic, .stage-panel-lengthLabel,
@@ -404,12 +409,19 @@ input.race-off { background: #777; color: #222; }
 .game-console-input { flex: 1; min-width: 0; padding: 2px 4px; border: 0; outline: 0; background: transparent; color: #fff; font: inherit; }
 
 .race-hud[hidden] { display: none; }
+/* A watched race flown free: the race's lap and clock at the top in the middle; the watched truck's times are put away. */
+.race-fly-hud { position: absolute; z-index: 3; top: 4px; left: 50%; transform: translateX(-50%); image-rendering: pixelated; pointer-events: none; }
+.race-fly-hud[hidden], .race-flying .race-hud { display: none; }
 
 /* The pause menu: every button the same width. */
 .race-pause > button { box-sizing: border-box; width: 220px; }
-/* Zoom sits inside the track's picture, in its bottom right corner. */
+/* Zoom sits inside the track's picture, in its bottom right corner, the track's place left of it. */
 .stage-panel-preview, .track-preview-modern { position: relative; }
-.stage-panel .race-zoom, .race-zoom { position: absolute; right: 4px; bottom: 4px; z-index: 2; padding: 1px 8px; font: inherit; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; border: 1px solid rgba(255, 255, 255, 0.6); border-radius: 3px; background: rgba(0, 0, 0, 0.7); cursor: pointer; }
+.race-preview-foot { position: absolute; left: 4px; right: 4px; bottom: 4px; z-index: 2; display: flex; justify-content: flex-end; align-items: center; gap: 6px; pointer-events: none; }
+.race-preview-foot > * { pointer-events: auto; }
+.race-locale { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 1px 6px; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; border-radius: 3px; background: rgba(0, 0, 0, 0.55); }
+.race-locale[hidden] { display: none; }
+.stage-panel .race-zoom, .race-zoom { position: static; flex: none; padding: 1px 8px; font: inherit; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; border: 1px solid rgba(255, 255, 255, 0.6); border-radius: 3px; background: rgba(0, 0, 0, 0.7); cursor: pointer; }
 .race-zoom:hover { background: rgba(60, 80, 160, 0.85); }
 .race-zoom[hidden] { display: none; }
 /* MTM1's zoom map: the map bitmap as a 640 x 480 stage, the description in the game's rectangle. */
@@ -437,6 +449,7 @@ input.race-off { background: #777; color: #222; }
 /* The fly camera's list of keys (ui/fly-controller.js), shown by the O key. */
 .fly-keys { position: absolute; left: 16px; top: 16px; z-index: 6; padding: 10px 14px; background: rgba(0, 0, 0, 0.62); color: #e8e8e8; font: 13px/1.5 system-ui, sans-serif; border-radius: 4px; pointer-events: none; }
 .fly-keys[hidden] { display: none; }
+.fly-keys-font { padding: 6px 8px; image-rendering: pixelated; }
 .fly-keys p { margin: 0; }
 .fly-keys-title { color: var(--accent, #f2c14e); font-weight: 700; margin-bottom: 4px !important; }
 .fly-key { display: inline-block; min-width: 96px; color: #fff; font-weight: 600; }

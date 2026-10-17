@@ -69,6 +69,12 @@ const DEPTH_MARGIN = 2500;
 /** Normal offset per cascade, as a fraction of that cascade's texel: enough to stop acne on the terrain. */
 const NORMAL_BIAS_PER_TEXEL = 0.5;
 const DEPTH_BIAS = -0.00002;
+/**
+ * Depth offset per cascade, in feet per foot of that cascade's texel. The far cascades' texels are feet wide, and the
+ * ground under one rises and falls by more than a fixed bias allows: without this it shadows itself in grey bands that
+ * ring the camera far off (the distance turns grey with Smooth textures, the only look with sun shadows).
+ */
+const DEPTH_BIAS_PER_TEXEL = 1.5;
 /** Materials whose shader uses the scene lights, and so the cascade lights. */
 const isLit = (material) => material && (material.isMeshLambertMaterial || material.isMeshPhongMaterial
   || material.isMeshStandardMaterial || material.isMeshToonMaterial);
@@ -244,7 +250,13 @@ export class SunShadows {
     const tx = ty * camera.aspect;
     const spread = Math.sqrt(1 + tx * tx + ty * ty);
 
-    let any = false;
+    // Objects that left the still ones (render/track-scene.js `moveObjects`) are drawn with what moves from now on.
+    const fresh = this._world?.userData.newDynamicCasters;
+    if (fresh?.length) {
+      if (this._caching) for (const mesh of fresh) if (mesh.castShadow) this._dynamicCasters.push(mesh);
+      fresh.length = 0;
+    }
+    let any = false, staticSpent = false;
     const serial = this._world?.userData.shadowStaticSerial ?? 0;
     this._csm.lights.forEach((light, i) => {
       const fit = this._fits[i];
@@ -253,8 +265,14 @@ export class SunShadows {
       const stale = !fit.center || Math.abs(fit.radius - radius) > radius * 1e-3
         || fit.center.distanceTo(camera.position) > reach * SLACK;
       const due = this._dynamic && this._frame % (1 << i) === 0;
-      // A far cascade is not redrawn every frame, so a moved prop has to mark it even on a frame it would skip.
-      const serialStale = this._caching && fit.serial !== serial;
+      // A far cascade is not redrawn every frame, so a moved prop has to mark it even on a frame it would skip. A still
+      // thing that changed (a tree knocked down) redraws the still copies one cascade a frame, nearest first: all four
+      // at once, with a forest in them, would hold up the frame for tens of milliseconds.
+      let serialStale = this._caching && fit.serial !== serial;
+      if (serialStale && !stale) {
+        if (staticSpent) serialStale = false;
+        else staticSpent = true;
+      }
       if (!stale && !due && !serialStale) return;
       if (stale) this._fit(light, fit, radius);
       // A refit, a moved prop, or a missing copy redraws the static ground. A truck's frame only redraws what moves.
@@ -290,6 +308,8 @@ export class SunShadows {
     light.target.updateMatrixWorld();
     light.updateMatrixWorld();
     light.shadow.normalBias = texel * NORMAL_BIAS_PER_TEXEL;
+    // The depth bias is in the shadow camera's depth range: the texel's feet over the range's.
+    light.shadow.bias = Math.min(DEPTH_BIAS, -(texel * DEPTH_BIAS_PER_TEXEL) / (cam.far - cam.near));
 
     fit.center = this._camera.position.clone();
     fit.radius = radius;
@@ -318,7 +338,7 @@ export class SunShadows {
       let owner = null;
       for (let node = object; node; node = node.parent) if (truckRoots.has(node)) { owner = node; break; }
       if (owner) byRoot.get(owner).meshes.push(object);
-      else if (object.userData.shadowProxy || object.userData.frameCount) this._dynamicCasters.push(object);
+      else if (object.userData.shadowProxy || object.userData.frameCount || object.userData.moving) this._dynamicCasters.push(object);
       else this._staticCasters.push(object);
     };
     this._scene.traverse(consider);
@@ -562,6 +582,9 @@ export function enableSunShadows({ renderer, scene, camera, world, sun, trucks =
   for (const truck of trucks) truck.traverse((o) => { if (o.isMesh && o.parent?.name !== "lamps") { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
   // The placed models are instanced over every copy; only the original's instances cast (track-scene.js).
   world.getObjectByName("objects")?.traverse((o) => { if (o.isInstancedMesh) o.castShadow = true; });
+  // 4x4 Evolution's forest is drawn once, by chunks at the copy nearest the camera (track-scene.js `createForest`): each
+  // chunk casts, and the shadow cameras cull the chunks out of their reach.
+  world.getObjectByName("forest")?.traverse((o) => { if (o.isInstancedMesh && casts(o)) o.castShadow = true; });
   // A facing object (type 8 and 9 billboards) turns to the camera, which would swing its shadow around with the
   // view. Its shadow comes from an invisible copy held square to the sun instead (updateTrackWorld keeps it there).
   world.userData.shadowFacing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(sun.position.x, sun.position.z));

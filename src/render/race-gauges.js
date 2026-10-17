@@ -10,7 +10,8 @@ import { drawText, textWidth } from "./bitmap-text.js";
 
 export const mphFromFeetPerSecond = (speed) => Math.abs(speed) * 3600 / 5280;
 export const kphFromFeetPerSecond = (speed) => Math.abs(speed) * 0.3048 * 3.6;
-export const gearLabel = (gear) => ["", "P", "R", "N", "1", "2", "3"][gear] ?? "";
+/** P, R, N, then the forward gears 1, 2, 3... (a 4x4 Evolution vehicle may have more than MTM2's three). */
+export const gearLabel = (gear) => ["", "P", "R", "N"][gear] ?? (gear >= 4 ? String(gear - 3) : "");
 /** The speedometer's full scale and tick spacing in a unit. */
 export const SPEED_SCALE = Object.freeze({ mph: { max: 110, step: 10 }, kph: { max: 180, step: 20 } });
 
@@ -109,11 +110,11 @@ export function createRaceGauges(font, { needle = null, units = "mph" } = {}) {
     setUnits(next) { unit = next === "kph" ? "kph" : "mph"; last = ""; },
     /** Counts the redraws, for the headset's copy of the gauges (render/xr/vr-hud.js). */
     get version() { return version; },
-    set({ speed = 0, rpm = 0, gear = 1 }) {
+    set({ speed = 0, rpm = 0, gear = 1, gears = 3 }) {
       if (!shown) return;
       const kph = unit === "kph";
       const reading = kph ? kphFromFeetPerSecond(speed) : mphFromFeetPerSecond(speed), thousands = Math.max(0, rpm / 1000);
-      const key = `${reading.toFixed(1)}|${thousands.toFixed(1)}|${gear}|${unit}`;
+      const key = `${reading.toFixed(1)}|${thousands.toFixed(1)}|${gear}|${gears}|${unit}`;
       if (key === last) return;
       last = key;
       version++;
@@ -122,9 +123,11 @@ export function createRaceGauges(font, { needle = null, units = "mph" } = {}) {
       const perUnit = kph ? SPEEDO.perMph / 1.609344 : SPEEDO.perMph;
       dial(SPEEDO, (v) => gaugeAngle(v, SPEEDO.start, perUnit, max), Array.from({ length: max / step + 1 }, (_, i) => i * step), reading);
       dial(TACHO, (v) => gaugeAngle(v * 1000, TACHO.start, TACHO.perRpm, 9000), Array.from({ length: 10 }, (_, i) => i), thousands);
-      // The gear strip at the bottom with the current gear lit (the exe draws it at a fixed spot).
+      // The gear strip at the bottom with the current gear lit (the exe draws it at a fixed spot): every forward gear
+      // the gearbox has, MTM2's three or a 4x4 Evolution vehicle's own.
       let x = 296;
-      for (const item of ["P", "R", "N", "1", "2", "3"]) {
+      const forward = Math.max(gears, gear - 3);
+      for (const item of ["P", "R", "N", ...Array.from({ length: forward }, (_, i) => String(i + 1))]) {
         label(item, x, 461, item === gearLabel(gear) ? GEAR_ON : GREY);
         x += 10;
       }

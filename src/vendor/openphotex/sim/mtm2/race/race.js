@@ -11,7 +11,7 @@ import { HULL_ORDER, depthInside, faceNormal, nearestFace } from "../collide/fac
 import { advanceAutopilotSegment, headingOf, segmentEta, wrapGame } from "../truck/autopilot.js";
 import { liftOff, truckRadius } from "../truck/recovery.js";
 import { autopilotGain } from "../truck/state.js";
-import { isArc, orientedCourse } from "../world/course.js";
+import { isArc, nextSegmentIndex, orientedCourse } from "../world/course.js";
 import { createSummit, summitTick } from "./summit.js";
 const toWorld = (m, x, y, z) => [m[0] * x + m[1] * y + m[2] * z, m[3] * x + m[4] * y + m[5] * z, m[6] * x + m[7] * y + m[8] * z];
 const toBody = (m, x, y, z) => [m[0] * x + m[3] * y + m[6] * z, m[1] * x + m[4] * y + m[7] * z, m[2] * x + m[5] * y + m[8] * z];
@@ -186,6 +186,57 @@ export function segmentProgress(t, course, difficulty) {
     }
     return 1 - f;
 }
+/** How far from its segment's line a truck may stray, feet, and how far past its end, as a share of it (`0x486630`). */
+export const OFF_COURSE_FT = 160, OFF_COURSE_PAST = 1.1;
+/**
+ * The off-course re-pick (§14.24, `0x486630`): a truck more than 160 ft from its segment's line, or
+ * more than 10% past its end, is put on the arc whose centre is nearest it (x, z), then on the
+ * straight before or after that arc when its progress there is below 0 or above 1. The segments it
+ * moves by count as passed. Returns whether the segment changed.
+ */
+export function offCourseRepick(t, course, difficulty, reversed = false) {
+    const seg = course[t.s.ap.segment];
+    if (!seg)
+        return false;
+    let S, E;
+    if (isArc(seg)) {
+        S = [seg.centre[0] + Math.sin(seg.entryAngle) * seg.radius, 0, seg.centre[2] + Math.cos(seg.entryAngle) * seg.radius];
+        E = [seg.centre[0] + Math.sin(seg.exitAngle) * seg.radius, 0, seg.centre[2] + Math.cos(seg.exitAngle) * seg.radius];
+    }
+    else {
+        S = seg.start;
+        E = seg.end;
+    }
+    const dx = E[0] - S[0], dz = E[2] - S[2], len = Math.hypot(dx, dz);
+    const px = t.s.pos[0] - S[0], pz = t.s.pos[2] - S[2];
+    const off = len === 0 ? 999999 : Math.abs(px * dz - pz * dx) / len;
+    const along = len === 0 ? 0 : (px * dx + pz * dz) / (len * len);
+    if (!(off > OFF_COURSE_FT || along > OFF_COURSE_PAST))
+        return false;
+    let pick = t.s.ap.segment, best = 999999;
+    for (let i = 0; i < course.length; i++) {
+        const c = course[i];
+        if (!isArc(c))
+            continue;
+        const d = Math.hypot(t.s.pos[0] - c.centre[0], t.s.pos[2] - c.centre[2]);
+        if (d < best) {
+            best = d;
+            pick = i;
+        }
+    }
+    const before = t.s.ap.segment;
+    if (pick !== before) {
+        t.s.ap.segment = pick;
+        const progress = segmentProgress(t, course, difficulty);
+        if (progress < 0)
+            pick = reversed ? (pick + 1) % course.length : (pick - 1 + course.length) % course.length;
+        else if (progress > 1)
+            pick = nextSegmentIndex(course, pick, reversed);
+        t.s.ap.segment = pick;
+        t.s.ap.segmentsPassed += pick - before;
+    }
+    return t.s.ap.segment !== before;
+}
 /** Whether `b` is ahead of `a` in the race order (§14.24). */
 function ahead(race, a, b) {
     if (a.laps >= race.laps)
@@ -216,6 +267,7 @@ export function raceTick(race, dt, ap, recover) {
         for (const t of race.trucks) {
             if (!race.summit)
                 testCheckpoint(race, t, dt, recover ? { ground: recover.ground, rc: recover.rc(t) } : undefined);
+            offCourseRepick(t, orientedCourse(ap.course, ap.reversed), race.difficulty, ap.reversed);
             const seg = orientedCourse(race.course, ap.reversed)[t.s.ap.segment];
             if (seg)
                 t.s.ap.eta += (segmentEta(t.s, t.p, seg, ap.height) - t.s.ap.eta) * dt * 0.75;

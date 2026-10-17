@@ -126,11 +126,15 @@ test("version 8 keeps MTM1's trucks apart by default, over the off an older save
   assert.equal(migrateSettings({ version: 8, mtm1TrucksApart: false }).mtm1TrucksApart, false);
 });
 
-test("the MTM1 Classic preset turns every MTM1 choice on, the 1996 physics, and the enhanced graphics off", async () => {
+test("the MTM1 Classic preset turns every MTM1 choice and the backdrops on, dust and sparks off, the 1996 physics, smooth textures and the enhanced graphics off", async () => {
   const { applyMtm1Classic } = await import("../src/app/settings.js");
-  const settings = applyMtm1Classic({ graphics: "max", physics: "mtm2", look: "enhanced" });
-  for (const key of ["mtm1EarthSky", "mtm1TrucksApart", "originalBackdrops", "mtm1Particles", "mtm1Sounds"]) assert.equal(settings[key], true, key);
-  assert.equal(settings.mtm1TerrainOverlap, false);
+  const settings = applyMtm1Classic({ graphics: "max", physics: "mtm2", look: "classic", backdrops: false, sparks: true, sparkAmount: 3, dustEffects: true, dustAmount: 3 });
+  for (const key of ["mtm1EarthSky", "mtm1TrucksApart", "originalBackdrops", "mtm1Particles", "mtm1Sounds", "backdrops"]) assert.equal(settings[key], true, key);
+  for (const key of ["sparks", "dustEffects"]) assert.equal(settings[key], false, key);
+  assert.equal(settings.sparkAmount, 0);
+  assert.equal(settings.dustAmount, 0);
+  assert.equal(settings.look, "enhanced");
+  assert.equal(settings.terrainOverlap, false);
   assert.equal(settings.physics, "mtm1");
   assert.equal(settings.graphics, "off");
 });
@@ -151,23 +155,23 @@ test("the MTM2 Classic preset: no MTM1 choice, the 1998 game's own picture and n
   const settings = applyMtm2Classic(applyMtm1Classic({ graphics: "max", sparks: true, sparkAmount: 3, waterSplash: true, reflections: true, hdWeather: true }));
   for (const key of ["mtm1EarthSky", "mtm1TrucksApart", "mtm1Particles", "mtm1Sounds", "hdWeather", "reflections", "waterSplash", "sparks"]) assert.equal(settings[key], false, key);
   for (const key of ["originalBackdrops", "greyDust", "waterReflections", "truckReflections", "backdrops", "dustEffects"]) assert.equal(settings[key], true, key);
-  assert.equal(settings.mtm1TerrainOverlap, true);
+  assert.equal(settings.terrainOverlap, true);
   assert.equal(settings.physics, "mtm2");
   assert.equal(settings.sparkAmount, 0);
   assert.equal(settings.graphics, "off");
 });
 
-test("the OpenMTM2 preset: no MTM1 or MTM2 choice, the port's effects, every enhanced part but the glossy paint, and the patch's extras", async () => {
+test("the OpenMTM2 preset: no MTM1 or MTM2 choice, the port's effects with normal dust, every enhanced part with the glossy paint, and the patch's extras", async () => {
   const { applyMtm1Classic, applyOpenMtm2 } = await import("../src/app/settings.js");
   const { VISUAL_OPTIONS } = await import("../src/game/visuals.js");
   const settings = applyOpenMtm2(applyMtm1Classic({ waterReflections: true, truckReflections: true, greyDust: true }));
-  for (const key of ["mtm1EarthSky", "mtm1Particles", "mtm1Sounds", "originalBackdrops", "greyDust", "waterReflections", "truckReflections", "glossyPaint"]) assert.equal(settings[key], false, key);
+  for (const key of ["mtm1EarthSky", "mtm1Particles", "mtm1Sounds", "originalBackdrops", "greyDust", "waterReflections", "truckReflections"]) assert.equal(settings[key], false, key);
   for (const key of ["tireTracks", "waterSplash", "terrainDetail", "hdWeather", "reflections"]) assert.equal(settings[key], true, key);
   assert.equal(settings.physics, "mtm2");
-  assert.equal(settings.dustAmount, 3);
+  assert.equal(settings.dustAmount, 2);
   assert.equal(settings.sparkAmount, 2);
-  assert.equal(settings.graphics, "custom");
-  for (const option of VISUAL_OPTIONS) assert.equal(settings[option.key], option.key !== "glossyPaint", option.key);
+  assert.equal(settings.graphics, "max");
+  for (const option of VISUAL_OPTIONS) assert.equal(settings[option.key], true, option.key);
 });
 
 test("version 10 keeps the chase camera clear of the ground by default, over older saves, and every preset turns it on", async () => {

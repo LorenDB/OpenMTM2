@@ -7,6 +7,7 @@
   the keys are not its to take (`blocked`).
 */
 import { el } from "./dom.js";
+import { createTextPanel } from "../render/bitmap-text.js";
 import {
   FLY_SCHEMES, FLY_SCHEME_NAMES, createCourseTour, createFlyCamera, flyForward, nextFlyScheme, startTourNear, stepCourseTour, stepFlyCamera,
 } from "../game/fly-camera.js";
@@ -27,21 +28,30 @@ export const FLY_SCHEME_KEY = "KeyC", FLY_FOLLOW_KEY = "KeyT", FLY_LIST_KEY = "K
  * @param {(text: string, seconds?: number) => void} options.say a line for the caption
  * @param {() => boolean} options.blocked whether the keys are someone else's now (a pause, the console)
  * @param {number} options.baseFov the view's field of view at zoom 1, degrees
+ * @param {object} [options.font] the game's bitmap font (render/bitmap-text.js) the list of keys is drawn in, as the HUD is
  */
-export function createFlyController({ canvas, settings, save, course = [], courseOpen = false, groundAt, say = () => {}, blocked = () => false, baseFov = 60 }) {
+export function createFlyController({ canvas, settings, save, course = [], courseOpen = false, groundAt, say = () => {}, blocked = () => false, baseFov = 60, font = null }) {
   const fly = createFlyCamera();
   const tour = createCourseTour(course, { open: courseOpen });
   let scheme = FLY_SCHEMES.includes(settings.flyControls) ? settings.flyControls : "traxx";
   let enabled = false, following = false, lookX = 0, lookY = 0, zoomSteps = 0, dragging = false, lastMouse = null;
   const held = new Set();
-  const list = el("div", { class: "fly-keys", hidden: true });
+  const list = el("div", { class: font ? "fly-keys fly-keys-font" : "fly-keys", hidden: true });
+  // In the game's font the keys are its yellow and what they do white, a row each, under the scheme's name.
+  const panel = font ? createTextPanel(font, { fit: true, scale: Math.max(1, Math.round(window.innerHeight / 480)), labelColor: "#f2c14e", valueColor: "#ffffff" }) : null;
+  if (panel) list.append(panel.element);
 
-  const drawList = () => list.replaceChildren(
-    el("p", { class: "fly-keys-title" }, `${FLY_SCHEME_NAMES[scheme]}${following ? ", following the course" : ""}`),
-    ...flyKeyLines(scheme, { following, course: !!tour }).map((line) => {
+  const drawList = () => {
+    const title = `${FLY_SCHEME_NAMES[scheme]}${following ? ", following the course" : ""}`;
+    const lines = flyKeyLines(scheme, { following, course: !!tour }).map((line) => {
       const [key, ...rest] = line.split(": ");
-      return el("p", {}, el("span", { class: "fly-key" }, key), rest.join(": "));
-    }));
+      return [key, rest.join(": ")];
+    });
+    if (panel) { panel.set([title, "", ...lines]); return; }
+    list.replaceChildren(
+      el("p", { class: "fly-keys-title" }, title),
+      ...lines.map(([key, what]) => el("p", {}, el("span", { class: "fly-key" }, key), what)));
+  };
   const announce = () => say(`${FLY_SCHEME_NAMES[scheme]}. ${FLY_HELP[scheme]}. O: keys`, 5);
   const setScheme = (next) => {
     if (!FLY_SCHEMES.includes(next)) return;

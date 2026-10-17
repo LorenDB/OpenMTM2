@@ -17,15 +17,34 @@ export const SETTINGS_VERSION = 11;
 
 /**
  * The physics a race can run under, as Options (Game) and the console's `physics` list them. A model is one more entry
- * here and its rules in the simulation (OpenPhotex `simRules`). "mtm1" is Monster Truck Madness 1.00's differences
- * from MTM2 as read from its executable (MTM1_MONSTER_EXE_ANALYSIS.md 4.3), and its drag pass rules (7.2).
+ * here and its rules in the simulation (OpenPhotex `simRules`, `evoSim.evoRules`). "mtm1" is Monster Truck Madness 1.00's
+ * differences from MTM2 as read from its executable (MTM1_MONSTER_EXE_ANALYSIS.md 4.3), and its drag pass rules (7.2).
+ * "evo2" and "evo1" are 4x4 Evolution 2's and 4x4 Evolution's vehicle model (docs/EVO2_PHYSICS.md): every vehicle drives
+ * on it, an Evo vehicle on its own .TRK figures, any other on MTM2's figures for it. Any model runs on any track with any
+ * vehicle. "auto" picks one by the player's vehicle, "track" by the track's game (`resolvePhysics`).
  */
 export const PHYSICS_MODELS = Object.freeze([
+  Object.freeze({ id: "auto", label: "Auto (by vehicle)", note: "The model of the player's vehicle's game: 4x4 Evolution 2 or 4x4 Evolution for their vehicles, Monster Truck Madness for MTM1 trucks, Monster Truck Madness 2 for the rest" }),
+  Object.freeze({ id: "track", label: "Auto (by track)", note: "The model of the track's game: 4x4 Evolution 2 or 4x4 Evolution on their tracks, Monster Truck Madness on MTM1 tracks, Monster Truck Madness 2 on the rest" }),
   Object.freeze({ id: "mtm2", label: "Monster Truck Madness 2", note: "The 1998 game's" }),
   Object.freeze({ id: "mtm1", label: "Monster Truck Madness", note: "The 1996 game's: tires that touch throw trucks twice as hard, water stops a truck, no deep water, weather does not change the grip, no crash damage, and its own drag rules" }),
+  Object.freeze({ id: "evo2", label: "4x4 Evolution 2", note: "The 2001 game's vehicle model: each Evo vehicle on its own engine, gears, springs and tires; others on MTM2's figures. Airborne vehicles fall at 1.75 g, the centre of gravity sits 2 ft forward, hard steering at speed loosens the rear" }),
+  Object.freeze({ id: "evo1", label: "4x4 Evolution", note: "The 2000 game's vehicle model, as Evo 2's but floatier in the air, with the centre of gravity at the middle and bodies that slide further on the ground" }),
 ]);
-/** A physics model by id; an unknown id is the first, MTM2's. */
-export const physicsModel = (id) => PHYSICS_MODELS.find((m) => m.id === id) ?? PHYSICS_MODELS[0];
+/** A physics model by id; an unknown id is MTM2's. */
+export const physicsModel = (id) => PHYSICS_MODELS.find((m) => m.id === id) ?? PHYSICS_MODELS.find((m) => m.id === "mtm2");
+
+/**
+ * The model a race runs: the setting; with "auto" the one of the player's vehicle (its `<GAME>:<file>` name), with "track"
+ * the one of the track's game (`trackGame`, the build's `game`: "EVO2", "MTM1"...).
+ */
+export function resolvePhysics(id, vehicle, trackGame = null) {
+  const model = physicsModel(id).id;
+  const byGame = (game) => (game === "EVO2" ? "evo2" : game === "EVO1" ? "evo1" : game === "MTM1" ? "mtm1" : "mtm2");
+  if (model === "track") return byGame(String(trackGame ?? "").toUpperCase());
+  if (model !== "auto") return model;
+  return byGame(/^([A-Z0-9]+):/i.exec(String(vehicle ?? ""))?.[1]?.toUpperCase());
+}
 
 export const DEFAULT_SETTINGS = Object.freeze({
   look: "enhanced",           // "classic" or "enhanced"
@@ -58,7 +77,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   originalBackdrops: false,   // the game's own backdrops over HD ones (worker/track-build.js originalBackdrop)
   mtm1Sounds: false,          // MTM1's skid sounds (game/sound-model.js mtm1CornerSample and the rest)
   mtm1EarthSky: false,        // MTM1's flat sky on every track: an MTM1 track's own, any other EARTHSKY (worker/track-build.js loadSky)
-  mtm1TerrainOverlap: false,  // MTM1 tracks: MTM2's two-pixel overlap of the ground tiles
+  terrainOverlap: true,       // MTM2's two-pixel overlap of the ground tiles, on every track; off, they meet edge to edge as MTM1's do
   vsync: true,                // draw with the display's refresh; off draws as fast as the browser allows
   aa: "msaa",                 // anti-aliasing (game/aa.js): off, msaa, fxaa, smaa or taa. The next race takes it up
   fpsLimit: false,            // hold the frame rate to `fpsLimitValue`
@@ -86,6 +105,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   defaultOpponents: 3,        // computer trucks in a race until the player picks their own (MONSTER.INI defaultOpponents)
   drawCells: 128,             // terrain cells (32 ft each): how far the world is drawn (the camera's far plane and the fog)
   backdrops: false,           // the SIT's backdrop models behind the world (off by default)
+  sunFlare: true,             // the sun's lens flare with Smooth textures (render/sun-flare.js); off keeps the sun and moon discs
+  evoParticles: true,         // 4x4 Evolution tracks: the game's tire debris by surface, and Autumn's leaves (render/evo-particles.js)
+  evoForest: true,            // 4x4 Evolution tracks without a .VEG (4x4 Evolution's): a forest generated as Evo 2 does (worker/evo-track-build.js)
+  evoLife: true,              // 4x4 Evolution tracks: the game's AI life, its flocks of birds (game/evo-life.js; the game's `ailife`)
+  evoGrass: true,             // 4x4 Evolution tracks: the grass drawn per cell by each texture's vegetation class (render/evo-grass.js)
+  evoGrassRange: 2,           // the Evo grass slider: 0 None, 1 Near, 2 Medium, 3 Far, 4 Very far (render/evo-grass.js `GRASS_RADII`)
   terrainDetail: true,        // Community Patch 3: the terrain's detail normals where a track paints a mask, and HD tiles' normal maps
   reflections: true,          // Community Patch 3: the sky reflected in materials that ask for it (glass, paint)
   showHiddenTracks: true,     // the two hidden tracks are listed unless this is turned off
@@ -148,6 +173,8 @@ export function migrateSettings(stored) {
   if (!(stored.version >= 11)) stored.extensions = migrateExtensionSettings(stored);
   stored.version = SETTINGS_VERSION;
   delete stored.showHiddenTrucks;
+  // "MTM1 no terrain overlap" became "Terrain overlap", for every track.
+  delete stored.mtm1TerrainOverlap;
   // A value that is not one of the choices draws the default.
   if (!AA_MODES.some((mode) => mode.id === stored.aa)) delete stored.aa;
   if (!GRAPHICS_PRESETS.some((preset) => preset.id === stored.graphics)) delete stored.graphics;
@@ -196,20 +223,22 @@ export function clearSettings(storage = globalThis.localStorage) {
 }
 
 /**
- * The "MTM1 Classic preset" (Options, Advanced): every MTM1 choice on, the 1996 physics, and the enhanced graphics off,
- * the game's own sharp texels with them. Changes `settings` in place.
+ * The "MTM1 Classic preset" (Options, Advanced): every MTM1 choice on, the 1996 physics, the original backdrops shown,
+ * no port dust or sparks (MTM1's own particles stand in), the enhanced graphics off and the textures smoothed.
+ * Changes `settings` in place.
  */
 export function applyMtm1Classic(settings) {
   Object.assign(settings, {
-    mtm1EarthSky: true, mtm1TerrainOverlap: false, mtm1TrucksApart: true, originalBackdrops: true, mtm1Particles: true, mtm1Sounds: true,
-    physics: "mtm1", graphics: "off", look: "classic", hdWeather: false, cameraClearance: true,
+    mtm1EarthSky: true, terrainOverlap: false, mtm1TrucksApart: true, originalBackdrops: true, mtm1Particles: true, mtm1Sounds: true,
+    backdrops: true, dustAmount: 0, dustEffects: false, sparkAmount: 0, sparks: false,
+    physics: "mtm1", graphics: "off", look: "enhanced", hdWeather: false, cameraClearance: true,
   });
   return settings;
 }
 
 /** Every MTM1 choice off: MTM2's sky, tile overlap, particles, sounds and physics, and a truck name to the archive mounted first. */
 const NO_MTM1 = Object.freeze({
-  mtm1EarthSky: false, mtm1TerrainOverlap: true, mtm1TrucksApart: false, mtm1Particles: false, mtm1Sounds: false, physics: "mtm2",
+  mtm1EarthSky: false, terrainOverlap: true, mtm1TrucksApart: false, mtm1Particles: false, mtm1Sounds: false, physics: "mtm2",
 });
 
 /**
@@ -228,14 +257,14 @@ export function applyMtm2Classic(settings) {
 
 /**
  * The "OpenMTM2 preset" (Options, Advanced): the port's own picture. No MTM1 or MTM2 choice (MTM1's trucks stay listed
- * apart, which hides nothing), tire tracks, splashes, many dust puffs and the normal sparks, every enhanced part but the
- * glossy paint (Custom), and Community Patch 3's terrain detail, HD weather and reflections. Changes `settings` in place.
+ * apart, which hides nothing), tire tracks, splashes, the normal dust puffs and sparks, every enhanced part, the glossy
+ * paint among them (Max), and Community Patch 3's terrain detail, HD weather and reflections. Changes `settings` in place.
  */
 export function applyOpenMtm2(settings) {
   Object.assign(settings, NO_MTM1, {
     mtm1TrucksApart: true, originalBackdrops: false, greyDust: false, waterReflections: false, truckReflections: false, backdrops: false,
-    tireTracks: true, waterSplash: true, dustAmount: 3, dustEffects: true, sparkAmount: 2, sparks: true,
-    ...GRAPHICS_FLAGS.max, glossyPaint: false, graphics: "custom", look: "enhanced",
+    tireTracks: true, waterSplash: true, dustAmount: 2, dustEffects: true, sparkAmount: 2, sparks: true,
+    ...GRAPHICS_FLAGS.max, glossyPaint: true, graphics: "max", look: "enhanced",
     terrainDetail: true, hdWeather: true, reflections: true, cameraClearance: true,
   });
   return settings;

@@ -24,7 +24,10 @@ function barColor(ms) {
 export function createFpsCounter({ visible = false } = {}) {
   const main = el("div", { class: "fps-main" }, formatFps(60));
   const sub = el("div", { class: "fps-sub" }, "warming up");
-  const text = el("div", { class: "fps-counter-text" }, main, sub);
+  // The simulation's side, where a screen reports it (`noteSim`): a truck that moves in jumps while the frames come
+  // steadily shows here, as replies that come late or few steps a second.
+  const simLine = el("div", { class: "fps-sub", hidden: true });
+  const text = el("div", { class: "fps-counter-text" }, main, sub, simLine);
   const graph = el("canvas", { class: "fps-graph", width: GRAPH_WIDTH, height: GRAPH_HEIGHT });
   graph.setAttribute("aria-hidden", "true");
   const element = el("div", { class: "fps-counter", hidden: !visible }, text, graph);
@@ -63,13 +66,26 @@ export function createFpsCounter({ visible = false } = {}) {
     }
   };
 
+  // One second's simulation replies: how many, the steps they carried, the longest wait between two, the slowest round trip.
+  let simFrom = 0, simReplies = 0, simSteps = 0, simGap = 0, simTrip = 0, simLast = 0;
+  const noteSim = (now, steps, tripMs) => {
+    if (simLast) simGap = Math.max(simGap, now - simLast);
+    simLast = now;
+    simReplies++; simSteps += steps; simTrip = Math.max(simTrip, tripMs);
+    if (now - simFrom < 1000) return;
+    const secs = (now - simFrom) / 1000;
+    simLine.hidden = false;
+    simLine.textContent = `sim ${Math.round(simSteps / secs)} steps/s, ${Math.round(simReplies / secs)} replies/s, gap ${simGap.toFixed(0)} ms, trip ${simTrip.toFixed(1)} ms`;
+    simFrom = now; simReplies = 0; simSteps = 0; simGap = 0; simTrip = 0;
+  };
+
   const writeText = () => {
     main.textContent = `${Math.round(tracker.fps)} FPS avg ${Math.round(tracker.average)} 1% low ${Math.round(tracker.low1)}`;
     sub.textContent = `${tracker.avgMs.toFixed(1)} ms avg ${tracker.p99Ms.toFixed(1)} ms p99 ${tracker.worstMs.toFixed(1)} ms worst (${tracker.count})`;
   };
 
   return {
-    element,
+    element, noteSim,
     get visible() { return shown; },
     get stats() {
       return {

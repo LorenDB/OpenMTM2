@@ -16,9 +16,12 @@
   is the app's one shared renderer, so a headset session carries over from race to race.
 */
 import { createMtm1Particles } from "../../render/mtm1-particles.js";
+import { createEvoParticles } from "../../render/evo-particles.js";
+import { createEvoLifeScene } from "../../render/evo-life.js";
+import { createFall, stepFall } from "../../game/falling-trees.js";
 import { createTruckReflections } from "../../render/truck-reflection.js";
 import { createWaterMirror } from "../../render/water-mirror.js";
-import { dustLevel, sparkLevel } from "../../game/tire-effects.js";
+import { dustLevel, sparkLevel, treadShare, wheelShare } from "../../game/tire-effects.js";
 import { WATERMARK } from "../../app/version.js";
 import { TREX } from "../../game/cheats.js";
 import { moveToEvent, runEvent } from "../../app/tournament.js";
@@ -27,13 +30,13 @@ import { createConsole, distanceCommand } from "../console.js";
 import { simGroundOfBuild, terrainOfBuild } from "../../shared/build-terrain.js";
 import * as THREE from "three";
 import { el } from "../dom.js";
-import { PHYSICS_MODELS, physicsModel, saveSettings } from "../../app/settings.js";
+import { PHYSICS_MODELS, physicsModel, resolvePhysics, saveSettings } from "../../app/settings.js";
 import { createFlyController } from "../fly-controller.js";
 import { WorkerClient } from "../../shared/worker-client.js";
 import { currentDriver, getProfiles } from "../../app/profile-store.js";
 import { createKeyboardInput } from "../../game/input/keyboard.js";
 import { mergeBindings } from "../../game/input/bindings.js";
-import { SunFlare } from "../../render/sun-flare.js";
+import { SunFlare, sunBlocked } from "../../render/sun-flare.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
 import { mtm2Sim } from "../../vendor/openphotex/index.js";
 import { COCKPIT_EYE, CAMERA_CLEAR_FT, CAMERA_MODES, CAMERA_PITCH_MAX, CAMERA_PITCH_RATE, INERTIA_MODE, cameraMode, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextInList, nextMode, raceCamera, shortViews, zoomToFov } from "../../game/cameras.js";
@@ -67,9 +70,13 @@ import { createFpsCounter } from "../fps-counter.js";
 import { createCrashDamage, crashDamageMessage } from "../../game/crash-damage.js";
 import { createCaption } from "../../render/caption.js";
 import { courseLoop, createCourseMap } from "../../render/minimap.js";
+import { createSummitSounds } from "../../game/summit-sounds.js";
 import { createCockpit, finderAngle } from "../../render/cockpit.js";
 import { cpuNames, formatRaceTime, raceEntrants, summitBoard } from "../../game/race-setup.js";
-import { createModelLibrary, createTrackWorld, disposeObject, moveObjects, setStartLights, skyColor, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
+import {
+  addFallingTree, createModelLibrary, createTrackWorld, disposeObject, moveObjects, poseFallingTree, removeFallingTree, setForestTree,
+  setStartLights, skyColor, updateSky, updateTrackWorld, placeSky,
+} from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
 import { conformPose, createRelief, tireRadiusFt } from "../../game/terrain-relief.js";
@@ -85,6 +92,7 @@ import { createRaceVr } from "../../render/xr/race-vr.js";
 import { vrButton } from "../vr-button.js";
 import { extensionHud, extensionMarkerTarget, extensionResultTime, extensionTruckLabels, extensionTruckMarks, prepareExtensionRace, resolveRaceExtension } from "../../game/extensions/race-loader.js";
 import { createExtensionScene } from "../../render/extensions/loader.js";
+import { GRASS_RADII, grassLevel } from "../../render/evo-grass.js";
 
 /** The race HUD text is a light grey with a one-pixel black shadow (the game's own look). */
 const HUD_GREY = "#cfcfcf";
@@ -201,8 +209,17 @@ async function mountRace(container, context, params) {
   const hud = createTextPanel(lcdFont ?? hudFont, { width: 206, scale, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY });
   hud.element.classList.add("race-hud");
   hud.element.hidden = context.settings.timingHud === false;
+  // A watched race with the camera flown free: the watched truck's times give way to the race's lap and clock, at the top.
+  const flyHud = createTextPanel(lcdFont ?? hudFont, { fit: true, scale, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY });
+  flyHud.element.classList.add("race-fly-hud");
+  flyHud.element.hidden = true;
   const gauges = createRaceGauges(hudFont, { needle, units: context.settings.units });
   gauges.setVisible(context.settings.dashboard !== false);
+  /*
+    What the cockpit view shows: MTM2's own dashboard, with its three-gear shifter, only for an MTM truck. Another game's
+    vehicle (a 4x4 Evolution truck may have any number of gears) has the chase view's gauges and gear strip in its place.
+  */
+  const fullCockpit = !/^(CPR|EVO1|EVO2):/i.test(playerTruck ?? "");
   const cockpit = createCockpit(cockpitArt, { needle, font: hudFont, units: context.settings.units });
   // The caption bar: the game's large font on a dark rectangle at the bottom, for every in-race message.
   const caption = createCaption(messageFont);
@@ -216,7 +233,7 @@ async function mountRace(container, context, params) {
   // The Names key (game/names.js): what the course map and the labels over the trucks say.
   let namesMode = 0;
   const enterVr = vrButton(context, "race-vr");
-  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, dragTree.element, fpsCounter.element, gauges.element, caption.element, enterVr.element, pauseMenu, loading);
+  const view = el("section", { class: "race-view" }, canvas, ...(cockpit ? [cockpit.dashboard, cockpit.mirror, cockpit.finder] : []), hud.element, flyHud.element, dragTree.element, fpsCounter.element, gauges.element, caption.element, enterVr.element, pauseMenu, loading);
   container.append(view);
 
   let disposed = false;
@@ -243,17 +260,20 @@ async function mountRace(container, context, params) {
   }).catch(() => {});
 
   const truckName = (file) => catalogTrucks.find((t) => t.file === file)?.name ?? file;
-  const mtm1Options = { sky: context.settings.mtm1EarthSky === true, overlap: !!context.settings.mtm1TerrainOverlap };
+  const mtm1Options = { sky: context.settings.mtm1EarthSky === true };
   // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
   applyGraphics(context.settings, graphicsHardware());
   // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
   setLightsInFog(visualSettings(context.settings).weather);
   const build = await context.assets.call("trackRender", {
+    evoForest: context.settings.evoForest !== false,
     path: track.path, scope: track.scope, detailLevel: extension?.detailLevel ?? context.settings.detailLevel, raceType: track.raceType,
-    truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap,
+    truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap ?? context.settings.terrainOverlap !== false,
     // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
     visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
     smoothTiles: context.settings.look === "enhanced",
+    // The enhanced look draws the sun's shadows: a 4x4 Evolution level's painted ones are left off (worker/evo-track-build.js).
+    sunShadows: context.settings.look === "enhanced",
   });
   if (disposed) return { unmount };
   if (build.problems?.length && !demo) {
@@ -265,7 +285,11 @@ async function mountRace(container, context, params) {
   // Professional puts every truck on course 2 when the SIT has one (MONSTER_EXE_ANALYSIS.md 9); the map still draws course 1.
   // A drag strip's courses are its lanes instead (6.4): course 1 is lane 0's, whatever the difficulty.
   const raceCourse = Number(difficulty) === 2 && build.sim.proCourse && track.raceType !== "drag" ? build.sim.proCourse : build.sim.course;
-  const minimap = createCourseMap(build.sim.course, { font: hudFont, open: !!build.sim.courseOpen });
+  // A Summit Rumble's map shows the summit and the scoring zone (checkpoints 0 and 1, 6.3), not a course.
+  const minimap = createCourseMap(build.sim.course, {
+    font: hudFont, open: !!build.sim.courseOpen,
+    areas: summit ? { zone: build.sim.checkpoints?.[0]?.gate ?? null, summit: build.sim.checkpoints?.[1]?.gate ?? null } : null,
+  });
   minimap.setVisible(!!context.settings.minimap);
   view.append(minimap.element);
   const grid = build.sim.grid;
@@ -308,8 +332,12 @@ async function mountRace(container, context, params) {
   const world = createTrackWorld(build, look, {
     backdrops: !!context.settings.backdrops, drawDistance, naturalLight,
     terrainDetail: context.settings.terrainDetail !== false, reflections: context.settings.reflections !== false,
+    grass: GRASS_RADII[grassLevel(context.settings)],
   });
   scene.add(world);
+  // 4x4 Evolution's knockable trees by id, and the falls under way.
+  const treeObjects = new Map((build.objects ?? []).filter((o) => typeof o.sitIndex === "string" && o.sitIndex.startsWith("t")).map((o) => [o.sitIndex, o]));
+  const falls = [];
   const extensionScene = createExtensionScene(scene, world, extensionDress);
   // Sound: the engines, skids and impacts of every truck, and the world's ambience and music.
   context.menuMusic?.stop();
@@ -400,7 +428,7 @@ async function mountRace(container, context, params) {
 
   // The lamps as the port draws them, where "Truck lamps" is on (docs/VISUALS.md, "Lamps").
   const richLamps = visualSettings(context.settings).lamps;
-  // MTM2's truck reflections (Options, Display; render/truck-reflection.js): CLOUDENV over the bodies.
+  // MTM2's truck reflections (Options, Advanced; render/truck-reflection.js): CLOUDENV over the bodies.
   const truckReflections = context.settings.truckReflections
     ? createTruckReflections(await context.assets.call("envMap", { weather: weatherId }).catch(() => null)) : null;
   if (truckReflections) cleanups.push(() => truckReflections.dispose());
@@ -418,7 +446,9 @@ async function mountRace(container, context, params) {
 
   // Crash damage (game/crash-damage.js): the hull contacts the simulation reports dent the bodies.
   // The physics model (Options, Game; the console's `physics`): the 1996 game has no crash damage.
-  const physics = physicsModel(params.physics ?? context.settings.physics).id;
+  // "auto" picks the model of the player's vehicle's game, "track" the track's (app/settings.js `resolvePhysics`).
+  const physicsSetting = physicsModel(params.physics ?? context.settings.physics).id;
+  const physics = resolvePhysics(physicsSetting, entrants.find((e) => e.player)?.file ?? playerTruck, build.game ?? track.game ?? null);
   const crash = createCrashDamage(entrants.length, { enabled: context.settings.crashDamage !== false && physics !== "mtm1" });
   // Instant replay (game/replay.js): a frame every quarter second, kept for the results screen.
   const recorder = createReplayRecorder({
@@ -434,7 +464,7 @@ async function mountRace(container, context, params) {
     if (data) {
       flare = new SunFlare(world, data);
       flare.setMode(celestialFor(weatherId));
-      flareBlocked = (origin, direction) => sunBlocked(terrain, origin, direction, true);
+      flareBlocked = (origin, direction) => sunBlocked((x, z) => mtm2Sim.groundHeightAt(terrain, x, z), origin, direction, true);
     }
     cleanups.push(() => { shadows?.dispose?.(); flare?.dispose(); });
   }
@@ -451,6 +481,9 @@ async function mountRace(container, context, params) {
     ra0: build.sim.ra0?.buffer ?? null,
     ra1: build.sim.ra1?.buffer ?? null,
     boxes: build.sim.boxes,
+    // 4x4 Evolution 2's object paths and the track's script (game/evo-paths.js, worker/sim-worker.js).
+    paths: build.sim.paths ?? [],
+    script: build.sim.script ?? null,
     ramps: build.sim.ramps,
     topCrush: build.sim.topCrush ?? [],
     course: extensionRace?.course ?? raceCourse,
@@ -466,7 +499,8 @@ async function mountRace(container, context, params) {
     trucks: entrants.map((e) => {
       const model = build.truckModels[e.file];
       return {
-        truck: { anchors: model.anchors, scrapePoints: model.scrapePoints, tire: model.tire ?? null },
+        // `evo`: an Evo vehicle's own figures, for the 4x4 Evolution physics (worker/foreign-truck-build.js).
+        truck: { anchors: model.anchors, scrapePoints: model.scrapePoints, tire: model.tire ?? null, evo: model.evoSpec ?? null },
         start: extensionRace?.start(entrants.indexOf(e), { pos: grid[e.slot].pos, heading: grid[e.slot].heading })
           ?? { pos: grid[e.slot].pos, heading: grid[e.slot].heading },
         autopilot: !e.player || !!context.settings.fullAutopilot || demo,
@@ -500,7 +534,7 @@ async function mountRace(container, context, params) {
   const vr = createRaceVr(host, {
     settings: context.settings, save: () => saveSettings(context.settings), truckFile: playerTruck,
     body: build.truckModels[playerTruck].parts.body, truckObject: drawn[0].object, scene,
-    panels: { timing: vrTiming, message: vrMessage, gauges }, cockpit: vrCockpit, stock: cockpitArt, needleArt: needle, look,
+    panels: { timing: vrTiming, message: vrMessage, gauges }, cockpit: fullCockpit ? vrCockpit : null, stock: fullCockpit ? cockpitArt : null, needleArt: needle, look,
   });
   cleanups.push(() => vr.dispose());
 
@@ -525,6 +559,8 @@ async function mountRace(container, context, params) {
 
   // The Inertia view (the Z-mode cameras option) comes after the game's ten.
   const zCameras = () => !!context.settings.zModeCameras;
+  /** The transfer case last shown (Evo physics), so that a Drive Mode press is answered in the caption. */
+  let shownTransfer = null;
   let viewMode = demo || spectator ? 4 : (zCameras() ? cameraMode(context.settings.view) : CAMERA_MODES[context.settings.view])?.id ?? 1, paused = false, finishing = false;
   // Each truck's lamp switch (game/truck-lights.js) and the clock the blinking lamps and beacons run on.
   const lamps = entrants.map(() => lampsAtStart(WEATHER_LOOK[weatherId]?.headlights));
@@ -591,6 +627,7 @@ async function mountRace(container, context, params) {
   cleanups.push(() => replaying?.screen?.unmount?.());
   /** The cockpit view's G state (0 the cockpit, 1 no cockpit with the gauges, 2 neither). */
   const cockpitMode = () => context.settings.cockpitMode ?? 0;
+  const dashMode = () => (fullCockpit ? cockpitMode() : Math.max(1, cockpitMode()));
 
   /*
     The pause menu as the headset shows it (render/xr/vr-panel.js): the same choices as the flat
@@ -685,7 +722,7 @@ async function mountRace(container, context, params) {
     if (keyMap.pause.includes(e.code)) setPaused(!paused);
     if (keyMap.dashboard.includes(e.code) && !e.repeat) {
       // In the cockpit the key goes round three states: the cockpit; no cockpit with the gauges of the other views; no cockpit and no gauges.
-      if (viewMode === 0) context.settings.cockpitMode = (cockpitMode() + 1) % 3;
+      if (viewMode === 0) context.settings.cockpitMode = fullCockpit ? (cockpitMode() + 1) % 3 : dashMode() === 1 ? 2 : 1;
       else context.settings.dashboard = gauges.toggle();
       saveSettings(context.settings);
     }
@@ -773,7 +810,9 @@ async function mountRace(container, context, params) {
   // A drawn truck is seated on the drawn ground, wheel by wheel; the simulation's truck stays where it is.
   const seats = entrants.map((e) => {
     const model = build.truckModels[e.file];
-    return { hubs: model.anchors, radius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft) };
+    // `wheels`: its dust and sparks against a stock truck's, by its tires' volume (game/tire-effects.js `wheelShare`);
+    // `tread`: how wide its tire tracks are, by its tires' width (`treadShare`).
+    return { hubs: model.anchors, radius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft), wheels: wheelShare(model.tire), tread: treadShare(model.tire) };
   });
   // The shade each truck keeps the sky's light off (render/contact-shade.js): strongest where the sun's own shadow is faint.
   const contactShade = scenery.contactShade(seats);
@@ -801,13 +840,28 @@ async function mountRace(container, context, params) {
   const mtm1Particles = context.settings.mtm1Particles
     ? createMtm1Particles({ scene, ground, atlas: build.terrain?.atlas ?? null, clr: build.sim?.clr ? new Uint16Array(build.sim.clr) : null }) : null;
   if (mtm1Particles) cleanups.push(() => mtm1Particles.dispose());
+  // 4x4 Evolution's tire debris on its own tracks (Options, Advanced; render/evo-particles.js), beside the dust.
+  const evoParticles = !mtm1Particles && /^EVO/.test(build.game ?? "") && context.settings.evoParticles !== false
+    ? createEvoParticles({
+      scene, ground, atlas: build.terrain?.atlas ?? null, clr: build.sim?.clr ? new Uint16Array(build.sim.clr) : null,
+      leaves: /^AUTUMN/i.test(track.path.split(/[\\/]/).pop() ?? ""), waterLevelFt: build.sim?.waterLevelFt ?? build.waterLevelFt ?? null,
+    }) : null;
+  if (evoParticles) cleanups.push(() => evoParticles.dispose());
+  // 4x4 Evolution's AI life (Options, Advanced; game/evo-life.js): its flocks of birds, over the ground or the water.
+  const lifeWater = build.sim?.waterLevelFt ?? build.waterLevelFt ?? null;
+  const evoLife = build.life && context.settings.evoLife !== false
+    ? createEvoLifeScene({
+      scene, life: build.life, models: build.models, textures: build.modelTextures, look,
+      ground: (x, z) => Math.max(ground(x, z), lifeWater ?? -Infinity),
+    }) : null;
+  if (evoLife) cleanups.push(() => evoLife.dispose());
   const effectFlags = () => (mtm1Particles
     ? { dust: 0, tracks: false, sparks: sparkLevel(context.settings), splash: false }
     : { dust: dustLevel(context.settings), tracks: context.settings.tireTracks !== false, sparks: sparkLevel(context.settings), splash: context.settings.waterSplash !== false });
   // The water's surface: the port's own (render/water-surface.js) or the game's frames.
   const waterSurface = scenery.water ?? createWaterSurface(waters, effectsArt, look);
   if (!scenery.water) cleanups.push(() => waterSurface?.dispose());
-  // MTM2's water reflections (Options, Display; render/water-mirror.js), on the game's own water: "Reflective water" has
+  // MTM2's water reflections (Options, Advanced; render/water-mirror.js), on the game's own water: "Reflective water" has
   // its own. Not in Snow, where the water is ice.
   const waterMirror = context.settings.waterReflections && !scenery.water && waterSurface?.material && waters.length
     ? createWaterMirror({ renderer, scene, levelAt: () => (weatherScene.weather === 5 ? null : waterLevelNow), hide: () => waters }) : null;
@@ -841,7 +895,7 @@ async function mountRace(container, context, params) {
   let mirrorTick = 0, mirrorReading = false, mirrorWarmed = false;
   const renderMirror = () => {
     if (!mirrorTarget) return;
-    if (viewMode !== 0 || cockpitMode() !== 0) { cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height, false); return; }
+    if (viewMode !== 0 || dashMode() !== 0) { cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height, false); return; }
     // Every other frame, and not while the picture before is still on its way back.
     if (mirrorTick++ % 2 || mirrorReading) return;
     mirrorCamera.position.copy(cockpitEye.position);
@@ -862,7 +916,7 @@ async function mountRace(container, context, params) {
     // 15 to 50 ms on a small chip.
     mirrorReading = true;
     renderer.readRenderTargetPixelsAsync(mirrorTarget, 0, 0, mirrorTarget.width, mirrorTarget.height, mirrorPixels)
-      .then(() => { if (!disposed && viewMode === 0 && cockpitMode() === 0) cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height); })
+      .then(() => { if (!disposed && viewMode === 0 && dashMode() === 0) cockpit.setMirror(mirrorPixels, mirrorTarget.width, mirrorTarget.height); })
       .catch(() => {})
       .finally(() => { mirrorReading = false; });
     renderer.setRenderTarget(null);
@@ -880,7 +934,7 @@ async function mountRace(container, context, params) {
   // (ui/fly-controller.js, the fly-by's own).
   const flyer = spectator ? createFlyController({
     canvas, settings: context.settings, save: () => saveSettings(context.settings), course: build.sim.course, courseOpen: !!build.sim.courseOpen,
-    groundAt: groundHeightFn(terrain), say: (text, seconds) => caption.show(text, seconds ?? 4), baseFov: fovFor(1),
+    groundAt: groundHeightFn(terrain), say: (text, seconds) => caption.show(text, seconds ?? 4), baseFov: fovFor(1), font: hudFont,
     blocked: () => paused || finishing || !!gameConsole?.open || !!replaying || !!context.optionsDialog?.isConnected,
   }) : null;
   if (flyer) { view.append(flyer.element); cleanups.push(() => flyer.dispose()); }
@@ -992,12 +1046,24 @@ async function mountRace(container, context, params) {
     extensionEvents = view.events;
     extensionPhase = view.phase;
   };
+  const summitSounds = createSummitSounds((sample, options) => audio.play(sample, options));
   const showRace = (race, now) => {
     // The gantry's lamps change only when the countdown state does (6.1).
     if (lightsOn !== !race.started) {
       lightsOn = !race.started;
       if (startLamps) startLamps.set(lightsOn);
       else setStartLights(world, lightsOn, build.startLightColours);
+    }
+    // The free camera of a watched race: no truck's times, only the race's lap (the leader's) and its clock, or a
+    // Rumble's time left; the keys list (O) is the only other thing over the view.
+    const flying = !!flyer?.enabled;
+    view.classList.toggle("race-flying", flying);
+    flyHud.element.hidden = !flying;
+    if (flying) {
+      const leader = race.trucks.find((x) => x.place === 1) ?? race.trucks[0];
+      flyHud.set(summit
+        ? [[t("Time Remaining:"), formatRaceTime(race.summit?.left ?? 0)]]
+        : [[t("Lap:"), `${Math.min(leader.lap, race.laps)}/${race.laps}`], [t("Clock:"), formatRaceTime(race.clock)]]);
     }
     if (race.extension) { showExtension(race, race.extension, now); return; }
     // A watched race shows the watched truck's times.
@@ -1028,6 +1094,8 @@ async function mountRace(container, context, params) {
       return;
     }
     if (summit) {
+      // The player's scoring sounds (6.3, 0x42a090): never for a watched truck.
+      if (!spectator && race.started) summitSounds.update(race.trucks[0].score);
       // A Rumble: the score and the round's time left, then the place by score (6.3).
       // Under them every driver with their score, the leader first, as the game lists them (from play; its drawing
       // code was not traced).
@@ -1121,10 +1189,22 @@ async function mountRace(container, context, params) {
     }
     if (ready && !busy && !paused && !finishing) {
       busy = true;
+      const sentAt = performance.now();
       sim.call("tick", { tMs: now, input: sampleInput() })
         .then((r) => {
           latest = r;
+          if (fpsCounter.visible) fpsCounter.noteSim(performance.now(), r.steps ?? 0, performance.now() - sentAt);
           if ((r.race || freeRoam) && r.time !== undefined) recorder.update(r.time, r.poses.map((p) => p.current), r.boxes ?? [], (i) => crash.code(i));
+          // 4x4 Evolution trees a truck knocked over start to fall (game/falling-trees.js).
+          for (const f of r.fallen ?? []) {
+            const object = treeObjects.get(f.id);
+            if (!object) continue;
+            // Drawn by itself while it falls (render/track-scene.js `addFallingTree`), its place in the forest left empty.
+            const drawnFall = setForestTree(world, f.id, null) ? addFallingTree(world, object.model, [f.pos[0], -f.pos[2]]) : null;
+            falls.push({ ...createFall(f.id, object.matrix, f.pos, f.dir), drawn: drawnFall });
+          }
+          // A 4x4 Evolution 2 track script's Message() (worker/sim-worker.js), in the caption.
+          for (const text of r.messages ?? []) flash(text, now, 4);
           if (r.boxes?.length) {
             moveObjects(world, r.boxes.map((b) => ({ sitIndex: b.sitIndex, matrix: toSceneMatrix(b.matrix, b.pos) })));
             for (const b of r.boxes) { movedBoxes.add(b.sitIndex); movedPositions.set(b.sitIndex, b.pos); }
@@ -1177,8 +1257,13 @@ async function mountRace(container, context, params) {
         trucks: shown.map((p, i) => ({
           object: drawn[i], pose: p, surface: latest.poses[i].sound ? { family: surfaceFamily(latest.poses[i].sound.surface), type: latest.poses[i].sound.surface } : null,
           // What the simulation says of each tire (its grip, the force through it, how fast it turns), for sliding and spinning.
-          tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius,
+          tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius, wheels: seats[i].wheels, tread: seats[i].tread,
         })),
+      });
+      evoLife?.update(paused ? 0 : dt, camera, shown.map((p) => p.pos));
+      evoParticles?.update({
+        dt: paused ? 0 : dt, camera,
+        trucks: shown.map((p, i) => ({ object: drawn[i], pose: p, tires: latest.poses[i].sound?.tires ?? null, radius: seats[i].radius })),
       });
       mtm1Particles?.update({
         dt: paused ? 0 : dt, camera, pixelSize: Math.max(1, Math.round((host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height) / 480)),
@@ -1236,10 +1321,15 @@ async function mountRace(container, context, params) {
       // Your own truck is not drawn from inside it.
       drawn[0].object.visible = viewMode !== 0 || host.presenting;
       const mine = latest.poses[0].current;
-      gauges.setVisible(viewMode === 0 ? cockpitMode() === 1 : context.settings.dashboard !== false);
+      // The Drive Mode key's answer (worker/sim-worker.js): the transfer case as it now is.
+      if (mine.transfer !== null && mine.transfer !== undefined && mine.transfer !== shownTransfer) {
+        if (shownTransfer !== null) flash(["2WD", "4WD High", "4WD Low"][mine.transfer] ?? "", now, 2);
+        shownTransfer = mine.transfer;
+      }
+      gauges.setVisible(viewMode === 0 ? dashMode() === 1 : context.settings.dashboard !== false);
       gauges.set(mine);
       if (cockpit) {
-        cockpit.setDashboard({ visible: viewMode === 0 && cockpitMode() === 0 && !host.presenting, speed: mine.speed, rpm: mine.rpm, gear: mine.gear, steer: mine.steer });
+        cockpit.setDashboard({ visible: viewMode === 0 && dashMode() === 0 && !host.presenting, speed: mine.speed, rpm: mine.rpm, gear: mine.gear, steer: mine.steer });
         const next = build.sim.checkpoints[latest.race?.trucks[0].checkpoint ?? 0];
         cockpit.setFinder({
           visible: context.settings.finder !== false && !!next && !summit && !freeRoam && !gameMode,
@@ -1248,7 +1338,9 @@ async function mountRace(container, context, params) {
         });
       }
       if (minimap.visible) {
-        minimap.set(shown.map((p, i) => ({ pos: inWorld(p.pos), heading: p.euler[2], place: latest.race?.trucks[i]?.place ?? i + 1, label: nameLine(nameLabel(namesMode, entrants[i], truckName)) })), dt);
+        const focus = spectator ? cameraTarget : 0;
+        minimap.set(shown.map((p, i) => ({ pos: inWorld(p.pos), heading: p.euler[2], place: latest.race?.trucks[i]?.place ?? i + 1, label: nameLine(nameLabel(namesMode, entrants[i], truckName)) })), dt,
+          { focus, state: latest.race?.summit?.states?.[focus] ?? 0 });
       }
       if (latest.race && !finishing) showRace(latest.race, now);
       // Free roam has only the clock.
@@ -1304,6 +1396,24 @@ async function mountRace(container, context, params) {
     waterSurface?.update(dt, weatherScene.weather, { sun, light: weatherScene.lightLevel(), sky, fog: scene.fog, background, levelFt: water ? water.userData.levelFt + water.position.y : null });
     // A headset draws everything twice: terrain past the fog's end, which nothing can be seen of, is left out.
     const sight = vr.sight(scene.fog);
+    if (falls.length) {
+      const moves = [];
+      for (const fall of falls) {
+        const matrix = stepFall(fall, paused ? 0 : dt);
+        if (!matrix) continue;
+        if (!fall.drawn) moves.push({ sitIndex: fall.id, matrix });
+        else if (!fall.done) poseFallingTree(fall.drawn, matrix);
+        else {
+          // Down: the tree lies in the forest again, and its own drawing goes.
+          setForestTree(world, fall.id, matrix);
+          removeFallingTree(world, fall.drawn);
+        }
+      }
+      if (moves.length) moveObjects(world, moves);
+      for (let i = falls.length - 1; i >= 0; i--) if (falls[i].done) falls.splice(i, 1);
+    }
+    // 4x4 Evolution's grass lies down under the trucks (render/evo-grass.js), game feet.
+    if (build.grass && context.settings.evoGrass !== false && shownPoses) world.userData.grassPressers = shownPoses.flatMap((p, i) => (p ? [[p.pos[0], p.pos[2], Math.max(...seats[i].hubs.map((h) => Math.hypot(h[0], h[2]))) * 0.7 + seats[i].radius]] : []));
     updateTrackWorld(world, camera, dt, { viewRange: host.presenting ? sight : undefined, fineRange: host.presenting ? HEADSET_FINE_RANGE_FT : undefined });
     animateRex(paused ? 0 : dt);
     if (shadows) {
@@ -1314,7 +1424,7 @@ async function mountRace(container, context, params) {
     if (flare) {
       // A headset has no frame to draw the flare over: it stands in the scene instead.
       flare.setStereo(host.presenting);
-      flare.update(camera, sunTravel, true, weatherScene.weather <= 1, flareBlocked);
+      flare.update(camera, sunTravel, true, weatherScene.weather <= 1 && context.settings.sunFlare !== false, flareBlocked);
     }
     // The lens is the flat screen's (render/lens.js): a headset draws each eye straight to its display.
     truckReflections?.update(camera, weatherScene.weather);
@@ -1453,7 +1563,7 @@ async function mountRace(container, context, params) {
         complete: () => PHYSICS_MODELS.map((m) => m.id),
         run: ([word]) => {
           const model = PHYSICS_MODELS.find((m) => m.id === (word ?? "").toLowerCase());
-          if (!model) return `Usage: physics <${PHYSICS_MODELS.map((m) => m.id).join("|")}>. Now ${physics} (${physicsModel(physics).label}).`;
+          if (!model) return `Usage: physics <${PHYSICS_MODELS.map((m) => m.id).join("|")}>. Now ${physicsSetting === "auto" ? `auto: ${physics}` : physics} (${physicsModel(physics).label}).`;
           context.settings.physics = model.id;
           saveSettings(context.settings);
           restart({ physics: model.id });
@@ -1636,15 +1746,3 @@ function celestialFor(weather) {
   return weather <= 1 ? "sun" : weather === 7 ? "moon" : "none";
 }
 
-/** Whether the ground between a point and the horizon toward the sun hides the sun (scene frame in, game frame out). */
-function sunBlocked(terrain, origin, direction, wraps = true) {
-  // As far as the far corner of the world: a mountain across the map hides the sun too.
-  for (let t = 16; t < 12000; t += 16 + t * 0.02) {
-    const x = origin.x + direction.x * t, y = origin.y + direction.y * t, z = -(origin.z + direction.z * t);
-    // A level drawn once has nothing past its edges.
-    if (!wraps && (x < 0 || x >= 8192 || z < 0 || z >= 8192)) return false;
-    const wrap = (v) => ((v % 8192) + 8192) % 8192;
-    if (y < mtm2Sim.groundHeightAt(terrain, wrap(x), wrap(z))) return true;
-  }
-  return false;
-}

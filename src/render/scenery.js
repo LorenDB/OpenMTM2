@@ -86,7 +86,7 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
   }
   const groundSurface = on.puddles || on.snow ? createGroundSurface({ world, puddleTexture, shelterTexture, puddles: on.puddles, snow: on.snow, sun, ripples, puddleMap: build.puddles ?? null }) : null;
   const groundDetail = on.detail && renderer && build.terrain?.atlas
-    ? createGroundDetail({ world, atlas: build.terrain.atlas, textureValues: build.sim?.textureValues ?? null, renderer, sun, look }) : null;
+    ? createGroundDetail({ world, atlas: build.terrain.atlas, textureValues: build.terrain.atlas.slotValues ?? build.sim?.textureValues ?? null, renderer, sun, look }) : null;
   // Without the detail the ground is still mipmapped, in either picture: its tiles from a stack, each filtered down by itself.
   const groundTiles = !groundDetail && renderer && build.terrain?.atlas ? createGroundTiles({ world, atlas: build.terrain.atlas, renderer, look }) : null;
   // MSAA is what the picture already did, so that choice makes nothing more. The others draw one sample and a pass.
@@ -126,7 +126,7 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
   */
   const cells = on.particles && build.sim?.clr && build.terrain?.atlas ? build.sim.clr : null;
   const textures = cells ? tileTones(build.terrain.atlas).map((tone, slot) => {
-    const type = Math.floor((build.sim.textureValues?.[slot] ?? 0) / 100);
+    const type = Math.floor(((build.terrain.atlas.slotValues ?? build.sim.textureValues)?.[slot] ?? 0) / 100);
     return Object.freeze({ tone, type, dust: groundDust(tone, type) });
   }) : null;
   const particles = on.particles ? {

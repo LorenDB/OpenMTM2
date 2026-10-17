@@ -51,6 +51,7 @@ export const HOCKEY_EXTENSION = Object.freeze({
   ]),
   acceptsTrack: isHockeyTrack,
   trackLocked: true,
+  minEntrants: 2,
   weather: HOCKEY_WEATHER,
   detailLevel: 2,
 });
@@ -220,6 +221,23 @@ export function hockeySpot(rink, teams, i) {
   const facing = [-own.out * rink.frame.u[0], -own.out * rink.frame.u[1]];
   return { pos: [x, rink.iceFt + RIDE_FT, z], heading: Math.atan2(facing[0], facing[1]) };
 }
+
+/**
+ * Where the Helicopter key sets truck `i` down: `{ pos, heading }` at the rink's centre, where the puck faces off, on
+ * the ice and facing the other goal. With the puck still there the truck is set down just short of it, on its own side.
+ */
+export function hockeyHeliSpot(rink, teams, i, puckPos = null) {
+  const own = rink.goals[teams[i]];
+  const facing = [-own.out * rink.frame.u[0], -own.out * rink.frame.u[1]];
+  let [x, z] = rink.centre;
+  if (puckPos && Math.hypot(puckPos[0] - x, puckPos[2] - z) < HELI_CLEAR_FT) {
+    x -= facing[0] * HELI_CLEAR_FT;
+    z -= facing[1] * HELI_CLEAR_FT;
+  }
+  return { pos: [x, rink.iceFt, z], heading: Math.atan2(facing[0], facing[1]) };
+}
+/** How far from the puck the helicopter sets a truck down at the centre. */
+export const HELI_CLEAR_FT = 30;
 
 /** A game of Hockey: `teams[i]` the team of truck i, `target` the goals that win it. */
 export function createHockey(rink, teams, target = DEFAULT_GOALS) {

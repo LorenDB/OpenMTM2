@@ -1,5 +1,5 @@
 /*
-  MTM2's water reflections, "Water reflections" in Options (MONSTER_EXE_ANALYSIS.md "Reflections", 0x52f3a0): with the
+  MTM2's water reflections, "MTM2 Water reflections" in Options (Advanced) (MONSTER_EXE_ANALYSIS.md "Reflections", 0x52f3a0): with the
   eye above the water the game first draws the world mirrored in the water's plane, then the frame over it, so the
   translucent water shows the world upside down. Here the mirrored world is drawn into a picture of its own, from the
   eye reflected in the water's plane, with everything under the plane cut away; the game's water shows it where it

@@ -6,7 +6,7 @@ import { mtm2Sim as S } from "../../vendor/openphotex/index.js";
 import { createRumbleDriver, driveToPoint } from "../rumble-ai.js";
 import {
   ESCAPE_S, NUDGE_AFTER_S, NUDGE_FT_S, TURN_FLOOR, createHockey, hockeyAim, hockeyHeld,
-  hockeyPlaces, hockeyRoles, hockeySpot, hockeyStep, outsideRink, rinkGround,
+  hockeyHeliSpot, hockeyPlaces, hockeyRoles, hockeySpot, hockeyStep, outsideRink, rinkGround,
 } from "./hockey.js";
 import {
   TAG_SPEED, coverOf, createTag, createTagDriver, roamRect, tagDrivePoint, tagHeld,
@@ -80,6 +80,8 @@ function createHockeyRuntime(payload, env) {
     specialBox: puck,
     debug: { game, puck },
     held: () => hockeyHeld(game),
+    /** The Helicopter key sets a truck down at the rink's centre, where the puck faces off. */
+    heliSpot: (index) => hockeyHeliSpot(payload.rink, game.teams, index, puck ? puck.pos : null),
     tick() {
       const action = hockeyStep(game, puck ? puck.pos : [...payload.rink.puck.start], step);
       if (action === "reset") {

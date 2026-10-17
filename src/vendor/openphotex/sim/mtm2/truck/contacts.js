@@ -44,8 +44,7 @@ function edgeCrossing(from, q, edgeFoot, u) {
         along = -along;
     return { qx, x: add(edgeFoot, scale(u, along)), fromQ: len(sub(q, from)) };
 }
-/** `inertia` is I1, I2, I3 (about z, x, y). */
-export function solveHullContacts(s, inertia, ground, external, mass, weight, dt) {
+export function solveHullContacts(s, inertia, ground, external, mass, weight, dt, friction) {
     const out = { force: [0, 0, 0], moment: [0, 0, 0], count: 0 };
     if (s.contactCount === 0)
         return out;
@@ -171,7 +170,9 @@ export function solveHullContacts(s, inertia, ground, external, mass, weight, dt
         const u = add(vt, v);
         // The game samples the surface at the truck position plus the unrotated body point.
         const type = surfaceType(ground.surface(pos[0] + c.body[0], pos[1] + c.body[1], pos[2] + c.body[2]));
-        let limit = N[i] * 0.5 * surfaceMu(type) * weather;
+        let limit = friction
+            ? N[i] * friction.factor * friction.mu(type) * weather
+            : N[i] * 0.5 * surfaceMu(type) * weather;
         if (limit < 0)
             limit = 0;
         const sp = len(u);

@@ -1569,6 +1569,26 @@ The race tick (`0x487300`), every frame while racing, for each truck: the checkp
 (`+0x8dc`, eased toward `0x480ba0` at `0.75 dt`), the segment advance (14.23) and the segment
 progress; then, for all trucks, the race order; then the race clock (`0x6f61d8`) gains `dt`.
 
+**Off-course re-pick** (`0x486630`), every truck, every race tick (skipped while `0x6f58d8` is 1):
+
+- The truck's segment is taken as a line from `S` to `E`: a straight's start and end, an arc's
+  entry and exit points (`centre + radius (sin a, cos a)` with the entry and exit angles). In x
+  and z only.
+- `along = u . (pos - S) / |E - S|` (`u` the unit direction) and `off` the truck's distance from
+  the line through `S` and `E` (999999 when `S = E`).
+- When `off > 160` ft or `along > 1.1` (the double at `0x60eb20`): the truck is put on the **arc
+  whose centre is nearest** it in x and z, on the course it races (course 2 on Professional when
+  the SIT has one, else course 1). The search runs over the even slots 2, 4, 6... (the arcs in the
+  1-based layout above) up to the one flagged `lastentry`. When that changes its segment or
+  course, `+0x898` and `+0xfb4` take the new ones, the current course pointer is reloaded
+  (`0x4e1ad0`) and the segment progress (`+0x8c8`) is recomputed from the new segment. The
+  steering integral and the gain are not touched.
+- So a truck that runs on past a segment it can never leave (a corner whose arc is built on its
+  own straight's line, where the end-line test gives 999999, `0x481060`) is put back on the
+  course once it is 10% past that segment's end.
+- For the player's truck the same test also sets the wrong-way flag `0x640788` (not traced
+  further).
+
 **Time to the segment's end** (`0x480ba0`), eased in as `eta += (T - eta) 0.75 dt`, with `v`
 the average of the four tires' forward speeds (`v_fwd`, tire `+0x50`):
 

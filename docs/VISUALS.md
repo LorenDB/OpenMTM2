@@ -246,8 +246,11 @@ neighbours are other tiles, so it cannot be shrunk for the distance without thei
 running in. The renderer cuts the atlas into a stack of textures, one layer a tile, which has
 no neighbours: each tile is filtered down for the distance (its own chain of smaller copies)
 and across a slant (16 samples, or what the card has) by itself. A cell's place in the stack
-and in its tile is worked out from the same texture coordinates the mesh always had. A card
-that cannot hold a layer a tile keeps the atlas and still takes what follows.
+and in its tile is worked out from the same texture coordinates the mesh always had, read at a
+sample the cell covers (centroid): with several samples a point, a point on a cell's edge is
+otherwise shaded at its pixel's centre, outside the cell, and read the next slot's tile, which
+drew grey lines along the cell edges far off. A card that cannot hold a layer a tile keeps the
+atlas and still takes what follows.
 
 **Mipmapped without it.** The stack is not only "Ground detail"'s: with that switch off, in
 either picture (the game's own look and the enhanced one), the ground still reads its tiles
@@ -1266,6 +1269,18 @@ as long); with "Rich particles" Few is fewer, smaller and shorter, Many more, la
 "MTM2 classic dust" (Options, Advanced) draws a wheel's dust and a collision's smoke alike in the
 puff art's own grey, as the game does.
 
+**By the wheels** (`wheelShare` in `src/game/tire-effects.js`): the dust and sparks above are a
+monster truck's. A vehicle's tires make that much against a stock MTM2 truck's by their volume
+(radius squared times width) over the stock tire's (the simulation's 3 ft by 4 ft), from 0.02 to 2:
+each of the game's puffs is kept with that chance, the rich dust laid along the way and the dust,
+snow and mud thrown are that much fewer, and so are sparks. A 4x4 Evolution pickup (1.27 ft by
+0.8 ft) throws about 4%, Evo 2's AMT monster truck 75%, an MTM truck all of it.
+
+The tire tracks are as wide as the tire, by the same measure (`treadShare`): its width over the
+stock tire's 4 ft, from 0.1 to 2, so a ribbon, a rut and its ridges in the snow are all that much
+narrower. A 4x4 Evolution pickup's tracks (0.8 ft tires) are a fifth of a monster truck's across,
+Evo 2's AMT monster truck's (3.6 ft) nine tenths.
+
 **The Sparks slider** (Options, Display; `sparkLevel` and `sparkRules` in
 `src/game/tire-effects.js`) sets how many for both pictures: 0 None, 1 Few (half the chances of
 Normal), 2 Normal (the rates above, one streak a spark with "Rich particles"), 3 Many (the rates
@@ -1612,13 +1627,13 @@ the weather gave them, and no tail lamp brakes.
 The game's two (MONSTER_EXE_ANALYSIS.md "Reflections"), each a switch on the Display page, for
 the game's own picture and the enhanced one alike:
 
-- **Water reflections** (`src/render/water-mirror.js`): with the eye above the water the world is
+- **MTM2 Water reflections** (Options, Advanced; `src/render/water-mirror.js`): with the eye above the water the world is
   drawn mirrored in the water's plane into a picture of its own, half the screen's size, cut at
   the plane, without the water and the trucks' reflections; the game's water is laid over it at
   its own opacity. The game draws the mirrored world first and its frame over it; this is the same
   picture. Only on the game's water: "Reflective water" mirrors in its own way. None in Snow,
   where the water is ice.
-- **Truck reflections** (`src/render/truck-reflection.js`): each body face that faces the eye drawn
+- **MTM2 Truck reflections** (Options, Advanced; `src/render/truck-reflection.js`): each body face that faces the eye drawn
   again in CLOUDENV at half opacity, its texel from the view, as the game works it out; the sky's
   sixteen colours in Rain, Dusk and Night (`src/worker/env-map.js`), none in Foggy, Dense Fog and
   Pitch Black. The game draws them only with the water's switch on as well; here they are apart.

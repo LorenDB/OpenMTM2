@@ -106,3 +106,20 @@ test("stock and add-on tracks carry the preview and icon their SIT names", { ski
   assert.deepEqual([farm.logoBmp, farm.mapBmp], ["FARM", "TN-FM29"]);
   for (const t of tracks.filter((t) => t.game === "MTM2" || t.game === "MTM1")) assert.ok(t.logoBmp, `${t.file} names its picture`);
 });
+
+test("4x4 Evolution 2 trucks that share a name are told apart: Class 2 and 3 by their stock parts, then the engine", async () => {
+  const { variantLabels } = await import("../src/worker/catalog.js");
+  const blazer = variantLabels([
+    { base: "Chevrolet Blazer", file: "CBLS24", quickClass: 1, parts: 0, displacement: 4.3 },
+    { base: "Chevrolet Blazer", file: "CBLS242", quickClass: 2, parts: 15, displacement: 4.3 },
+    { base: "Chevrolet Blazer", file: "CBLS243", quickClass: 3, parts: 20, displacement: 4.3 },
+  ]);
+  assert.deepEqual([...blazer.values()], ["Chevrolet Blazer", "Chevrolet Blazer Class 2", "Chevrolet Blazer Class 3"]);
+  const xterra = variantLabels([
+    { base: "Nissan Xterra XE 2WD", file: "XTERXE24", quickClass: 0, parts: 0, displacement: 2.4 },
+    { base: "Nissan Xterra XE 2WD", file: "XTERXE26", quickClass: 0, parts: 0, displacement: 3.3 },
+  ]);
+  assert.deepEqual([...xterra.values()], ["Nissan Xterra XE 2WD 2.4L", "Nissan Xterra XE 2WD 3.3L"]);
+  const same = variantLabels([{ base: "A", file: "A1", quickClass: 0, parts: 0, displacement: 2 }, { base: "A", file: "A2", quickClass: 0, parts: 0, displacement: 2 }]);
+  assert.deepEqual([...same.values()], ["A A1", "A A2"]);
+});

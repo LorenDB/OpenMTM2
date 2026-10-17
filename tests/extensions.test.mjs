@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BOARD_HEIGHT_FT, CELEBRATE_S, FACEOFF_HOLD_S, FROZEN_SURFACE, RINK_SURFACE, createHockey, hockeyAim, hockeyHeld,
-  hockeyPlaces, hockeyRink, hockeyRoles, hockeySpot, hockeyStep, hockeyTeams, isHockeyTrack, outsideRink, rinkBoxes, rinkGround, toLocal, toWorld,
+  hockeyHeliSpot, hockeyPlaces, hockeyRink, hockeyRoles, hockeySpot, hockeyStep, hockeyTeams, isHockeyTrack, outsideRink, rinkBoxes, rinkGround, toLocal, toWorld,
 } from "../src/game/extensions/hockey.js";
 import {
   AIM_MIN_S, AIM_MAX_S, CALM_COVER_SHARE, COVER_REACH_FT, FLANK_FT, HIDE_STANDOFF_FT, IT_ARROW, IT_START_HOLD_S,
@@ -78,6 +78,16 @@ test("the teams alternate from the player's, and face off on their own half faci
   assert.ok(Math.abs(red.heading - Math.PI / 2) < 1e-9, "red faces +x");
   assert.ok(Math.abs(Math.abs(blue.heading) - Math.PI / 2) < 1e-9 && Math.sin(blue.heading) < 0, "blue faces -x");
   assert.notDeepEqual(red.pos, red2.pos);
+});
+
+test("the Helicopter key sets a truck down at the rink's centre on the ice, facing the other goal, short of a puck still there", () => {
+  const teams = [0, 1];
+  const free = hockeyHeliSpot(rink, teams, 0, [rink.centre[0] + 200, ICE, rink.centre[1]]);
+  assert.deepEqual(free.pos, [rink.centre[0], ICE, rink.centre[1]]);
+  assert.equal(free.heading, hockeySpot(rink, teams, 0).heading);
+  const red = hockeyHeliSpot(rink, teams, 0, [rink.centre[0], ICE, rink.centre[1]]);
+  const blue = hockeyHeliSpot(rink, teams, 1, [rink.centre[0], ICE, rink.centre[1]]);
+  assert.ok(red.pos[0] < rink.centre[0] && blue.pos[0] > rink.centre[0], "each on its own side of the puck");
 });
 
 /** Steps of play with the puck at each of `path` (world [x, y, z]) in turn. */
@@ -528,4 +538,17 @@ test("Tag on Farm Road 29: It sits in Park through its hold, and a touch makes t
   // The game ends at its minute.
   for (let t = 3 + IT_START_HOLD_S + 3; t < 3 + 62; t += 0.25) r = session.advance(t, {});
   assert.ok(r.race.over && r.race.trucks.every((x) => x.finished));
+});
+
+test("Tag and Hockey need two trucks at least: the player counts unless spectating", async () => {
+  const { entrantsShortfall, extensionById } = await import("../src/game/extensions/loader.js");
+  for (const id of ["tag", "hockey"]) {
+    const extension = extensionById(id);
+    assert.equal(extension.minEntrants, 2, id);
+    assert.equal(entrantsShortfall(extension, [], false), 2, `${id} alone`);
+    assert.equal(entrantsShortfall(extension, ["A.TRK"], false), null, `${id} with one opponent`);
+    assert.equal(entrantsShortfall(extension, ["A.TRK"], true), 2, `${id} watching one`);
+    assert.equal(entrantsShortfall(extension, ["A.TRK", "B.TRK"], true), null, `${id} watching two`);
+  }
+  assert.equal(entrantsShortfall(null, [], false), null);
 });

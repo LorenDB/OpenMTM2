@@ -26,6 +26,7 @@ export * from "./truck/autopilot.js";
 export * from "./truck/traffic.js";
 export * from "./collide/box.js";
 export { collideTruckBox, collideTruckImmovableBox, truckBoxSeparated } from "./collide/truck-box.js";
+export { FACE_DEPTH_FT, collideTruckFace, createFace } from "./collide/truck-face.js";
 export { stepBox, postStepBox, boxInertia } from "./collide/box-step.js";
 export { stepMovingObject, groundBoxHeightAt } from "./collide/moving-object.js";
 export { collideTruckRamp, createRamp, insideRamp, rampEdges, rampHeightAt, rampSlopeNormal } from "./collide/ramp.js";

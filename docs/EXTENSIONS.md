@@ -54,6 +54,7 @@ export const MY_EXTENSION = Object.freeze({
   ],
   acceptsTrack(track) { return true; },
   trackLocked: false,             // true when the mode owns the track choice
+  minEntrants: 2,                 // trucks the mode needs (the player counts unless spectating); omit for none
   weather: null,                  // null uses the player's weather; a number locks it
   detailLevel: null,              // null uses the normal setting
 });
@@ -117,7 +118,9 @@ is the frame top. The water level is the ice. The shore is where the unfrozen gr
 
 The extension adds boards 8 ft high and 2 ft thick, 8 ft inside the shore. Corners are cut at 45 degrees,
 from 20 to 120 ft as needed to keep their midpoint on the ice. Boards collide with trucks and the puck.
-A truck more than 4 ft outside for 2 seconds returns to its face-off spot.
+A truck more than 4 ft outside for 2 seconds returns to its face-off spot. The Helicopter key (H) carries
+the player's truck to the rink center, the puck's start, on the ice and facing the other goal; with the puck
+still within 30 ft of the center, the truck is set down 30 ft short of it on its own side.
 
 The level places the puck at 22 ft, below the 28.5 ft ice. Hockey starts it at rink center with its bottom
 0.3 ft above the ice and publishes that pose before the first frame. The puck retains the original ice

@@ -52,7 +52,7 @@ export default async function mount(container, context, { track, truckFile }) {
   const sim = new WorkerClient(new URL("../../worker/sim-worker.js", import.meta.url));
   const init = {
     heights: build.heights ? build.heights.slice().buffer : null, heightsFt: build.heightsFt ? build.heightsFt.slice().buffer : null,
-    road: build.sim.road ?? null, walls: build.sim.walls ?? null,
+    road: build.sim.road ?? null, walls: build.sim.walls ?? null, faces: build.sim.faces ?? null,
     clr: build.sim.clr.buffer,
     textureValues: build.sim.textureValues.buffer,
     ra0: build.sim.ra0?.buffer ?? null,

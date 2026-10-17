@@ -97,7 +97,8 @@ export function createCockpit(art, { needle = null, font = null, units = "mph" }
         drawNeedle(dashCtx, needle, tacho.center[0], tacho.center[1], gaugeAngle(rpm, tacho.zeroAngle - 90, tacho.degreesPerUnit, 9000), tacho.radius);
       }
       draw(wheel[wheelFrame(steer)], layout.steeringWheel[0], layout.steeringWheel[1]);
-      if (instruments) draw(shifter[["", "P", "R", "N", "1", "2", "3"][gear]], layout.shifterRect[0], layout.shifterRect[1]);
+      // The shifter art has MTM2's three forward gears: a higher gear shows as third.
+      if (instruments) draw(shifter[["", "P", "R", "N", "1", "2", "3"][Math.min(gear, 6)]], layout.shifterRect[0], layout.shifterRect[1]);
       if (instruments && rpm >= SHIFT_LIGHT_RPM) draw(light, layout.shiftLightRect[0], layout.shiftLightRect[1]);
       if (layout.mirrors[0]) draw(mirror, layout.mirrors[0].bitmapRect[0], layout.mirrors[0].bitmapRect[1]);
     },

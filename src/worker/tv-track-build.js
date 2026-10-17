@@ -279,7 +279,16 @@ export async function buildTvTrackRender(vfs, lvlPath, { truckFiles = [], tileOv
   return {
     problems: [...missing].sort(),
     title, game: origin === "HB" ? "HB" : "TV", musicName: null, trackName: lvl.displayName ?? stemOf(title), tileOverlap: tileOverlap !== false,
-    terrain: { ...mesh, atlas: { rgba: atlas.rgba, width: atlas.width, height: atlas.height }, normalAtlas: null, detail: null },
+    terrain: {
+      ...mesh,
+      // The atlas with its layout, as MTM2's (worker/track-build.js), so the ground is drawn from a mipmapped stack of its
+      // tiles (render/ground-detail.js `createGroundTiles`); every tile is Dirt, as the simulation has it (`slotValues`).
+      atlas: {
+        rgba: atlas.rgba, width: atlas.width, height: atlas.height, tileSide: atlas.tileSide, padding: atlas.padding, slots: atlas.rects.length,
+        slotValues: new Int32Array(atlas.rects.length).fill(DIRT),
+      },
+      normalAtlas: null, detail: null,
+    },
     groundBoxes, road: null,
     heights: heightsFt ? null : heights, heightsFt, waterLevelFt: null, stadium: null, sunVector: null,
     models, soundObjects: [], trackLights: [], modelTextures, objects, blimp, heli, originals,

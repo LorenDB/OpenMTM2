@@ -1,5 +1,5 @@
 /*
-  MTM2's truck reflections, "Truck reflections" in Options (MONSTER_EXE_ANALYSIS.md "Reflections", 0x5225d0): each body
+  MTM2's truck reflections, "MTM2 Truck reflections" in Options (Advanced) (MONSTER_EXE_ANALYSIS.md "Reflections", 0x5225d0): each body
   face that faces the eye drawn again in CLOUDENV, translucent at 128 of 255, the texel for a vertex worked out from the
   view and not from the face: `e` the way from the eye to the vertex, `n` the camera's view axis,
   `r = 2 (e . n) e - n`, and the texel `(0.5 + 0.5 r.x, 0.5 + 0.5 r.z)` on the game's axes (z forward; the scene's is

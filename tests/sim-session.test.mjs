@@ -5,7 +5,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createSession, STEP } from "../src/worker/sim-worker.js";
 import { buildTrackRender } from "../src/worker/track-build.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { skipWithoutStock, stockVfs } from "./helpers/stock.mjs";
+import { createVfs } from "../src/worker/vfs.js";
+import { parsePod, readPodEntry } from "../src/vendor/openphotex/index.js";
 import { mtm2Sim } from "../src/vendor/openphotex/index.js";
 const GEAR_FIRST = mtm2Sim.GEAR.FIRST;
 
@@ -76,8 +80,8 @@ test("the Helicopter key takes the truck at once, holds it, and sets it down lev
 });
 
 /** A session on a stock track with its collision boxes, the truck dropped at `pos`. */
-async function sessionAt(sitPath, pos, heading = 0) {
-  const build = await buildTrackRender(stockVfs(), sitPath);
+async function sessionAt(sitPath, pos, heading = 0, vfs = stockVfs()) {
+  const build = await buildTrackRender(vfs, sitPath);
   const truck = build.truckModels[build.sim.start.file];
   return createSession({
     heights: build.heights.buffer, clr: build.sim.clr.buffer, textureValues: build.sim.textureValues.buffer,
@@ -106,6 +110,25 @@ test("ground boxes carry the wheels: parked on the TPARK bridge deck (MTM2_PHYSI
   const onDeck = settle(deck, 190);
   assert.ok(onDeck.down, "all wheels on the deck");
   assert.ok(Math.abs(onDeck.ride - onGround.ride) < 0.5, `ride ${onDeck.ride} on the deck vs ${onGround.ride}`);
+});
+
+const MTM1_GAME_POD = join(process.env.OPENMTM2_GAMES ?? join(process.env.HOME ?? "", "games"), "mtm1", "GAME.POD");
+
+test("a ground box wall is a wall: driven into ISLAND's tunnel wall, the truck stays under the deck (14.14)", {
+  skip: skipWithoutStock("POD.INI") || (existsSync(MTM1_GAME_POD) ? false : `no Monster Truck Madness 1 GAME.POD at ${MTM1_GAME_POD}`),
+}, async () => {
+  // MTM1's Yucatan Adventure, over the MTM2 install as the app mounts it.
+  const bytes = new Uint8Array(readFileSync(MTM1_GAME_POD));
+  const vfs = createVfs([{ name: "GAME.POD", family: "MTM", game: "MTM1", archive: parsePod(bytes), readEntry: async (entry) => readPodEntry(bytes, entry) }, ...stockVfs().allMounts]);
+  // ISLAND's tunnel: deck boxes over rows 161-162 (160 to 180 ft over terrain at 120), its wall along row 160 (120 to 180).
+  const session = await sessionAt("WORLD\\ISLAND.SIT", [78 * 32 + 16, 0, 161 * 32 + 20], Math.PI, vfs);
+  const g = session.ground.height(session.state.pos[0], session.state.pos[2]);
+  session.state.pos[1] = g + 6;
+  let r, highest = -Infinity;
+  for (let t = 0; t < 2; t += 0.25) r = session.advance(t, {});
+  for (let t = 2; t < 8; t += 1 / 60) { r = session.advance(t, { accelerate: true }); highest = Math.max(highest, r.current.pos[1]); }
+  assert.ok(highest < 160, `never lifted onto the deck: highest ${highest} ft`);
+  assert.ok(r.current.pos[2] > 160 * 32, `held by the wall: z ${r.current.pos[2]}`);
 });
 
 test("an immovable level box carries the truck: JUNK's 38 x 39 ft platform (14.15)", { skip: skipWithoutStock("POD.INI") }, async () => {
@@ -463,4 +486,25 @@ test("hull contacts are reported as crash damage: zones 1 to 12 with their steps
   assert.ok(steps > 0, "a rough drive scrapes the hull");
   assert.ok([...zones].every((z) => z >= 1 && z <= 12));
   assert.ok(strongest > 0);
+});
+
+test("ISLAND on Professional: every CPU truck gets past the corner built on its straight's line (0x486630, 14.24)", {
+  skip: skipWithoutStock("POD.INI") || (existsSync(MTM1_GAME_POD) ? false : `no Monster Truck Madness 1 GAME.POD at ${MTM1_GAME_POD}`),
+}, async () => {
+  const bytes = new Uint8Array(readFileSync(MTM1_GAME_POD));
+  const vfs = createVfs([{ name: "GAME.POD", family: "MTM", game: "MTM1", archive: parsePod(bytes), readEntry: async (entry) => readPodEntry(bytes, entry) }, ...stockVfs().allMounts]);
+  const build = await buildTrackRender(vfs, "WORLD\\ISLAND.SIT");
+  assert.ok(build.sim.proCourse, "ISLAND has a Professional course");
+  const trucks = build.sim.grid.map((g) => ({ truck: build.truckModels[g.file], start: { pos: g.pos, heading: g.heading }, autopilot: true }));
+  const session = createSession({
+    heights: build.heights.buffer, clr: build.sim.clr.buffer, textureValues: build.sim.textureValues.buffer,
+    ra0: build.sim.ra0.buffer, ra1: build.sim.ra1.buffer, boxes: build.sim.boxes, ramps: build.sim.ramps,
+    course: build.sim.proCourse, sonicTrack: build.sim.sonicTrack, waterLevelFt: build.waterLevelFt, weather: 0, difficulty: 2,
+    trucks, race: { checkpoints: build.sim.checkpoints, laps: 1 },
+  });
+  // The corner after the Professional course's second straight (index 5) can never be left by its end line.
+  for (let i = 0; i < 90 / STEP; i++) session.step({});
+  const behind = session.race.trucks.filter((t) => t.s.ap.segmentsPassed <= 6).length;
+  assert.ok(behind <= 1, `${behind} trucks still at the start's corners after 90 s`);
+  for (const t of session.race.trucks) assert.ok(!(t.s.pos[0] < 200 && t.s.pos[2] > 3900 && t.s.pos[2] < 4400), `a truck ran off to the border at ${t.s.pos.map(Math.round)}`);
 });

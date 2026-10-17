@@ -13,6 +13,7 @@
 import { readFile } from "../shared/opfs.js";
 import { INSTALL_DIR } from "./install-store.js";
 import { decodeTrueColorTexture } from "./image-decoder.js";
+import { loadArtTexture } from "./art-texture.js";
 
 export const WEATHER_ART_DIR = `${INSTALL_DIR}/WEATHERART`;
 const MAX_SIDE = 2048, MIN_SIDE = 32;
@@ -64,4 +65,19 @@ export async function loadWeatherArt(stem, { on = true, install = fromInstall, b
   const key = String(stem ?? "").toUpperCase();
   if (!on || !key) return null;
   return (await install(key)) ?? (await bundled(key));
+}
+
+/**
+ * A sky stem's HD art as every MTM2-sky track takes it (MTM2, MTM1, CPR and both 4x4 Evolutions): with "CP3 HD weather"
+ * (`on`) the weather art above, then an archive's ART\<stem>.PNG or .TGA, else null. Cloudy (weather 1) greys it, as
+ * the engine does. `vfs` is the archives the sky's art is looked up in; `weatherArt` stands in for loadWeatherArt (tests).
+ */
+export async function loadHdSky(vfs, stem, weather, { on = false, weatherArt = loadWeatherArt } = {}) {
+  const hd = (await weatherArt(stem, { on })) ?? await loadArtTexture(vfs, `${stem}.PNG`, null, { hdOnly: true });
+  if (!hd) return null;
+  if (weather === 1) for (let i = 0; i < hd.rgba.length; i += 4) {
+    const grey = Math.trunc((hd.rgba[i] + hd.rgba[i + 1] + hd.rgba[i + 2]) / 3);
+    hd.rgba[i] = hd.rgba[i + 1] = hd.rgba[i + 2] = grey;
+  }
+  return { name: stem, ...hd };
 }
