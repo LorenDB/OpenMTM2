@@ -14,7 +14,8 @@
 
   Pure; the result is plain typed arrays, ready to transfer to the main thread.
 */
-import { decodeRawTexture, mtm2Sim, rawTextureSide } from "../vendor/openphotex/index.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 const GRID = 256;
 const CELL_FT = 32;

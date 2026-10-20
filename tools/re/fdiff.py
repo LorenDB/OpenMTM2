@@ -18,6 +18,7 @@ TARGETS = {
     "mtm2": ("out", "~/games/mtm2", "MONSTER.EXE"),
     "evo1": ("evo1/out", "~/games/evo1", "4x4LE.exe"),
     "evo2": ("evo2/out", "~/games/evo2", "4x42.exe"),
+    "cpr": ("cpr/out", "~/games/cpr", "CART.EXE"),
 }
 n1, n2 = os.environ.get("FDIFF", "mtm1:mtm2").split(":")
 

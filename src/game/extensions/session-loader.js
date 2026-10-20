@@ -2,7 +2,7 @@
   Simulation-side extension registry. The worker offers lifecycle hooks and collision events;
   extension runtimes own their state, driving, scoring and public view.
 */
-import { mtm2Sim as S } from "../../vendor/openphotex/index.js";
+import * as S from "../../vendor/openphotex/sim/mtm2/index.js";
 import { createRumbleDriver, driveToPoint } from "../rumble-ai.js";
 import {
   ESCAPE_S, NUDGE_AFTER_S, NUDGE_FT_S, TURN_FLOOR, createHockey, hockeyAim, hockeyHeld,

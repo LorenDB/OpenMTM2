@@ -19,8 +19,9 @@ For MTM1: `MTM1_DIR=~/games/mtm1 tools/re/decompile.sh mtm1`, which works in `re
 leaves the MTM2 workspace alone. For 4x4 Evolution 2 (`docs/EVO2_EXE_ANALYSIS.md`):
 `EVO2_DIR=~/games/evo2 tools/re/decompile.sh evo2`, into `re/evo2/`, and 4x4 Evolution
 (`docs/EVO2_PHYSICS.md` 10, `docs/EVO_MULTIPLAYER.md`): `tools/re/decompile.sh evo1`, into
-`re/evo1/`. Every helper below reads MTM2 unless `RE_TARGET` is `mtm1`, `evo1` or `evo2`;
-`fdiff.py` takes `FDIFF=evo1:evo2` (any two targets).
+`re/evo1/`. CART Precision Racing (`docs/CPR_PHYSICS.md`): `CPR_DIR=~/games/cpr tools/re/decompile.sh cpr`,
+into `re/cpr/`. Every helper below reads MTM2 unless `RE_TARGET` is `mtm1`, `evo1`, `evo2` or `cpr`;
+`fdiff.py` takes `FDIFF=evo1:evo2` and `match.py` `MATCH=cpr:mtm1` (any two targets).
 
 This analyses `MONSTER.EXE` from the install, exports every function decompiled to
 `re/out/decomp.c` plus `functions.tsv` and `strings.tsv` (with cross-references), and builds the
@@ -88,3 +89,13 @@ Run them with `re/venv/bin/python` from the repository root. Addresses are hexad
   `..\core\particle.cpp`, `..\core\vehicle.cpp`), as in MTM2.
 - The simulation keeps state in scratch globals around `0xcad9xx`; `0x67976c` is the
   simulation object (dt at +0x3458) and `0x672fe0` the ground.
+
+## Things to know about CART.EXE
+
+- CART Precision Racing (15 January 1998), MSVC with MFC. Not incrementally linked: calls are direct
+  and Ghidra's caller counts are right.
+- Assertion strings name the modules (`D:\indy\indy\core\track.cpp`, `Dirt.c`, `simobj.cpp`...), but
+  the car simulation itself (0x460000-0x479000) has none; start from `0x463810`, the per-frame step.
+- The simulation is not MTM's code: `match.py` against MTM1 pairs almost nothing. Read it.
+- The engine globals: `0xb548d8` the car array (stride 0x1aac, count at `0xac7bd8`), `0x63a7f4` the
+  player's car, `0xa4518c` the substep dt. World coordinates are integers of 1/256 ft.

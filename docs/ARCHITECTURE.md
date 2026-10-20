@@ -34,7 +34,8 @@ See `EXTENSIONS.md` for the contract and the two bundled examples.
 - **Sim worker:** owns the race session and steps it at a fixed 1/60 s. Each animation frame
   the main thread posts the time and the player's input; the worker steps until it catches up
   and returns a snapshot of the previous and current state in transferable buffers, which the
-  renderer interpolates.
+  renderer interpolates. It catches up by at most 0.25 s: wall time it falls further behind (a
+  stall, a hidden tab) is dropped, so a hitch never fast-forwards the race.
 
 The asset worker hands the simulation input straight to the sim worker through a
 `MessageChannel`. GitHub Pages cannot send the COOP/COEP headers that `SharedArrayBuffer` needs,

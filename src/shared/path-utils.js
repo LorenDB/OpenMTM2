@@ -1,4 +1,4 @@
-import { normalizePodPath, podPathTitle } from "../vendor/openphotex/index.js";
+import { normalizePodPath, podPathTitle } from "../vendor/openphotex/pod/paths.js";
 
 /*
   Archive path keys come from OpenPhotex, which builds every POD entry's normalizedName and

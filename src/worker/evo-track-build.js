@@ -47,11 +47,18 @@
 
   Not drawn yet: the `.WAT` water animation.
 */
-import {
-  EVO_SDW_NONE, EVO_SHADE_LIGHT, decodeActPalette, decodeRawTexture, evoGenerateTrees, evoSim, evoGrassPattern, evoShadeAt, evoTreeSlot, evoTreeYaw,
-  lapRuns, matchEvoAiLineName, mtm2Sim, parseEvoAiLine, parseEvoLvl, parseEvoRtd, parseEvoSdw, parseEvoScript, parseEvoSit, parseEvoTex, parseEvoVeg,
-  podPathTitle, rawTextureSide,
-} from "../vendor/openphotex/index.js";
+import { EVO_SDW_NONE, EVO_SHADE_LIGHT, evoGenerateTrees, evoGrassPattern, evoShadeAt, parseEvoRtd, parseEvoSdw } from "../vendor/openphotex/evo/vegetation.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import { evoTreeSlot, evoTreeYaw, parseEvoVeg } from "../vendor/openphotex/evo/veg.js";
+import { lapRuns, matchEvoAiLineName, parseEvoAiLine } from "../vendor/openphotex/evo/ai-line.js";
+import { parseEvoLvl } from "../vendor/openphotex/evo/lvl.js";
+import { parseEvoScript } from "../vendor/openphotex/evo/script.js";
+import { parseEvoSit } from "../vendor/openphotex/evo/sit.js";
+import { parseEvoTex } from "../vendor/openphotex/evo/tex.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import * as evoSim from "../vendor/openphotex/sim/evo/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { weatherSkyStem } from "../game/weather.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { alongCourse } from "./cpr-road.js";
@@ -60,7 +67,7 @@ import { createPaletteResolver } from "./palette-resolver.js";
 import { loadHdSky } from "./weather-art.js";
 import { buildFineTerrainMesh, buildTerrainAtlas, buildTerrainMesh } from "./terrain-mesh.js";
 import { loadRaceVehicles } from "./track-build.js";
-import { buildTruckRender } from "./truck-build.js";
+import { buildTrucks, cachedTruckRender } from "./truck-build.js";
 
 const GRID = 256;
 const MTM_SKY = "CLOUDY2";
@@ -88,6 +95,8 @@ const isFacing = (box) => box.sourceClass === "CNonCollideFacing" || box.boxType
 const ROCKS = 1200;
 /** The trunk box of an Evo 1 tree, whose own box sizes are not read: its height. */
 const TRUNK_HEIGHT_FT = 20;
+/** A tree card's inset into its quarter of the sheet, as the grass's (render/evo-grass.js), so no neighbour bleeds in. */
+const CARD_UV_INSET = 0.0078125;
 /** Weathers with a sun, where the shade map and the shadow tiles show (OpenPhotex WEATHER: Clear, Cloudy, Dusk). */
 const SUNNY = new Set([0, 1, 6]);
 /** The .VEG the game assumes when a level has none (0x673538 and following). */
@@ -536,6 +545,33 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     waterLevelFt, maxTrees: vegUsed.maxTrees, treeLine: vegUsed.treeLine, minDistanceSquared: vegUsed.minDistanceSquared,
     biasY: vegUsed.treeSizes.map((t) => t.biasY),
   }, seedOf(stem)) : [];
+  // Far trees (2.2): away from the camera the game draws a tree as a card from the .VEG's `treeTexture`, a 2 x 2 sheet of
+  // pictures, one a model slot (bit 0 moves u by a half, bit 1 v, as the grass's sheet). The port draws a forest chunk's
+  // models near the camera and its cards elsewhere (render/track-scene.js `createForest`).
+  const cardImage = veg?.treeTexture ? await loadEvoTexture(vfs, veg.treeTexture) : null;
+  const cardTexture = cardImage ? `${podPathTitle(veg.treeTexture).toUpperCase()}#cards` : null;
+  if (cardImage) modelTextures[cardTexture] = cardImage;
+  const cards = [];
+  /** The card of a slot, `width` by `height` feet, standing on its origin and facing +z (scene frame), named as a model. */
+  const cardOf = (slot, width, height) => {
+    if (!cards[slot]) {
+      const name = `${cardTexture}${slot}`;
+      const w = width / 2, u0 = (slot & 1) * 0.5 + CARD_UV_INSET, u1 = u0 + 0.5 - 2 * CARD_UV_INSET;
+      const v0 = (slot >> 1) * 0.5 + CARD_UV_INSET, v1 = v0 + 0.5 - 2 * CARD_UV_INSET;
+      models[name] = {
+        name, textureNames: [cardTexture], frameNames: null, bounds: { min: [-w, 0, 0], max: [w, height, 0] },
+        meshes: [{
+          positions: Float32Array.of(-w, 0, 0, w, 0, 0, w, height, 0, -w, 0, 0, w, height, 0, -w, height, 0),
+          normals: Float32Array.of(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1),
+          uvs: Float32Array.of(u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0),
+          textureName: cardTexture, cutout: true, doubleSided: true, blended: false,
+        }],
+      };
+      cards[slot] = name;
+    }
+    return cards[slot];
+  };
+  const upright = [1, 0, 0, 0, 1, 0, 0, 0, 1];
   for (const tree of trees) {
     const names = vegUsed.treeModels;
     if (!names.length) break;
@@ -552,8 +588,10 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     const matrix = toSceneMatrix(mtm2Sim.eulerToMatrix(0, 0, evoTreeYaw(tree.value), new Array(9)), [tree.x, base - min[1] * sy, tree.z]);
     // A tree is knocked over by a truck (2.5): `tree` names it for the simulation and the drawing (`sitIndex`).
     const id = `t${objects.length}`;
+    // `far`: the tree's card, as wide and tall as its model is drawn, on the same base.
+    const far = cardImage ? { model: cardOf(slot, width * sx, height * sy), matrix: toSceneMatrix(upright, [tree.x, base, tree.z]) } : null;
     // `forest`: drawn by sectors around the camera (render/track-scene.js `createForest`), not over every copy of the world.
-    objects.push({ model: file, type: 0, billboard: false, matrix: scaled(matrix, sx, sy, sz), sitIndex: id, forest: true });
+    objects.push({ model: file, type: 0, billboard: false, matrix: scaled(matrix, sx, sy, sz), sitIndex: id, forest: true, ...(far ? { far } : {}) });
     statics.push({ pos: [tree.x, base + (height * sy) / 2, tree.z], size: [TRUNK_FT, height * sy, TRUNK_FT], psi: 0, tree: id });
   }
 
@@ -598,9 +636,7 @@ export async function buildEvoTrackRender(vfs, sitPath, sitBytes, { truckFiles =
     name: (b.name ?? "").toLowerCase(), pos: [...b.position], size: [...b.size], orient: [...(b.orient ?? [0, 0, 0])],
   }));
   const truckModels = {};
-  for (const file of truckFiles.map((f) => podPathTitle(f).toUpperCase())) {
-    if (!(file in truckModels)) truckModels[file] = await buildTruckRender(mtm, file, truckPalettes);
-  }
+  await buildTrucks(truckModels, truckFiles, (file) => cachedTruckRender(mtm, file, truckPalettes));
 
   return {
     problems: [...missing].sort(),

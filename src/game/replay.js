@@ -9,7 +9,8 @@
   Pure, so it runs under Node.
 */
 import { nearestCopy } from "../shared/scene-frame.js";
-import { REPLAY_FRAME_TICKS, REPLAY_RING_RECORDS, REPLAY_TICKS_PER_SECOND, mtm2Sim } from "../vendor/openphotex/index.js";
+import { REPLAY_FRAME_TICKS, REPLAY_RING_RECORDS, REPLAY_TICKS_PER_SECOND } from "../vendor/openphotex/mtm/replay.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 export const FRAME_SECONDS = REPLAY_FRAME_TICKS / REPLAY_TICKS_PER_SECOND;
 

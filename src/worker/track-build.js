@@ -9,7 +9,12 @@
 import { rumbleGrid } from "../game/race-setup.js";
 import { loadHdSky, loadWeatherArt } from "./weather-art.js";
 import { weatherSkyStem } from "../game/weather.js";
-import { BOX_LIGHT, BOX_MOVING, decodeActPalette, decodeRawTexture, isEvoSit, mtm2Sim, normalizePodPath, podPathTitle, rawTextureSide } from "../vendor/openphotex/index.js";
+import { BOX_LIGHT, BOX_MOVING } from "../vendor/openphotex/mtm/sit.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import { isEvoSit } from "../vendor/openphotex/evo/sit.js";
+import { normalizePodPath, podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { buildEvoSky, buildEvoTrackRender } from "./evo-track-build.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { loadLevel, loadTextureSource } from "./level-load.js";
@@ -22,7 +27,7 @@ import { decodeModel } from "./models.js";
 import { resolveKeyframeModel } from "./keyframes.js";
 import { buildGroundBoxMesh } from "./ground-box-mesh.js";
 import { buildTvSky, buildTvTrackRender } from "./tv-track-build.js";
-import { buildTruckRender } from "./truck-build.js";
+import { buildTruckRender, buildTrucks, cachedTruckRender } from "./truck-build.js";
 import { loadVehicleModels } from "./vehicle-models.js";
 import { artStem, loadAoMap, loadArtTexture, loadNormalMap, loadPlainImage, shrinkImage } from "./art-texture.js";
 
@@ -254,7 +259,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   // A 4x4 Evolution track is another kind of level altogether (worker/evo-track-build.js).
   const sitBytes = await vfs.read(sitPath);
   if (sitBytes && isEvoSit(sitBytes)) return withMtm1Sky(vfs, await buildEvoTrackRender(vfs, sitPath, sitBytes, { detailLevel, raceType, truckFiles, weather, hdWeather, tileOverlap, forest: evoForest, sunShadows, smoothTerrain: !!visuals.smoothing }), weather, mtm1);
-  const level = await loadLevel(vfs, sitPath);
+  const level = await loadLevel(vfs, sitPath, sitBytes);
   const { sit } = level;
   // A CART Precision Racing track (docs/PLAN.md F3): its own art and palettes, a finer heightfield and a road layer.
   // The trucks, the blimp and the helicopter are MTM2's whatever the track, looked up as an MTM2 track would.
@@ -350,10 +355,12 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
   // MTM1 draws its ramps' models, where MTM2 leaves them unseen; its checkpoint banners it draws as an old MTM level's.
   const mtm1Track = sit.origin === "MTM1";
   const objects = [];
+  const drawnBox = (box) => !!box.modelName && (box.type !== RAMP_TYPE || mtm1Track) && boxIsDrawn(box, { levelType: level.lvl.levelType, raceType, detailLevel });
+  // Every model the boxes draw is read and decoded at once; the loop below takes them in the SIT's order.
+  await Promise.all([...new Set(sit.boxes.filter(drawnBox).map((box) => podPathTitle(box.modelName)))].map(decodeNamed));
   for (const [sitIndex, box] of sit.boxes.entries()) {
     const name = box.modelName ? podPathTitle(box.modelName) : "";
-    if (!name || (box.type === RAMP_TYPE && !mtm1Track)) continue;
-    if (!boxIsDrawn(box, { levelType: level.lvl.levelType, raceType, detailLevel })) continue;
+    if (!name || !drawnBox(box)) continue;
     if (!(name in models)) await loadModel(name);
     if (!models[name] || !box.positionFt) continue;
     const m = mtm2Sim.eulerToMatrix(box.theta, box.phi, box.psi, new Array(9));
@@ -552,18 +559,20 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     }
   }
   const modelTextures = {};
-  // By stem, HD art first (worker/art-texture.js); a normal map rides along as `<stem>_N`.
-  for (const [name, cutout] of textureUse) {
-    try {
-      const image = await loadArtTexture(vfs, name, palettes, { cutout, legacyOnly: legacyArt.has(name) });
-      if (image) modelTextures[name] = image;
-      else missing.add(`ART\\${name}`);
-      const normal = await loadNormalMap(vfs, name);
-      if (normal) modelTextures[`${artStem(name)}_N`] = normal;
-      const ao = await loadAoMap(vfs, name);
-      if (ao) modelTextures[`${artStem(name)}_AO`] = ao;
-    } catch { /* an undecodable texture draws as the mesh colour */ }
-  }
+  // By stem, HD art first (worker/art-texture.js); a normal map rides along as `<stem>_N`. All are read at once and
+  // kept in order: an undecodable texture draws as the mesh colour, and what comes after it in its row is left out.
+  const loaded = await Promise.all([...textureUse].map(([name, cutout]) => Promise.all([
+    settled(loadArtTexture(vfs, name, palettes, { cutout, legacyOnly: legacyArt.has(name) })), settled(loadNormalMap(vfs, name)), settled(loadAoMap(vfs, name)),
+  ])));
+  [...textureUse.keys()].forEach((name, i) => {
+    const [image, normal, ao] = loaded[i];
+    if (!image) return;
+    if (image.value) modelTextures[name] = image.value;
+    else missing.add(`ART\\${name}`);
+    if (!normal) return;
+    if (normal.value) modelTextures[`${artStem(name)}_N`] = normal.value;
+    if (ao?.value) modelTextures[`${artStem(name)}_AO`] = ao.value;
+  });
 
   const { blimp, heli } = await loadRaceVehicles(mtm, truckPalettes);
 
@@ -582,9 +591,7 @@ export async function buildTrackRender(vfs, sitPath, { detailLevel = 2, raceType
     trucks.push({ file, matrix: toSceneMatrix(m, truck.positionFt) });
   }
   // The trucks a race puts on the grid instead (the player's pick and the CPU trucks).
-  for (const file of truckFiles.map((f) => podPathTitle(f).toUpperCase())) {
-    if (!(file in truckModels)) truckModels[file] = await buildTruckRender(mtm, file, truckPalettes);
-  }
+  await buildTrucks(truckModels, truckFiles, (file) => cachedTruckRender(mtm, file, truckPalettes));
 
   let gridSlots = sit.trucks.filter((t) => !t.playerSlot && t.positionFt).slice(0, cpr ? MAX_GRID : undefined);
   if (cpr) {
@@ -767,6 +774,9 @@ function courseOf(course) {
     cspeed: g.cspeed, speedLimit: g.speedLimit, trackWidthFt: g.trackWidthFt || DEFAULT_TRACK_WIDTH_FT,
   }));
 }
+
+/** `{ value }` when `promise` resolves, null when it rejects: one load's failure leaves the others standing. */
+export const settled = (promise) => promise.then((value) => ({ value }), () => null);
 
 /** Every ArrayBuffer in a build result, for postMessage's transfer list. */
 export function transferablesOf(result) {

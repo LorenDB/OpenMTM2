@@ -3,7 +3,7 @@
   14.18) run without a race: the fly-by has no simulation worker, so it steps them itself, with
   the simulation's own routine and its 1/60 s step. Pure, so it runs under Node.
 */
-import { mtm2Sim as S } from "../vendor/openphotex/index.js";
+import * as S from "../vendor/openphotex/sim/mtm2/index.js";
 
 const STEP = 1 / 60;
 /** No more than this much time is caught up in one call (a tab that was in the background). */

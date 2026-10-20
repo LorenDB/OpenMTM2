@@ -26,7 +26,7 @@
 
   Pure; the result is typed arrays, ready to transfer.
 */
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { CELL_FT, GRID, ROUND } from "../game/terrain-relief.js";
 import { SNOW_DEPTH_SCALE_FT } from "../game/snow-cover.js";
 import { cellTileUvs } from "./terrain-mesh.js";

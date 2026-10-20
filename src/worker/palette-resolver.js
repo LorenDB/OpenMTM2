@@ -5,9 +5,21 @@
   presents the visible entries in mount priority order. The entries remain the originals and
   are read through the VFS, preserving first-match lookup and POD1 palette metadata.
 */
-import { bundledPalette, decodeActPalette, paletteCandidates, textureStem } from "../vendor/openphotex/index.js";
+import { bundledPalette } from "../vendor/openphotex/texture/bundled-palettes.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { paletteCandidates, textureStem } from "../vendor/openphotex/texture/palette-rank.js";
+
+/** Each VFS view's merged archive, made once: it lists every entry of every mount (tens of thousands). */
+const VIEWS = new WeakMap();
+/** The resolvers that take no track palette, one per VFS view and origin: what they decode is kept for the next build. */
+const SHARED = new WeakMap();
 
 function archiveView(vfs) {
+  if (!VIEWS.has(vfs)) VIEWS.set(vfs, mergedArchive(vfs));
+  return VIEWS.get(vfs);
+}
+
+function mergedArchive(vfs) {
   const entries = [];
   const seen = new Set();
   for (const mount of vfs.mounts) {
@@ -26,6 +38,14 @@ function archiveView(vfs) {
  * @param {Uint8Array|null} trackPalette decoded level palette
  */
 export function createPaletteResolver(vfs, origin, trackPalette = null) {
+  if (trackPalette) return paletteResolver(vfs, origin, trackPalette);
+  if (!SHARED.has(vfs)) SHARED.set(vfs, new Map());
+  const byOrigin = SHARED.get(vfs);
+  if (!byOrigin.has(origin)) byOrigin.set(origin, paletteResolver(vfs, origin, null));
+  return byOrigin.get(origin);
+}
+
+function paletteResolver(vfs, origin, trackPalette) {
   const archive = archiveView(vfs);
   const cache = new Map();
   const sources = new Map();

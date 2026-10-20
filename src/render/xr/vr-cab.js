@@ -28,7 +28,7 @@
   install's cockpit the cage stands bare, with plain dials and a text gear plate.
 */
 import * as THREE from "three";
-import { mtm2Sim } from "../../vendor/openphotex/index.js";
+import * as mtm2Sim from "../../vendor/openphotex/sim/mtm2/index.js";
 import {
   ART_FOCAL_PX, CAB_SCALE, COWL_AHEAD_FT, GEAR_LETTERS, GEAR_READOUT_RECT_480, PANEL_SIZE_PX, SHIFT_LIGHT_RPM,
   SPEEDOMETER_MAX_MPH, STOCK_GAUGES, TACHOMETER_MAX_RPM, dialPlace, mirrorPlace, needleDegrees, panelPixel,

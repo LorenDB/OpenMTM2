@@ -5,13 +5,8 @@
   library): this file only moves bytes between OPFS and it, and keeps its own asset
   lookup rules. Do not add POD format knowledge here; change OpenPhotex and re-vendor it.
 */
-import {
-  parsePod,
-  podDirectoryEnd,
-  findPodEntry,
-  findPodEntryByTitle,
-  findPodEntriesByExtension,
-} from "../vendor/openphotex/index.js";
+import { parsePod, podDirectoryEnd } from "../vendor/openphotex/pod/parse.js";
+import { findPodEntry, findPodEntryByTitle, findPodEntriesByExtension } from "../vendor/openphotex/pod/lookup.js";
 import { archiveTitle, normalizeArchiveName } from "../shared/path-utils.js";
 import { readFile, writeBytesToFile } from "../shared/opfs.js";
 

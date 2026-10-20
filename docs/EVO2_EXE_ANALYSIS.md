@@ -597,6 +597,7 @@ are not acted on; a message a rule keeps saying is shown once).
 | Tree base on the terrain | Stored y plus `treeBiasY` (2.2) |
 | Trees are trunk boxes that stop trucks | A truck knocks a tree over and goes on (2.5; the truck's side and the fall are the port's) |
 | No trees on Evo 1 tracks | A generated forest from `vegClass` (2.3), with the level's own tree models ("Evo forest") |
+| Every tree drawn as its model at any distance | Models near the camera, the `.VEG`'s `treeTexture` cards farther (2.2; by 1024 ft chunks, models within 512 ft of a chunk's edge) |
 | No grass, `.RTD` or `.SDW` | Grass around the camera, pressed under trucks ("Evo grass"); shade at 0.35; shadow tiles swapped in, under a sun (2.4, 3.1, 3.2) |
 | MTM2's grip table | Evo's under the Evo physics models (4.2); MTM2's under MTM2's |
 | No Evo particles | Debris by surface from spinning and sliding tires, leaves on AUTUMN ("Evo particles", 5) |

@@ -19,7 +19,7 @@ const CLIP_BIAS = 0.003;
  * `levelAt()` gives the water's height now (scene units are feet), or null when the level has none; `hide` the objects to
  * leave out of the mirrored picture (the water and anything only of the real one). Returns null without a renderer.
  */
-export function createWaterMirror({ renderer, scene, levelAt, hide = () => [] }) {
+export function createWaterMirror({ renderer, scene, levelAt, hide = () => [], surfaces = hide }) {
   if (!renderer) return null;
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true });
   target.texture.generateMipmaps = false;
@@ -30,12 +30,29 @@ export function createWaterMirror({ renderer, scene, levelAt, hide = () => [] })
   const rotation = new THREE.Matrix4(), lookAt = new THREE.Vector3(), aim = new THREE.Vector3(), plane = new THREE.Plane();
   const clip = new THREE.Vector4(), q = new THREE.Vector4(), size = new THREE.Vector2();
   const bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+  const frustum = new THREE.Frustum(), viewProjection = new THREE.Matrix4(), sphere = new THREE.Sphere();
+
+  /** Whether any of the water (`surfaces`, the game's planes) is shown and before `camera`: a mirror no one sees is not drawn. */
+  function waterInView(camera) {
+    viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(viewProjection);
+    for (const object of surfaces()) {
+      if (!object?.geometry) continue;
+      let shown = true;
+      for (let node = object; node && shown; node = node.parent) shown = node.visible;
+      if (!shown) continue;
+      if (!object.geometry.boundingSphere) object.geometry.computeBoundingSphere();
+      sphere.copy(object.geometry.boundingSphere).applyMatrix4(object.matrixWorld);
+      if (frustum.intersectsSphere(sphere)) return true;
+    }
+    return false;
+  }
 
   /** The mirrored picture for `camera`, drawn before the frame; false when there is none to draw (the eye under the water). */
   function render(camera) {
     const level = levelAt();
     eye.setFromMatrixPosition(camera.matrixWorld);
-    if (level === null || eye.y <= level) { uniforms.uMirrorOn.value = 0; return false; }
+    if (level === null || eye.y <= level || !waterInView(camera)) { uniforms.uMirrorOn.value = 0; return false; }
     renderer.getDrawingBufferSize(size);
     const w = Math.max(1, Math.round(size.x * SCALE)), h = Math.max(1, Math.round(size.y * SCALE));
     if (target.width !== w || target.height !== h) target.setSize(w, h);

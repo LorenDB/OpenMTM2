@@ -144,7 +144,9 @@ test("the app itself: the walk from index.html reaches every script and styleshe
   const unreached = [...filesUnder("src"), ...filesUnder("styles")].filter((file) => !reached.has(file) && !apart(file));
   assert.deepEqual(unreached, [], "every file of the app is reached from its page: one that is loaded in a way the walk does not know"
     + " would be missing from the copy kept for starting without a server (teach src/shared/app-files.js), and one that nothing loads is not part of the app");
-  assert.ok(reached.has("src/vendor/openphotex/index.js"), "what the app imports of the vendored library is reached like the rest");
+  // The app imports the library's modules themselves, not its index (which would load all of it).
+  assert.ok(reached.has("src/vendor/openphotex/pod/parse.js"), "what the app imports of the vendored library is reached like the rest");
+  assert.equal(reached.has("src/vendor/openphotex/index.js"), false, "the app imports the vendored library's modules, not its index");
   // The worker that answers from the copy is not in the copy.
   assert.equal(reached.has("sw.js"), false);
   // three.js and its add-ons come through the page's import map, at the version it pins.

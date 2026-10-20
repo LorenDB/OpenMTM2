@@ -5,7 +5,8 @@
   `WAKEBLOB` (the soft blob of a wheel's spray), `SPLATRIP` (a ripple's rings) and `SPLAT1-2`
   (splashes) and `RIPPL100-800` (the eight frames of the water surface), `PUFF2_01-12` and `PUFF3_01-12` (the twelve frames of a dust puff, two kinds) and `TREAD` (a tire's tread). Black is background: they are drawn added to the picture, so no alpha is made.
 */
-import { decodeActPalette, decodeIndexedImage } from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeIndexedImage } from "../vendor/openphotex/texture/raw.js";
 
 const SIDE = 64;
 const NAMES = {

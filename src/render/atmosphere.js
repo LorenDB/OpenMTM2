@@ -40,7 +40,8 @@ import { SHARED_NOISE_GLSL, billowNoise, cloudNoise, detailNoise } from "./noise
     4  the fog's colour, how many slices the line of sight is cut in
     5  the wind (x, z feet per second), the banks' noise's scale per foot, the deck's height over the floor (feet)
     6  how far from the eye the banks are told apart (feet), steps through the billows, how lit the top is, how far its light reaches in (feet)
-    7  the billows' height (feet), their noise's scale per foot, how steeply the sun's light climbs (rise over run), unused
+    7  the billows' height (feet), their noise's scale per foot, how steeply the sun's light climbs (rise over run),
+       whether the far fade dissolves the world into the track's backdrop (1) instead of fading it to the fog's colour
     8  the top's shape (game/atmosphere.js `fogProfile`): cap, cap feet, crisp feet, wisps
 */
 const STATE = new Float32Array(36);
@@ -233,12 +234,23 @@ vec3 mtmFogTint( vec3 fogColor, vec3 dir ) {
 float mtmFogHere() {
   return mtmFogLight( cameraPosition.y - mtmFog[ 0 ].w );
 }
+// How much of what lies \`dist\` feet off the far fade takes to the fog's colour: none where it dissolves the world into
+// the track's backdrop instead (\`mtmFogDissolve\`).
+float mtmFogFarFade( float dist ) {
+  return mtmFog[ 7 ].w > 0.5 ? 0.0 : smoothstep( mtmFog[ 1 ].x, mtmFog[ 1 ].y, dist );
+}
+// How much of a point \`dist\` feet off is see-through, 0 to 1, so the track's backdrop, drawn before the world, is seen
+// through it: with a backdrop drawn the far fade is to the backdrop and not to the fog's colour, as the game's ground
+// stops in front of its backdrop. Beyond the fade's end nothing of the world is seen. 0 where there is no backdrop.
+float mtmFogDissolve( float dist ) {
+  return mtmFog[ 0 ].x > 0.5 && mtmFog[ 7 ].w > 0.5 ? smoothstep( mtmFog[ 1 ].x, mtmFog[ 1 ].y, dist ) : 0.0;
+}
 // How much of what lies at \`viewPosition\` (view space, feet) the fog hides, 0 to 1: for what adds its light to the
 // picture and is dimmed by the fog instead of being veiled in its colour.
 float mtmFogHides( vec3 viewPosition ) {
   float dist = length( viewPosition );
   vec3 dir = ( vec4( viewPosition, 0.0 ) * viewMatrix ).xyz / max( dist, 1e-4 );
-  return max( mtmFogAlong( dir, dist ).x, smoothstep( mtmFog[ 1 ].x, mtmFog[ 1 ].y, dist ) );
+  return max( mtmFogAlong( dir, dist ).x, mtmFogFarFade( dist ) );
 }
 // The fog between the eye and \`viewPosition\` (view space, feet): its colour as it is added to the picture (its own
 // colour times how much it hides), and how much it hides.
@@ -246,7 +258,7 @@ vec4 mtmFogOver( vec3 fogColor, vec3 viewPosition ) {
   float dist = length( viewPosition );
   vec3 dir = ( vec4( viewPosition, 0.0 ) * viewMatrix ).xyz / max( dist, 1e-4 );
   vec2 through = mtmFogAlong( dir, dist );
-  float hidden = max( through.x, smoothstep( mtmFog[ 1 ].x, mtmFog[ 1 ].y, dist ) );
+  float hidden = max( through.x, mtmFogFarFade( dist ) );
   // What the far fade takes beyond what the fog along the line hides is seen as the fog is from where the eye stands.
   float light = mix( mtmFogHere(), through.y, through.x / max( hidden, 1e-4 ) );
   return vec4( mtmFogTint( fogColor, dir ) * light * hidden, hidden );
@@ -276,11 +288,15 @@ vec3 mtmFogSky( vec3 color, vec3 dir ) {
   float light = mix( mtmFogHere(), 1.0 + mtmFog[ 6 ].z, up ) * mix( 1.0, mtmFogShade( bank ), up );
   return mix( color, mtmFogTint( mtmFog[ 4 ].rgb, dir ) * light, hidden );
 }
-// How much of a track's backdrop in direction \`dir\` the fog hides: it stands beyond the world, and at the horizon,
-// where the ground's own far fade has closed, it is hidden altogether.
+// How much of a track's backdrop in direction \`dir\` the fog hides: it stands beyond the world. Where the world
+// fades into it (\`mtmFogDissolve\`) all of it is seen, its floor too, through the haze of its distance (below the
+// horizon, as far off as at it). Otherwise, at the horizon, where the ground's own far fade has closed, it is hidden
+// altogether, so the ground's far edge is never seen against it.
 float mtmFogBackdropHidden( vec3 dir, float haze ) {
-  // Only a weather with fog of its own (game/atmosphere.js BACKDROP_HAZED) is seen between the eye and the backdrop.
-  float through = haze * ( 1.0 - exp( - mtmFogDepth( dir, ${BACKDROP_DISTANCE_FT.toFixed(1)} ) ) );
+  // The fog or haze of a weather with a volume (game/atmosphere.js BACKDROP_HAZED) is seen between the eye and the backdrop.
+  vec3 level = normalize( vec3( dir.x, max( dir.y, 0.0 ), dir.z ) );
+  float through = haze * ( 1.0 - exp( - mtmFogDepth( level, ${BACKDROP_DISTANCE_FT.toFixed(1)} ) ) );
+  if ( mtmFog[ 7 ].w > 0.5 ) return through;
   return max( through, 1.0 - smoothstep( 0.0, ${BACKDROP_FOOT.toFixed(3)}, dir.y ) );
 }
 // The fog's colour over a backdrop in direction \`dir\`: the ground's far edge, which it stands behind, has the same.
@@ -315,6 +331,18 @@ export function installAtmosphere() {
 ${stock.fragment.replace(/#ifdef USE_FOG|#endif\s*$/g, "")}
 \t}
 \t#endif
+\t#ifndef MTM_FOG_TO_BACKDROP
+\t\t// Faded into a track's backdrop: see-through by distance.
+\t\tgl_FragColor.a *= 1.0 - mtmFogDissolve( length( vFogView ) );
+\t#endif
+#endif
+// An opaque material of the world's drawn blended to fade into a track's backdrop (\`fadesToBackdrop\`): its cover is the
+// fog's, by distance, and not its own alpha, which only its cut-out tested. With no fog it is wholly opaque.
+#ifdef MTM_FOG_TO_BACKDROP
+\tgl_FragColor.a = 1.0;
+\t#ifdef USE_FOG
+\t\tgl_FragColor.a -= mtmFogDissolve( length( vFogView ) );
+\t#endif
 #endif`;
   SHARED.mtmCloudNoise.value = cloudNoise();
   SHARED.mtmDetailNoise.value = detailNoise();
@@ -327,6 +355,24 @@ ${stock.fragment.replace(/#ifdef USE_FOG|#endif\s*$/g, "")}
     library.uniforms.mtmFogFloor = SHARED.mtmFogFloor;
     library.uniforms.mtmFogBillow = SHARED.mtmFogBillow;
   }
+}
+
+/**
+ * Have the far fade take an opaque material of the world to a track's backdrop, drawn before the world, instead of to the
+ * fog's colour (\`mtmFogDissolve\`): it is drawn blended, by the alpha the fog gives it, which is 1 until the fade
+ * begins, and the picture's own alpha is kept. See-through materials fade by their alpha already. Returns the material.
+ */
+export function fadesToBackdrop(material) {
+  if (!material || material.transparent || material.fog === false || material.defines?.MTM_FOG_TO_BACKDROP !== undefined) return material;
+  material.blending = THREE.CustomBlending;
+  material.blendEquation = THREE.AddEquation;
+  material.blendSrc = THREE.SrcAlphaFactor;
+  material.blendDst = THREE.OneMinusSrcAlphaFactor;
+  material.blendSrcAlpha = THREE.ZeroFactor;
+  material.blendDstAlpha = THREE.OneFactor;
+  material.defines = { ...(material.defines ?? {}), MTM_FOG_TO_BACKDROP: "" };
+  material.needsUpdate = true;
+  return material;
 }
 
 /**
@@ -499,6 +545,7 @@ export const atmosphere = {
     STATE[26] = fogTopLit(volume, sunShare * Math.min(1, Math.max(0, sun.y / 0.25)));
     STATE[27] = volume.lightFt;
     STATE[28] = volume.billowFt; STATE[29] = 1 / (volume.billowSizeFt * 5); STATE[30] = Math.min(3, Math.max(0.05, sun.y / Math.max(flat, 1e-3)));
+    STATE[31] = volume.dissolve ? 1 : 0;
     STATE[32] = volume.shape.cap; STATE[33] = volume.shape.capFt; STATE[34] = volume.shape.crispFt; STATE[35] = volume.shape.wisps;
   },
   /** How finely the line of sight is cut for the banks and stepped through the billows: `lite` (a headset, which draws everything twice) the coarser. */

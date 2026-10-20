@@ -31,6 +31,14 @@ export const FOG_REACH = 2.5, FOG_FADE_FROM = 1.9;
  * of the track; the haze is what makes that end a distance and not an edge.
  */
 export const CLEAR_HALF = 0.6, CLEAR_FADE = 0.5;
+/**
+ * With a track's backdrop drawn, a clear day's haze is `CLEAR_BACKDROP_THIN` times as thin, and the ground's fade begins at
+ * `CLEAR_BACKDROP_FADE` of the distance where the picture ends. The backdrop is seen through the haze too
+ * (`backdropHides`), at its own distance: thinned, the haze leaves it most of its colour, and nothing in front of it is
+ * hazier than it is. With the haze as thick as without a backdrop, a hill half way to it was washed blue while the
+ * range behind stood in full colour.
+ */
+export const CLEAR_BACKDROP_THIN = 2, CLEAR_BACKDROP_FADE = 0.75;
 /** Under a stadium's roof the haze of a weather without fog is this many times as thin. */
 export const INDOOR_CLEARER = 10;
 /** How far off a track's backdrop stands, feet: beyond the next copy of the wrapped world, 8192 ft on (render/atmosphere.js). */
@@ -187,20 +195,22 @@ const VOLUMES = Object.freeze({
  *
  * @returns {{ densityPerFt: number, deckFt: number, scaleHeightFt: number, fadeStartFt: number, farFt: number, reachFt: number,
  *   drift: number, windFtPerS: number, skyDepth: number, glow: number, shape: object, billowFt: number, billowSizeFt: number,
- *   lit: number, lightFt: number }|null}
- *   `fadeStartFt` to `farFt` is where the picture is faded out whatever the fog; `reachFt` how far
+ *   lit: number, lightFt: number, dissolve: boolean }|null}
+ *   `fadeStartFt` to `farFt` is where the picture is faded out whatever the fog: with `backdrop` (a track's backdrop is
+ *   drawn) `dissolve` is set, and there the world fades into the backdrop instead of into the fog's colour, as
+ *   the game's ground stops in front of it (render/atmosphere.js `mtmFogDissolve`, `fadesToBackdrop`); `reachFt` how far
  *   from the eye the fog's banks are told apart (its slices end there; beyond, the fog is even).
  *   `shape` is the layer's (`fogProfile`, with its `scaleHeightFt`); `billowFt` to `lightFt` its
  *   top's (`FOG_TOP`), none for a fog without one.
  */
-export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, { indoor = false, amount = 1 } = {}) {
+export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, { indoor = false, amount = 1, backdrop = false } = {}) {
   const look = WEATHER_LOOK[weather], volume = VOLUMES[weather];
   if (!look || !volume) return null;
   let halfFt, fadeStartFt, farFt, reachFt = null;
   if (!look.fogEndFt) {
     // No fog of its own: the haze of a clear day, which gives the distance its depth and ends where the picture does.
-    halfFt = clearRange.endFt * CLEAR_HALF * (indoor ? INDOOR_CLEARER : 1);
-    fadeStartFt = clearRange.endFt * CLEAR_FADE;
+    halfFt = clearRange.endFt * CLEAR_HALF * (indoor ? INDOOR_CLEARER : 1) * (backdrop ? CLEAR_BACKDROP_THIN : 1);
+    fadeStartFt = clearRange.endFt * (backdrop ? CLEAR_BACKDROP_FADE : CLEAR_FADE);
     farFt = clearRange.endFt;
   } else if (look.fogStartFt > 0) {
     // The game cuts the view here and has no fog: the port's ramp from `fogStartFt` to the cut, as a haze that ends at the cut.
@@ -223,7 +233,7 @@ export function fogVolume(weather, clearRange = { startFt: 2500, endFt: 7000 }, 
   const { open = false, top = false, ...lay } = volume;
   const form = top ? FOG_TOP : NO_TOP;
   return {
-    ...lay, open, densityPerFt: Math.LN2 / halfFt * amount, skyDepth: lay.skyDepth * amount, fadeStartFt, farFt, reachFt: reachFt ?? farFt,
+    ...lay, open, dissolve: backdrop, densityPerFt: Math.LN2 / halfFt * amount, skyDepth: lay.skyDepth * amount, fadeStartFt, farFt, reachFt: reachFt ?? farFt,
     shape: Object.freeze({ cap: form.cap, capFt: form.capFt, crispFt: form.crispFt, wisps: form.wisps, scaleHeightFt: lay.scaleHeightFt }),
     billowFt: top ? FOG_TOP.billowFt : 0, billowSizeFt: FOG_TOP.billowSizeFt, lit: top ? FOG_TOP.lit : 0, lightFt: FOG_TOP.lightFt,
   };
@@ -241,23 +251,26 @@ export function fogHides(volume, distanceFt) {
 }
 
 /**
- * The weathers whose fog stands between the eye and a backdrop: Foggy, Dense Fog, Rain and Snow. In the others (Clear,
- * Cloudy, the dark ones) the day's haze is the ground's distance and not the backdrop's: an HD backdrop is the picture of a
- * far range in its own air already, and seen through the haze too it was washed out.
+ * The weathers whose fog or haze stands between the eye and a backdrop: every one with a volume, Clear and Cloudy too
+ * (their haze thinned where a backdrop is drawn: `CLEAR_BACKDROP_THIN`), so that the backdrop is never clearer than the
+ * ground in front of it. The dark ones have no volume; their darkness veils the backdrop instead (`BACKDROP_DARK`).
  */
-export const BACKDROP_HAZED = new Set([2, 3, 4, 5]);
+export const BACKDROP_HAZED = new Set([0, 1, 2, 3, 4, 5]);
 
 /**
  * How much of a track's backdrop the fog hides, 0 to 1, for an eye on the fog's floor looking
  * `sine` (the sine of the angle) above the horizon in `weather`: the same sum the shader does
  * (render/atmosphere.js), without its banks. In a weather of `BACKDROP_HAZED` the backdrop is seen
- * through the whole depth of the fog, which thins as the line of sight climbs out of it; in every
- * weather its foot is lost in the haze the ground fades into, so the ground's far edge is never
- * seen against it.
+ * through the whole depth of the fog, which thins as the line of sight climbs out of it (below the
+ * horizon, its floor, as far off as at it). Where the world dissolves into it (`volume.dissolve`) the
+ * whole backdrop is seen, its floor too; otherwise its foot is lost in the haze the ground fades
+ * into, so the ground's far edge is never seen against it.
  */
 export function backdropHides(volume, sine, weather = 0) {
   if (!volume) return 0;
-  const through = BACKDROP_HAZED.has(weather) ? 1 - Math.exp(-volume.densityPerFt * fogColumn(-volume.deckFt, sine, BACKDROP_DISTANCE_FT, volume.shape)) : 0;
+  const through = BACKDROP_HAZED.has(weather) ? 1 - Math.exp(-volume.densityPerFt * fogColumn(-volume.deckFt, Math.max(sine, 0), BACKDROP_DISTANCE_FT, volume.shape)) : 0;
+  // Where the world dissolves into the backdrop (`dissolve`) all of it is seen, its floor too.
+  if (volume.dissolve) return through;
   const foot = Math.min(1, Math.max(0, sine / BACKDROP_FOOT));
   return Math.max(through, 1 - foot * foot * (3 - 2 * foot));
 }

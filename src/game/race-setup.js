@@ -27,9 +27,18 @@ export const DEFAULT_OPPONENTS = 3;
 /**
  * The race's entrants, the player first: `[{ name, file, player, slot }]`, `slot` the start-grid
  * slot. `trucks` are catalogue trucks (`{ file, hidden }`), `slots` the grid's size; `names` the computer drivers'
- * (`cpuNames`).
+ * (`cpuNames`). It is `raceDrivers` then `seatDrivers`.
  */
-export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random, spectator = false, names = CPU_NAMES }) {
+export function raceEntrants({ slots, random = Math.random, ...rest }) {
+  return seatDrivers(raceDrivers({ ...rest, slots, random }), slots, random);
+}
+
+/**
+ * Who races, the player first, `[{ name, file, player }]`, before they are given their places: what `raceEntrants`
+ * draws. Drawn for a full grid (`slots` 8), the first of them are those a smaller grid would have, so the trucks to
+ * build can be known before the track says how many slots it has (`seatDrivers` keeps as many as there are).
+ */
+export function raceDrivers({ playerTruck, trucks, slots = 8, opponents = DEFAULT_OPPONENTS, playerName = "You", random = Math.random, spectator = false, names = CPU_NAMES }) {
   const catalogue = trucks.filter((t) => !t.hidden);
   // Spectator mode (the port's): nobody drives. `playerTruck` is then the first of the computer's trucks, under the
   // last of the computer's names, which no other entrant can have.
@@ -58,13 +67,18 @@ export function raceEntrants({ playerTruck, trucks, slots, opponents = DEFAULT_O
       }
     });
   }
-  // The start slots, shuffled among the drivers.
-  const order = drivers.map((_, i) => i);
+  return drivers;
+}
+
+/** `drivers` (`raceDrivers`) on a grid of `slots`: as many as it holds, the start slots shuffled among them. */
+export function seatDrivers(drivers, slots, random = Math.random) {
+  const seated = drivers.slice(0, Math.min(8, slots));
+  const order = seated.map((_, i) => i);
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
-  return drivers.map((d, i) => ({ ...d, slot: order[i] }));
+  return seated.map((d, i) => ({ ...d, slot: order[i] }));
 }
 
 /** A race time as the HUD prints it, `%02d:%05.2f` (minutes, seconds). */

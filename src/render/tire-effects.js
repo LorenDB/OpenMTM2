@@ -716,7 +716,8 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
           if (d.y < (waterLevel ?? -1e9) || d.y < floorUnder(d.x, d.z, d.y)) d.life = 0;
           wet = true;
         }
-        dropPositions.set(d.life > 0 ? [d.x, d.y, -d.z] : [0, -9999, 0], n * 3);
+        const o = n * 3, live = d.life > 0;
+        dropPositions[o] = live ? d.x : 0; dropPositions[o + 1] = live ? d.y : -9999; dropPositions[o + 2] = live ? -d.z : 0;
       });
       if (wet || dropPoints.userData.had) dropGeometry.attributes.position.needsUpdate = true;
       dropPoints.userData.had = wet;
@@ -733,8 +734,9 @@ export function createTireEffects({ scene, art, ground, count, random = Math.ran
           any = true;
         }
         const fade = s.life > 0 ? Math.min(1, s.life / 0.3) : 0;
-        sparkPositions.set(s.life > 0 ? [s.x, s.y, -s.z] : [0, -9999, 0], n * 3);
-        sparkColors.set([1 * fade, 0.72 * fade, 0.3 * fade], n * 3);
+        const o = n * 3, live = s.life > 0;
+        sparkPositions[o] = live ? s.x : 0; sparkPositions[o + 1] = live ? s.y : -9999; sparkPositions[o + 2] = live ? -s.z : 0;
+        sparkColors[o] = fade; sparkColors[o + 1] = 0.72 * fade; sparkColors[o + 2] = 0.3 * fade;
       });
       if (any || sparkPoints.userData.had) {
         sparkGeometry.attributes.position.needsUpdate = true;

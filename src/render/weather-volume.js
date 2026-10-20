@@ -60,13 +60,14 @@ export function createWeatherVolume({ scene, camera, sun, ground = null, groundT
      * it is where the weather has none of its own (the dark weathers), under water, and where
      * the scene has no fog at all. Sets the fog's range to the volume's, which a headset may
      * then draw in. `clearRange` is where a clear day's haze fades the distance out (`{ startFt,
-     * endFt }`): not the game's fog of a foggy weather, which a fog with a top is seen beyond.
+     * endFt }`): not the game's fog of a foggy weather, which a fog with a top is seen beyond. `backdrop`: the track's
+     * backdrop is drawn, which thins a clear day's haze (game/atmosphere.js `CLEAR_BACKDROP_THIN`).
      */
-    fog({ underwater = false, clearRange = null } = {}) {
+    fog({ underwater = false, clearRange = null, backdrop = false } = {}) {
       // A weather without fog of its own, or one with a top (Foggy), fades out where a clear day's haze does: `clearRange`,
       // or the scene's fog where it is a clear day's.
       const range = clearRange ?? (scene.fog?.isFog ? { startFt: scene.fog.near, endFt: scene.fog.far } : null);
-      volume = !underwater && scene.fog?.isFog ? fogVolume(current, range, { indoor, amount }) : null;
+      volume = !underwater && scene.fog?.isFog ? fogVolume(current, range, { indoor, amount, backdrop }) : null;
       if (!volume) { atmosphere.clear(); return; }
       fogColor.copy(scene.fog.color);
       scene.fog.near = volume.fadeStartFt;

@@ -24,6 +24,7 @@ import * as THREE from "three";
 import { DEFAULT_GROUND, PAINT, meanTone, skyTones } from "../game/lighting.js";
 import { WEATHER_LOOK } from "../game/weather.js";
 import { addShaderHook } from "./shader-hooks.js";
+import { skyOf } from "./track-scene.js";
 
 /** How strongly each part of a truck shines (game/lighting.js `PAINT.parts`). */
 export const GLOSS = PAINT.parts;
@@ -111,7 +112,7 @@ export function createGloss({ world, sun, groundArt = null }) {
     },
     /** Once a frame: the sky that is up, the sun as it stands, and whether it rains. */
     update({ weather = 0 } = {}) {
-      const image = world.getObjectByName("sky")?.material?.map?.image ?? null;
+      const image = skyOf(world)?.material?.map?.image ?? null;
       if (image !== seen) {
         seen = image;
         tones = skyTones(image ? { rgba: image.data, width: image.width, height: image.height } : null);

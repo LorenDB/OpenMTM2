@@ -20,9 +20,11 @@
   plane keeps. VULTURE's start gate (CC4SF) is one: its .OPA is
   an older picture of the lettering, and as a cutout the posts and the banner would be gone.
 */
-import {
-  applyOpacityPlane, decodeActPalette, decodeRawTexture, decodeTiff, isTiff, parseSmf, podPathTitle, rawTextureSide, smfTextureReference,
-} from "../vendor/openphotex/index.js";
+import { applyOpacityPlane, decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeTiff, isTiff } from "../vendor/openphotex/texture/tiff.js";
+import { parseSmf, smfTextureReference } from "../vendor/openphotex/evo/smf.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
 
 const stemOf = (name) => podPathTitle(name).toUpperCase().replace(/\.[^.]*$/, "");
 

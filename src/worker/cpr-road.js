@@ -19,9 +19,11 @@
   The catch fence on wall types 3 and 5 is not in the `.TTX`: it is ART\CATCH3D.RAW (or CATCH.RAW)
   from CPR's STARTUP.POD. Without it the fence is drawn as a grey veil.
 */
-import {
-  CPR_CATCH_FENCE_NAMES, buildCprRoad, decodeActPalette, decodeRawTexture, parseCprTrk, parseCprTtx, podPathTitle, rawTextureSide,
-} from "../vendor/openphotex/index.js";
+import { CPR_CATCH_FENCE_NAMES, parseCprTrk, parseCprTtx } from "../vendor/openphotex/cpr/track.js";
+import { buildCprRoad } from "../vendor/openphotex/cpr/road.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
 
 /** The road mask's texels a foot, and its largest side. */
 const MASK_TEXELS_PER_FT = 1, MASK_MAX_SIDE = 4096;

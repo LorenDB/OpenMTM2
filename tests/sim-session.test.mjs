@@ -3,7 +3,7 @@
 */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSession, STEP } from "../src/worker/sim-worker.js";
+import { MAX_CATCH_UP, catchUpOrigin, createSession, STEP } from "../src/worker/sim-worker.js";
 import { buildTrackRender } from "../src/worker/track-build.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -507,4 +507,35 @@ test("ISLAND on Professional: every CPU truck gets past the corner built on its 
   const behind = session.race.trucks.filter((t) => t.s.ap.segmentsPassed <= 6).length;
   assert.ok(behind <= 1, `${behind} trucks still at the start's corners after 90 s`);
   for (const t of session.race.trucks) assert.ok(!(t.s.pos[0] < 200 && t.s.pos[2] > 3900 && t.s.pos[2] < 4400), `a truck ran off to the border at ${t.s.pos.map(Math.round)}`);
+});
+
+test("a stall drops the wall time past the catch-up cap instead of fast-forwarding", () => {
+  // In step: the origin stays put.
+  assert.equal(catchUpOrigin(1000, 3000, 2), 1000);
+  // A 2 s hitch with the simulation at 2 s: the next tick is at most MAX_CATCH_UP ahead of it.
+  const origin = catchUpOrigin(1000, 5000, 2);
+  assert.ok(Math.abs((5000 - origin) / 1000 - 2 - MAX_CATCH_UP) < 1e-9);
+});
+
+test("the kept ground boxes are the boxes OpenPhotex makes, one object a cell", async () => {
+  const { createGroundBoxCache } = await import("../src/worker/sim-worker.js");
+  const S = await import("../src/vendor/openphotex/sim/mtm2/index.js");
+  // Heights that differ in a band of cells, the map's edge among them.
+  const ra0 = new Uint8Array(65536), ra1 = new Uint8Array(65536);
+  for (let i = 0; i < 65536; i++) if ((i % 256) < 3 || (i % 256) > 250 || (i >> 8) % 7 === 0) { ra0[i] = i % 5; ra1[i] = ra0[i] + 1 + (i % 3); }
+  for (const stepFt of [2, 1.5]) {
+    const cache = createGroundBoxCache(ra0, ra1, stepFt);
+    for (const [x, z] of [[10, 10], [8190, 4000], [-5, 8200], [4096.5, 31.9], [16384 + 40, -8192 + 70], [10, 10]]) {
+      const fresh = S.groundBoxesAround(ra0, ra1, x, z, [], stepFt);
+      const kept = cache.around(x, z, []);
+      assert.equal(kept.length, fresh.length);
+      kept.forEach((box, k) => {
+        for (const field of ["pos", "half", "matrix", "points", "normals", "depths", "radius", "mass", "dynamic"]) {
+          assert.deepEqual(box[field], fresh[k][field], `${field} at ${x}, ${z}`);
+        }
+      });
+      assert.deepEqual(cache.around(x, z, []), kept, "the same objects the next step");
+      kept.forEach((box, k) => assert.equal(cache.around(x, z, [])[k], box));
+    }
+  }
 });

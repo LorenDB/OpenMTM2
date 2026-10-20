@@ -3,7 +3,8 @@
   "UI screens"). `ART\DATA<h>.RAW` (KOTH for Summit Rumbles) holds `width x h` palette indices,
   `ART\DATA<h>.ACT` the palette, for the screen heights 200, 400 and 480.
 */
-import { decodeActPalette, decodeIndexedImage } from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeIndexedImage } from "../vendor/openphotex/texture/raw.js";
 
 const SIZES = Object.freeze({ 480: [640, 480], 400: [640, 400], 200: [320, 200] });
 

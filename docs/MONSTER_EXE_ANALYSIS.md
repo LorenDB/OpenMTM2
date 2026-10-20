@@ -1292,6 +1292,18 @@ race HUD is two boxes at the top left, labels left and values right-aligned, tim
 - **Chase gauges**: the dial centres in the 640 x 480 screenshot are about (105, 390) for the
   speedometer and (533, 390) for the tachometer, numbers 72 px out, the needle's tip about 50 px
   out; the HUD text is a light grey with a one-pixel black shadow, rows 15 px apart.
+- **At higher resolutions** (measured in a 2560 x 1440 Community Patch 3 screenshot; the CP3 author
+  provided no source code): the HUD fonts are drawn at a whole-number scale, 2 at 1440 lines, with
+  every font pixel 2 x 2 and the shadow 1 font pixel off. The timing board is FNTO, its rows 30 px
+  (15 font pixels) apart, its first letter at x = 12 and its first row's glyph tops at y = 48 (3/640
+  of the width and 16/480 of the height), the values' right edge 396 px (198 font pixels) from the
+  labels' left. The gauges' numbers are FNT1 at the same scale. The dial centres fit (106, 391) and
+  (533, 391) in 640 x 480 terms, x scaled by the width over 640 and y by the height over 480 (424,
+  1173 and 2132, 1173), with the numbers 73 x 3 = 219 px out (the radius scales with the height,
+  so the dials stay round). The finder ring is 60 x 60 at the font scale (120 px), centred 72 px
+  (36 x 2) from the right edge and at y = 111 (37/480 of the height). The ring art (`FI480`) is
+  colour (0, 0, 128) between radii 22 and 30. In that screenshot the gauges' numbers are white
+  without a shadow and the gear strip uses a 3 x 5 pixel font that no stock font sheet holds.
 A standings list, `1st - ` to `8th - ` with each truck's name, is drawn instead when its
 toggle (`0x6505ec`) is on. The cockpit
 (`COCKPIT.POD`, `Cockpit.c`, `Ckptutil.c`) is a packed-bitmap dashboard per resolution with a

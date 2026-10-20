@@ -78,30 +78,50 @@ export function textWidth(font, text, scale = 1) {
 }
 
 /**
+ * The whole-number size of a HUD font pixel in device pixels for a view `deviceHeight` device pixels
+ * tall: one per 720 lines, rounded, at least one. Community Patch 3 draws the race HUD's fonts
+ * twice their size at 1440 lines (MONSTER_EXE_ANALYSIS.md 11, "At higher resolutions"); a whole
+ * number keeps every font pixel the same size, so the letters stay sharp.
+ */
+export const hudFontScale = (deviceHeight) => Math.max(1, Math.round(deviceHeight / 720));
+
+/**
  * A canvas that shows rows of text in a bitmap font. Rows are strings, or `[label, value]`
  * pairs drawn at the left and right of `width` (`fit` makes it as wide as the text instead),
  * on a `background` colour with `padX` and `padY` sheet pixels around (the caption bar), or `[label, value, middle]` with a second value
  * set just after the label (the HUD's `Place: 1/4     Lap: 1/2`); `rowHeight` is the row pitch. Falls back to plain text when the font is
  * missing. `set(rows)` redraws only when the text changes; `version` counts the redraws, for
- * whoever copies the canvas elsewhere (the headset's HUD, render/xr/vr-hud.js).
+ * whoever copies the canvas elsewhere (the headset's HUD, render/xr/vr-hud.js). `pixelRatio` is
+ * device pixels per CSS pixel: the canvas is laid out at its size divided by it, so each of its
+ * pixels is one device pixel and `scale` counts device pixels (`setScale` changes both).
  */
 export function createTextPanel(font, {
   width = 160, scale = 1, color = "#fff", labelColor = color, valueColor = color,
   align = "left", shadow = "#000", rowHeight = null, background = null, padX = 0, padY = 0, fit = false, backing = null,
+  pixelRatio = 1,
 } = {}) {
   // Without the font (an install lacking it) the rows fall back to plain text.
   const canvas = document.createElement(font ? "canvas" : "div");
   canvas.className = "bitmap-text";
-  let last = "", version = 0;
-  const pad = 2 * scale;
+  let last = "", version = 0, lastRows = null;
   return {
     element: canvas,
     get version() { return version; },
+    /** Draw at a new size: `scale` device pixels per font pixel, `ratio` device pixels per CSS pixel. */
+    setScale(nextScale, ratio = pixelRatio) {
+      if (nextScale === scale && ratio === pixelRatio) return;
+      scale = nextScale;
+      pixelRatio = ratio;
+      last = "";
+      if (lastRows) this.set(lastRows);
+    },
     set(rows) {
       const key = JSON.stringify(rows);
       if (key === last) return;
       last = key;
+      lastRows = rows;
       version++;
+      const pad = 2 * scale;
       if (!font) {
         canvas.replaceChildren(...rows.map((r) => {
           const line = document.createElement("div");
@@ -114,11 +134,17 @@ export function createTextPanel(font, {
       // Wide enough for the widest row, with a gap between a label and its value.
       const content = Math.max(0, ...rows.map((r) => (Array.isArray(r)
         ? textWidth(font, r[0]) + textWidth(font, r[1]) + 10 : textWidth(font, r)) + 4));
-      canvas.width = (Math.max(fit ? 0 : width, Math.ceil(content)) + 2 * padX) * scale;
-      canvas.height = rows.length * lineH + pad * 2 + 2 * padY * scale;
-      canvas.style.width = `${canvas.width}px`;
-      canvas.style.height = `${canvas.height}px`;
+      const w = (Math.max(fit ? 0 : width, Math.ceil(content)) + 2 * padX) * scale;
+      const h = rows.length * lineH + pad * 2 + 2 * padY * scale;
       const ctx = canvas.getContext("2d");
+      // A new size reallocates the canvas and lays the page out again: done only when the size changes (the race clock
+      // changes every frame, its board's size hardly ever). Otherwise the old text is wiped.
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = `${w / pixelRatio}px`;
+        canvas.style.height = `${h / pixelRatio}px`;
+      } else ctx.clearRect(0, 0, w, h);
       if (background) { ctx.fillStyle = background; ctx.fillRect(0, 0, canvas.width, canvas.height); }
       if (backing) {
         // A plate behind the text (a headset's boards hang in front of a bright sky): the whole
@@ -136,7 +162,7 @@ export function createTextPanel(font, {
         const y = pad + padY * scale + i * lineH;
         const left = Array.isArray(row) ? row[0] : row, right = Array.isArray(row) ? row[1] : null;
         const draw = (text, x, c, dy = 0) => drawText(ctx, font, text, x, y + dy, { color: c, scale });
-        const place = (text) => (align === "center" ? (canvas.width - textWidth(font, text, scale)) / 2 : pad + padX * scale);
+        const place = (text) => (align === "center" ? Math.round((canvas.width - textWidth(font, text, scale)) / 2) : pad + padX * scale);
         if (shadow) draw(left, place(left) + scale, shadow, scale);
         draw(left, place(left), labelColor);
         if (Array.isArray(row) && row[2]) {

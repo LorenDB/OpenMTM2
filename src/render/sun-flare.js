@@ -155,10 +155,19 @@ export class SunFlare {
     _right.setFromMatrixColumn(camera.matrixWorld, 0);
     _up.setFromMatrixColumn(camera.matrixWorld, 1);
     const rays = this._data.rays.length ? this._data.rays : [[0, 0, 0]];
-    let clear = 0;
-    for (const [x, y] of rays) {
-      _origin.copy(camera.position).addScaledVector(_right, x / 256).addScaledVector(_up, y / 256);
-      if (!blocked(_origin, toSun)) clear++;
+    // Each ray marches some 140 steps over the ground. The rays sit within a foot of the eye, so while the eye has moved
+    // less than that toward a sun in the same place, the share found last stands.
+    const kept = this._occlusion;
+    let clear;
+    if (kept && kept.blocked === blocked && kept.rays === rays && kept.sun.equals(toSun) && kept.eye.distanceToSquared(camera.position) < OCCLUSION_MOVE_FT ** 2) {
+      clear = kept.clear;
+    } else {
+      clear = 0;
+      for (const [x, y] of rays) {
+        _origin.copy(camera.position).addScaledVector(_right, x / 256).addScaledVector(_up, y / 256);
+        if (!blocked(_origin, toSun)) clear++;
+      }
+      this._occlusion = { blocked, rays, sun: toSun.clone(), eye: camera.position.clone(), clear };
     }
     this._visibility = (clear / rays.length) * edge;
     if (this._visibility <= 0) return;
@@ -212,6 +221,8 @@ export class SunFlare {
   }
 }
 
+/** How far the eye moves, feet, before the flare's rays are marched over the ground again. */
+const OCCLUSION_MOVE_FT = 1;
 const _toSun = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _screen = new THREE.Vector3();
@@ -219,6 +230,8 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _origin = new THREE.Vector3();
 const _size = new THREE.Vector2();
+
+const wrapWorld = (v) => ((v % 8192) + 8192) % 8192;
 
 /**
  * Whether the ground between a point and the horizon toward the sun hides the sun (scene frame in, game frame out).
@@ -230,8 +243,7 @@ export function sunBlocked(heightAt, origin, direction, wraps = true) {
     const x = origin.x + direction.x * t, y = origin.y + direction.y * t, z = -(origin.z + direction.z * t);
     // A level drawn once has nothing past its edges.
     if (!wraps && (x < 0 || x >= 8192 || z < 0 || z >= 8192)) return false;
-    const wrap = (v) => ((v % 8192) + 8192) % 8192;
-    if (y < heightAt(wrap(x), wrap(z))) return true;
+    if (y < heightAt(wrapWorld(x), wrapWorld(z))) return true;
   }
   return false;
 }

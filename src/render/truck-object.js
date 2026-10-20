@@ -7,7 +7,7 @@
 */
 import * as THREE from "three";
 import { toSceneMatrix, nearestCopy } from "../shared/scene-frame.js";
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { smoothNormals } from "../shared/smooth-normals.js";
 import { BAR_HALF_WIDTH_FT, SHOCK_HALF_WIDTH_FT, ribbonCorners, ribbonNormal, suspensionParts } from "../game/suspension.js";
 import { EVO_BAR_HALF_FT, EVO_SHOCK_HALF_FT, evoSuspensionParts, stripCorners } from "../game/evo-suspension.js";
@@ -298,17 +298,20 @@ export function createTruckObject(truck, hubs, look, { richLamps = false } = {})
   };
 }
 
+const ORIGIN = [0, 0, 0];
+const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
+const _ma = new THREE.Matrix4(), _mb = new THREE.Matrix4();
+const _sa = new Array(16), _sb = new Array(16);
+
 /** Blend two snapshots for drawing: positions linearly, orientations by quaternion. */
 export function interpolatePose(a, b, alpha) {
   const t = Math.min(1, Math.max(0, alpha));
-  const qa = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(toSceneMatrix(a.matrix, [0, 0, 0])));
-  const qb = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(toSceneMatrix(b.matrix, [0, 0, 0])));
-  const q = qa.slerp(qb, t);
-  const m = new THREE.Matrix4().makeRotationFromQuaternion(q);
+  // Every truck, every frame: the working matrices and turns are kept (the pose made is new, as callers may keep it).
+  _qa.setFromRotationMatrix(_ma.fromArray(toSceneMatrix(a.matrix, ORIGIN, _sa)));
+  _qb.setFromRotationMatrix(_mb.fromArray(toSceneMatrix(b.matrix, ORIGIN, _sb)));
   // Back to a game-frame row-major matrix: scene R = S M S, so M = S R S.
-  const e = m.elements; // column-major scene rotation
-  const r = [e[0], e[4], e[8], e[1], e[5], e[9], e[2], e[6], e[10]];
-  const matrix = [r[0], r[1], -r[2], r[3], r[4], -r[5], -r[6], -r[7], r[8]];
+  const e = _ma.makeRotationFromQuaternion(_qa.slerp(_qb, t)).elements; // column-major scene rotation
+  const matrix = [e[0], e[4], -e[8], e[1], e[5], -e[9], -e[2], -e[6], e[10]];
   const lerp = (x, y) => x + (y - x) * t;
   // A truck that was wrapped across the world between the two (a replay's frames either side of the seam) is blended
   // from the copy of where it was that is beside where it is.

@@ -27,15 +27,10 @@ export const fromScene = toScene;
  * (three.js Matrix4.elements layout), with translation `pos` in game feet.
  */
 export function toSceneMatrix(m, pos, out = new Array(16)) {
-  // S M S negates the entries that mix z with x or y.
-  const r = [
-    m[0], m[1], -m[2],
-    m[3], m[4], -m[5],
-    -m[6], -m[7], m[8],
-  ];
-  out[0] = r[0]; out[1] = r[3]; out[2] = r[6]; out[3] = 0;
-  out[4] = r[1]; out[5] = r[4]; out[6] = r[7]; out[7] = 0;
-  out[8] = r[2]; out[9] = r[5]; out[10] = r[8]; out[11] = 0;
+  // S M S negates the entries that mix z with x or y; the scene's matrix is the result by columns.
+  out[0] = m[0]; out[1] = m[3]; out[2] = -m[6]; out[3] = 0;
+  out[4] = m[1]; out[5] = m[4]; out[6] = -m[7]; out[7] = 0;
+  out[8] = -m[2]; out[9] = -m[5]; out[10] = m[8]; out[11] = 0;
   out[12] = pos[0]; out[13] = pos[1]; out[14] = -pos[2]; out[15] = 1;
   return out;
 }

@@ -571,9 +571,10 @@ void main() {
   gl_FragColor = vec4( color, alpha );
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
-  // The scene's fog, as every other material has it (render/atmosphere.js).
+  // The scene's fog, as every other material has it (render/atmosphere.js), fading into a track's backdrop as they do.
   if ( mtmFog[ 0 ].x > 0.5 ) gl_FragColor.rgb = mtmFogApply( gl_FragColor.rgb, uFogColor, vView );
   else if ( uFogRange.z > 0.5 ) gl_FragColor.rgb = mix( gl_FragColor.rgb, uFogColor, smoothstep( uFogRange.x, uFogRange.y, - vView.z ) );
+  gl_FragColor.a *= 1.0 - mtmFogDissolve( length( vView ) );
 }`;
 
 /*

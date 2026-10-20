@@ -16,7 +16,7 @@
   is an OpenPhotex PodArchive and `readEntry` resolves to the entry's bytes. The asset worker
   builds mounts from OPFS; tests build them from synthetic PODs.
 */
-import { normalizePodPath } from "../vendor/openphotex/index.js";
+import { normalizePodPath } from "../vendor/openphotex/pod/paths.js";
 
 export const DEFAULT_FAMILY = "MTM";
 

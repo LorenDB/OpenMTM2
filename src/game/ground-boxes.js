@@ -10,7 +10,7 @@
 
   Pure, so it runs under Node.
 */
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 /**
  * The decks of a level, or null for one without ground boxes. `ra0` and `ra1` are its lower and upper

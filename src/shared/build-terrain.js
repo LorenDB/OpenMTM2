@@ -3,7 +3,7 @@
   MTM's byte heightfield, or corner heights in feet where the level's is finer (CART Precision Racing), with 4x4
   Evolution 2's smoothed fine grid where it was built (`fineFt`).
 */
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 export function terrainOfBuild(build) {
   return build.heightsFt

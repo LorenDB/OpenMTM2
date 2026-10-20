@@ -10,7 +10,7 @@
   texture, cutout or blended, flat colour, and the material record in force. The normals are
   smoothed across the whole model (shared/smooth-normals.js); the classic look shades flat anyway.
 */
-import { MRGL, MRGLMAT, parseBin } from "../vendor/openphotex/index.js";
+import { MRGL, MRGLMAT, parseBin } from "../vendor/openphotex/model/bin.js";
 import { smoothNormals } from "../shared/smooth-normals.js";
 
 const UV_SCALE = 0xff0000;

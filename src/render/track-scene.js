@@ -13,8 +13,15 @@
   (game/terrain-relief.js, cut by worker/relief-mesh.js), which comes at two levels of detail:
   the chunks near the camera are drawn fine and the rest coarse.
 
-  What it costs to draw. The world wraps, so it is drawn nine times over (the original and its
-  eight neighbours), and a headset draws everything twice. Three things keep that affordable:
+  The world wraps without end, as the game's does. It is drawn nine times over (the original and its
+  eight neighbours), and each frame the nine are moved by whole worlds so that the middle one is the
+  copy the camera is over (`centreCopies`): whichever way the camera goes, there is a world on every
+  side of it, at least 8192 ft of ground however far it has gone, which is the most the Draw distance
+  reaches. That is what the game shows: it draws the cells around the view out to the view's range,
+  reading the map modulo its size (MONSTER_EXE_ANALYSIS.md "The wrapping world").
+
+  What it costs to draw. The world is drawn nine times, and a headset draws everything twice.
+  Three things keep that affordable:
   - the terrain is cut into chunks, each its own mesh, so what lies outside the view is skipped
     (one mesh per copy would always be in view, all 131072 triangles of it);
   - a model's placements in all nine copies are one instanced mesh, so a model costs one draw
@@ -29,7 +36,7 @@ import { DEFAULT_FRAME_SECONDS, keyframeWeights } from "../shared/keyframe-splin
 import { blockShift, chunkTriangles, indexedBounds } from "../shared/object-chunks.js";
 import { WORLD_FT } from "../shared/scene-frame.js";
 import { bleedCutout } from "../game/cutouts.js";
-import { installAtmosphere, screenColor, veilBackdropShader, veilSky } from "./atmosphere.js";
+import { fadesToBackdrop, installAtmosphere, screenColor, veilBackdropShader, veilSky } from "./atmosphere.js";
 import { BACKDROP_HAZED } from "../game/atmosphere.js";
 
 // The fog every material here is built with (render/atmosphere.js): three.js's own until "Volumetric weather" turns it on.
@@ -129,6 +136,8 @@ function inBlocks(mesh) {
     geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(...bounds.center), bounds.radius);
     const block = new THREE.Mesh(geometry, mesh.material);
     block.name = mesh.name;
+    // Still: its matrix is not composed again every frame (a move calls updateMatrix, `placeBlocks`).
+    block.matrixAutoUpdate = false;
     block.receiveShadow = mesh.receiveShadow;
     block.userData = { ...mesh.userData, block: true };
     group.add(block);
@@ -311,6 +320,7 @@ export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.at
           Math.hypot(side / 2, side / 2, (chunk.high - chunk.low) / 2));
         const mesh = new THREE.Mesh(geometry, material);
         mesh.name = "terrain";
+        mesh.matrixAutoUpdate = false;
         mesh.userData.chunk = chunk.row * (GRID / CHUNK_CELLS) + chunk.col;
         mesh.userData.detail = detail;
         mesh.visible = detail === "coarse";
@@ -349,6 +359,7 @@ export function createTerrain(terrain, look, map = createTerrainAtlas(terrain.at
         Math.hypot(side / 2, side / 2, (high - low) / 2));
       const mesh = new THREE.Mesh(geometry, material);
       mesh.name = "terrain";
+      mesh.matrixAutoUpdate = false;
       group.add(mesh);
     }
   }
@@ -662,6 +673,7 @@ export function placeObjects(library, objects, copies = [[0, 0]], { rounded = fa
     for (const { geometry, material } of parts) {
       const instanced = new THREE.InstancedMesh(geometry, facing ? facingMaterial(material, rounded) : material, total);
       instanced.name = key;
+      instanced.matrixAutoUpdate = false;
       // `places` is the model's placements in the original world, shared by the model's parts.
       Object.assign(instanced.userData, { perCopy, facing, places: matrices, blocks: offsets.length });
       if (facing) instanced.customDepthMaterial = facingDepthMaterial(material);
@@ -680,6 +692,11 @@ export function placeObjects(library, objects, copies = [[0, 0]], { rounded = fa
 /** The static shadow copy (render/sun-shadows.js) was drawn from the world as it stood. Something that never moves, until it does, has changed. */
 function bumpShadowStatic(world) {
   world.userData.shadowStaticSerial = (world.userData.shadowStaticSerial ?? 0) + 1;
+}
+
+/** Something that casts moved (an object the simulation moves, a falling tree): render/sun-shadows.js `invalidateIfMoved`. */
+function bumpShadowMotion(world) {
+  world.userData.shadowMotion = (world.userData.shadowMotion ?? 0) + 1;
 }
 
 /**
@@ -722,7 +739,8 @@ const COPY_MARGIN_FT = 600, COPY_PLAY_FT = 300;
 function showCopies(parts, camera, range) {
   const { copies, objects } = parts;
   if (copies.length < 2) return;
-  const { x, z } = camera.position;
+  // The camera where the copies are (`centreCopies`).
+  const x = camera.position.x - parts.lattice.position.x, z = camera.position.z - parts.lattice.position.z;
   let changed = false;
   copies.forEach((copy, i) => {
     let shown = true;
@@ -739,6 +757,21 @@ function showCopies(parts, camera, range) {
   return changed;
 }
 
+
+/**
+ * Move the copies of the world by whole worlds so that the middle one is the copy the camera is over: the world goes
+ * on without end however far the camera goes (the trucks and the camera are drawn where they went, not wrapped:
+ * ui/screens/race.js). Whether they moved.
+ */
+function centreCopies(parts, camera) {
+  if (parts.copies.length < 2) return false;
+  const [dx, dz] = blockShift(WORLD_FT / 2, -WORLD_FT / 2, camera.position.x, camera.position.z);
+  const { lattice } = parts;
+  if (lattice.position.x === dx && lattice.position.z === dz) return false;
+  lattice.position.set(dx, 0, dz);
+  lattice.updateMatrix();
+  return true;
+}
 
 /**
  * The placed objects that animate (keyframed models) or keep moving (`moving`: a 4x4 Evolution path's object, a
@@ -781,39 +814,62 @@ export function placeAnimatedObjects(library, objects) {
 
 /** The side of a forest chunk, feet: the trees of one are drawn, and culled, together. */
 const FOREST_CHUNK_FT = 1024;
+/**
+ * How near the camera a forest chunk's nearest edge is when its trees are drawn as models, feet; farther, as cards. The
+ * game draws a tree's model within 512 ft of the camera and a card beyond (docs/EVO2_EXE_ANALYSIS.md 2.2); by chunks,
+ * every tree within this distance is a model, and some up to a chunk's diagonal beyond it. `FOREST_LOD_PLAY_FT` keeps a
+ * chunk at the edge from flipping back and forth.
+ */
+const FOREST_MODEL_FT = 512;
+const FOREST_LOD_PLAY_FT = 64;
 
 /**
  * 4x4 Evolution's trees (`object.forest`, worker/evo-track-build.js), thousands of them: one InstancedMesh per model part
  * and FOREST_CHUNK_FT chunk, holding the original world's trees only. Each frame a chunk is moved to the copy of the world
  * nearest the camera (`placeForest`), as the terrain's blocks are, so every tree is drawn once and whole chunks are culled
  * by their own bounds, in the picture and in each shadow cascade. Placed over every copy (`placeObjects`), every tree was
- * drawn nine times, and never culled. `slots` finds a tree's instances by its `sitIndex`.
+ * drawn nine times, and never culled. A tree with a card (`object.far`) is drawn as its model in the chunks near the
+ * camera and as its card, turned to the camera, in the rest (`lod`): a forest of models is millions of triangles, nearly
+ * all of them far off. `slots` finds a tree's instances by its `sitIndex`. `rounded` lights the cards as round things.
  */
-export function createForest(library, objects) {
+export function createForest(library, objects, { rounded = false } = {}) {
   const byKey = new Map();
+  const add = (model, matrix, sitIndex, lod, [cx, cz]) => {
+    const parts = library.get(model);
+    if (!parts || parts.some((part) => part.frameCount > 1)) return false;
+    const key = `${model}|${lod ?? ""}|${cx}|${cz}`;
+    if (!byKey.has(key)) byKey.set(key, { parts, model, lod, placed: [], at: [(cx + 0.5) * FOREST_CHUNK_FT, -(cz + 0.5) * FOREST_CHUNK_FT] });
+    byKey.get(key).placed.push({ matrix, sitIndex });
+    return true;
+  };
   for (const object of objects) {
-    const parts = library.get(object.model);
-    if (!parts || parts.some((part) => part.frameCount > 1)) continue;
-    const cx = Math.floor(object.matrix[12] / FOREST_CHUNK_FT), cz = Math.floor(-object.matrix[14] / FOREST_CHUNK_FT);
-    const key = `${object.model}|${cx}|${cz}`;
-    if (!byKey.has(key)) byKey.set(key, { parts, model: object.model, placed: [], at: [(cx + 0.5) * FOREST_CHUNK_FT, -(cz + 0.5) * FOREST_CHUNK_FT] });
-    byKey.get(key).placed.push(object);
+    const chunk = [Math.floor(object.matrix[12] / FOREST_CHUNK_FT), Math.floor(-object.matrix[14] / FOREST_CHUNK_FT)];
+    const carded = !!object.far && library.has(object.far.model) && library.has(object.model);
+    if (add(object.model, object.matrix, object.sitIndex, carded ? "model" : null, chunk) && carded) add(object.far.model, object.far.matrix, object.sitIndex, "card", chunk);
   }
   const group = new THREE.Group();
   group.name = "forest";
   const slots = {};
   const m = new THREE.Matrix4();
-  for (const { parts, model, placed, at } of byKey.values()) {
+  for (const { parts, model, lod, placed, at } of byKey.values()) {
+    const card = lod === "card";
     for (const { geometry, material } of parts) {
-      const mesh = new THREE.InstancedMesh(geometry, material, placed.length);
+      const mesh = new THREE.InstancedMesh(geometry, card ? facingMaterial(material, rounded) : material, placed.length);
       mesh.name = model;
-      placed.forEach((object, i) => {
-        mesh.setMatrixAt(i, m.fromArray(object.matrix));
-        if (object.sitIndex !== undefined) (slots[object.sitIndex] ??= []).push([mesh, i]);
+      mesh.matrixAutoUpdate = false;
+      placed.forEach(({ matrix, sitIndex }, i) => {
+        mesh.setMatrixAt(i, m.fromArray(matrix));
+        if (sitIndex !== undefined) (slots[sitIndex] ??= []).push([mesh, i]);
       });
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-      mesh.computeBoundingSphere();
+      // A card's shadow is held square to the sun, as a camera-facing object's is.
+      if (card) {
+        mesh.userData.facing = true;
+        mesh.customDepthMaterial = facingDepthMaterial(material);
+      }
+      boundInstances(mesh);
       mesh.userData.forestAt = at;
+      mesh.userData.forestLod = lod;
       group.add(mesh);
     }
   }
@@ -823,15 +879,24 @@ export function createForest(library, objects) {
 
 /**
  * Each forest chunk, and each tree falling by itself, at the copy of the world nearest the camera (`wraps`: the world
- * has copies); with a headset's `range`, a chunk wholly beyond it is left out. Whether anything moved.
+ * has copies), a chunk with cards as its models or its cards by how near it is (`createForest`); with a headset's
+ * `range`, a chunk wholly beyond it is left out. Whether anything moved.
  */
 function placeForest(parts, camera, range, wraps) {
   const cx = camera.position.x, cz = camera.position.z;
   let moved = false;
   const place = (object, [x, z], reach) => {
     const [dx, dz] = wraps ? blockShift(x, z, cx, cz) : [0, 0];
-    if (object.position.x !== dx || object.position.z !== dz) { object.position.set(dx, 0, dz); moved = true; }
-    const visible = range === Infinity || Math.hypot(x + dx - cx, z + dz - cz) <= range + reach;
+    if (object.position.x !== dx || object.position.z !== dz) { object.position.set(dx, 0, dz); object.updateMatrix(); moved = true; }
+    let visible = range === Infinity || Math.hypot(x + dx - cx, z + dz - cz) <= range + reach;
+    const lod = object.userData.forestLod;
+    if (lod) {
+      // How far the chunk's nearest edge is; the chunk's meshes all keep the same state, so they turn over together.
+      const half = FOREST_CHUNK_FT / 2;
+      const edge = Math.hypot(Math.max(0, Math.abs(x + dx - cx) - half), Math.max(0, Math.abs(z + dz - cz) - half));
+      const near = object.userData.forestNear = edge < FOREST_MODEL_FT + (object.userData.forestNear ? FOREST_LOD_PLAY_FT : 0);
+      visible &&= near === (lod === "model");
+    }
     if (object.visible !== visible) { object.visible = visible; moved = true; }
   };
   if (parts.forest) for (const mesh of parts.forest.children) place(mesh, mesh.userData.forestAt, FOREST_CHUNK_FT);
@@ -849,9 +914,11 @@ export function setForestTree(world, sitIndex, matrix) {
   const parts = PARTS.get(world);
   const list = parts?.forest?.userData.slots[sitIndex];
   if (!list) return false;
-  if (matrix) _forestMatrix.fromArray(matrix);
   for (const [mesh, i] of list) {
-    if (!matrix) {
+    // A card stands for an upright tree: a knocked one has none.
+    const card = mesh.userData.forestLod === "card";
+    if (matrix && !card) _forestMatrix.fromArray(matrix);
+    else {
       // Shrunk to nothing where it stands, so the chunk's bounds still hold it.
       mesh.getMatrixAt(i, _forestMatrix);
       const e = _forestMatrix.elements;
@@ -860,7 +927,7 @@ export function setForestTree(world, sitIndex, matrix) {
     mesh.setMatrixAt(i, _forestMatrix);
     mesh.instanceMatrix.needsUpdate = true;
     // Only the one chunk's bounds: a tree lying down may reach past them.
-    if (matrix) mesh.computeBoundingSphere();
+    if (matrix && !card) mesh.computeBoundingSphere();
   }
   bumpShadowStatic(world);
   return true;
@@ -878,6 +945,7 @@ export function addFallingTree(world, model, [x, z]) {
   const falling = new THREE.Group();
   falling.name = "fallingTree";
   falling.userData.forestAt = [x, z];
+  falling.userData.world = world;
   const posed = new THREE.Group();
   posed.matrixAutoUpdate = false;
   for (const { geometry, material } of pieces) {
@@ -897,10 +965,13 @@ export function poseFallingTree(falling, matrix) {
   const posed = falling.children[0];
   posed.matrix.fromArray(matrix);
   posed.matrixWorldNeedsUpdate = true;
+  const world = falling.userData.world;
+  if (world) bumpShadowMotion(world);
 }
 
 export function removeFallingTree(world, falling) {
   const parts = PARTS.get(world);
+  bumpShadowMotion(world);
   falling.removeFromParent();
   if (parts) parts.falling = parts.falling.filter((f) => f !== falling);
 }
@@ -912,6 +983,7 @@ export function removeFallingTree(world, falling) {
 export function moveObjects(world, moves) {
   const parts = PARTS.get(world);
   if (!moves.length || !parts) return;
+  bumpShadowMotion(world);
   const m = new THREE.Matrix4();
   const bySit = new Map(moves.map((item) => [item.sitIndex, item]));
   for (const group of parts.placed) {
@@ -1033,6 +1105,29 @@ function greyMap(material) {
 }
 
 /** Draw the SIT backdrop models as camera-centred scenery behind the world. */
+/** Where the sky's cap, the sky and a track's backdrop come in the opaque pass when the backdrop is drawn: before the world, at 0. */
+const SKY_CAP_FIRST = -4, SKY_FIRST = -3, BACKDROP_ORDER = -2;
+
+/**
+ * Draw the sky and a track's backdrop before the world, as the game draws its backdrop, and have the far fade take the
+ * world's opaque materials to the backdrop instead of to the fog's colour (render/atmosphere.js `fadesToBackdrop`): the
+ * whole backdrop, its floor too, is seen behind the ground's far edge, with no band of fog over it.
+ */
+function drawBackdropFirst(world) {
+  world.userData.fadesToBackdrop = true;
+  const skip = new Set();
+  for (const name of ["sky", "backdrops"]) world.getObjectByName(name)?.traverse((o) => skip.add(o));
+  const sky = world.getObjectByName("sky");
+  if (sky) {
+    sky.renderOrder = SKY_FIRST;
+    if (sky.userData.cap) sky.userData.cap.renderOrder = SKY_CAP_FIRST;
+  }
+  world.traverse((o) => {
+    if (!o.isMesh || skip.has(o)) return;
+    for (const material of [o.material].flat()) fadesToBackdrop(material);
+  });
+}
+
 export function createBackdrops(build, look) {
   if (!build.backdrops?.length) return null;
   // An HD backdrop's panels sit in a ring of see-through texels: sealed, so that faces meeting show no seam. The game's
@@ -1057,27 +1152,32 @@ export function createBackdrops(build, look) {
     backdropTint: { value: new THREE.Color(0xffffff) }, backdropSaturation: { value: 1 }, backdropVeil: { value: new THREE.Vector4(0, 0, 0, 0) },
     backdropHaze: { value: 0 },
   };
-  // After the sky, at the end of the opaque pass, so the world has already written its depth and only the backdrop
-  // that shows is shaded. The group stays at 0 (three.js sorts by the nearest Group's renderOrder first, and the sky
-  // is part of `world`); the meshes carry 3, after the dome. Depth is tested, and not written, so a hole still shows the sky.
-  // It is drawn at the far plane (installBackdropShader): the game draws it first with depth off, so the world stands in
-  // front of it wherever the world is, however far, and never the other way round.
+  // As the game draws it: first, after the sky and before the world (`drawBackdropFirst`), so the far world fades into
+  // it (render/atmosphere.js `fadesToBackdrop`). The group stays at 0 (three.js sorts by the nearest Group's renderOrder
+  // first, and the sky is part of `world`); the meshes carry BACKDROP_ORDER. Depth is not written, so the world is drawn
+  // over it wherever it is, however far; it is drawn at the far plane (installBackdropShader). An HD backdrop (a PNG with
+  // its own alpha) is blended over the sky in the same place, not in the see-through pass, which comes after the world.
   group.renderOrder = 0;
   for (const name of build.backdrops) {
     for (const part of library.get(name) ?? []) {
       const source = part.material;
       const material = new THREE.MeshBasicMaterial({
-        map: source.map, color: source.color, transparent: source.transparent,
+        map: source.map, color: source.color, transparent: false,
         alphaTest: source.alphaTest, side: THREE.DoubleSide, depthTest: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
         fog: false,
       });
+      if (source.transparent) {
+        // Blended by its alpha over the sky, the picture's own alpha kept.
+        Object.assign(material, {
+          blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+          blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+        });
+      }
       // The panels run round the horizon (S) but not over it (T): the picture's top row is never filtered into its bottom.
       if (material.map && material.map.wrapT !== THREE.ClampToEdgeWrapping) { material.map.wrapT = THREE.ClampToEdgeWrapping; material.map.needsUpdate = true; }
       installBackdropShader(material, uniforms);
       const mesh = new THREE.Mesh(part.geometry, material);
-      // An HD backdrop (a PNG with its own alpha) is see-through, and so drawn in the see-through pass. There it goes
-      // first: drawn after the trees' cut-out leaves it painted over their soft edges, which write no depth.
-      mesh.renderOrder = material.transparent ? -100 : 3;
+      mesh.renderOrder = BACKDROP_ORDER;
       group.add(mesh);
     }
   }
@@ -1198,7 +1298,7 @@ export function placeBlocks(world, camera, viewRange = Infinity) {
       x = sphere.center.x; z = sphere.center.z;
     }
     const [dx, dz] = blockShift(x, z, cx, cz);
-    if (o.position.x !== dx || o.position.z !== dz) { o.position.x = dx; o.position.z = dz; moved = true; }
+    if (o.position.x !== dx || o.position.z !== dz) { o.position.x = dx; o.position.z = dz; o.updateMatrix(); moved = true; }
     // A headset may draw the fog in. Do not submit a block wholly beyond that range; ordinary
     // flat rendering passes Infinity and leaves visibility to the camera frustum as before.
     const radius = (o.boundingSphere ?? o.geometry?.boundingSphere)?.radius ?? 300;
@@ -1255,10 +1355,13 @@ export function updateTrackWorld(world, camera, dt, { viewRange = Infinity, fine
       if (from > 0) mesh.morphTargetInfluences[from - 1] += 1 - t;
       if (to > 0) mesh.morphTargetInfluences[to - 1] += t;
     }
+    if (centreCopies(parts, camera)) bumpShadowStatic(world);
     if (showCopies(parts, camera, viewRange)) bumpShadowStatic(world);
+    // The camera where the copies are, for the ground's chunks.
+    const localX = camera.position.x - parts.lattice.position.x, localZ = camera.position.z - parts.lattice.position.z;
     if ((parts.forest || parts.falling.length) && placeForest(parts, camera, viewRange, parts.copies.length > 1)) bumpShadowStatic(world);
     for (const chunk of parts.chunks) {
-      const dx = Math.abs(chunk.x - camera.position.x), dz = Math.abs(chunk.z - camera.position.z);
+      const dx = Math.abs(chunk.x - localX), dz = Math.abs(chunk.z - localZ);
       const seen = Math.hypot(dx, dz) < viewRange + chunk.radius;
       if (!chunk.fine) { chunk.mesh.visible = seen; continue; }
       // Fine within range of the chunk's nearest edge; both levels have the same border, so neighbours of either kind meet.
@@ -1421,6 +1524,18 @@ export function createSky(sky, look, radius = 6000) {
 }
 
 /** Put a new sky (another weather) on an existing dome. */
+const SKIES = new WeakMap();
+
+/** The world's sky (`createSky`), found once and kept until `updateSky` puts another in its place. */
+export function skyOf(world) {
+  let sky = SKIES.get(world);
+  if (!sky || !sky.parent) {
+    sky = world.getObjectByName("sky") ?? null;
+    if (sky) SKIES.set(world, sky);
+  }
+  return sky;
+}
+
 export function updateSky(dome, sky, look) {
   if (!dome || !sky) return;
   // A flat sky and a dome are different objects: one takes the other's place (the weather changed).
@@ -1546,8 +1661,8 @@ export function createRoad(road, look) {
  */
 export function createTrackWorld(build, look, { backdrops: showBackdrops = false, drawDistance = 20000, naturalLight = false, terrainDetail = true, reflections = true, grass: grassRadius = 16 } = {}) {
   const world = new THREE.Group();
-  // The world wraps at 8192 ft, so its eight neighbouring copies are drawn too; a stadium stands alone, and so does a
-  // level whose edges do not meet (`noWrap`).
+  // The world wraps at 8192 ft, so its eight neighbouring copies are drawn too, kept around the camera (`centreCopies`);
+  // a stadium stands alone, and so does a level whose edges do not meet (`noWrap`).
   const copies = build.stadium || build.noWrap ? WORLD_COPIES.slice(0, 1) : WORLD_COPIES;
   // What each copy has for itself: the ground, the water and the animated objects.
   const tile = new THREE.Group();
@@ -1563,26 +1678,30 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
   if (animated) tile.add(animated);
   const water = createWater(build.waterLevelFt, build.noWrap ? 5 : 1);
   if (water) tile.add(water);
-  world.add(tile);
+  // The copies and the placed objects, moved together by whole worlds to stay around the camera (`centreCopies`).
+  const lattice = new THREE.Group();
+  lattice.name = "copies";
+  lattice.matrixAutoUpdate = false;
+  world.add(lattice);
+  lattice.add(tile);
   // The copies share every geometry, material and texture with the original.
   const tiles = [tile];
   for (const [dx, dz] of copies.slice(1)) {
     const copy = tile.clone();
     copy.position.set(dx * WORLD_FT, 0, dz * WORLD_FT);
-    world.add(copy);
+    copy.updateMatrix();
+    copy.matrixAutoUpdate = false;
+    lattice.add(copy);
     tiles.push(copy);
   }
   // Every other object, in all the copies at once; 4x4 Evolution's trees by chunks around the camera (`createForest`).
   const objects = placeObjects(library, build.objects.filter((o) => !o.forest), copies, { rounded: naturalLight });
-  world.add(objects);
-  const forest = createForest(library, build.objects.filter((o) => o.forest));
+  lattice.add(objects);
+  const forest = createForest(library, build.objects.filter((o) => o.forest), { rounded: naturalLight });
   if (forest) world.add(forest);
   const backdrops = createBackdrops(build, look);
   if (backdrops && showBackdrops && !build.stadium) world.add(backdrops);
   if (!build.stadium) {
-    // The world is a torus 8192 ft a side and is drawn once, as a window around the camera: every block of it is moved
-    // each frame to the copy nearest the camera (`updateTrackWorld`), as the game draws each cell once beside the view
-    // (MONSTER_EXE_ANALYSIS.md "The wrapping world"). Every level, whatever its game.
     // A stadium replaces the sky (MONSTER.EXE draws it instead).
     const sky = createSky(build.sky, look, Math.min(6000, drawDistance * 0.95));
     if (sky) world.add(sky);
@@ -1594,8 +1713,9 @@ export function createTrackWorld(build, look, { backdrops: showBackdrops = false
   // 4x4 Evolution's grass, around the camera (render/evo-grass.js).
   const grass = grassRadius > 0 && build.grass ? createEvoGrass(build.grass, terrainOfBuild(build), grassRadius) : null;
   if (grass) world.add(grass.mesh);
+  if (backdrops && showBackdrops && !build.stadium) drawBackdropFirst(world);
   const parts = {
-    grass, forest, falling: [], library,
+    grass, forest, falling: [], library, lattice,
     objects, byName: new Map(), placed: [], morphing: [], chunks: [], backdrops: backdrops && !build.stadium ? backdrops : null,
     copies: tiles.map((group) => ({
       group, shown: true,

@@ -1,197 +1,260 @@
 # OpenMTM2
 
-An open reimplementation of **Monster Truck Madness 2** that runs in your browser.
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES%20modules-F7DF1E?logo=javascript&logoColor=000)](https://developer.mozilla.org/docs/Web/JavaScript)
+[![Three.js](https://img.shields.io/badge/Three.js-r169-000?logo=threedotjs)](https://threejs.org/)
+[![Platform](https://img.shields.io/badge/platform-web-blue)](https://developer.mozilla.org/docs/Web)
+[![GitHub Pages](https://img.shields.io/badge/demo-GitHub%20Pages-222?logo=github)](https://juanputrerasm.github.io/OpenMTM2/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-**[Play the live demo](https://juanputrerasm.github.io/OpenMTM2/)**, hosted on GitHub Pages.
-Nothing is uploaded: the game reads your own copy of Monster Truck Madness 2 and keeps it in your
-browser's private storage.
+**A clean-room, open-source implementation of Monster Truck Madness 2 for the web.**
 
-![license](https://img.shields.io/badge/license-Apache--2.0-blue)
-![status](https://img.shields.io/badge/status-early%20development-orange)
+OpenMTM2 recreates the original game in a modern browser using your own Monster Truck Madness 2
+installation. It supports game data from **Beta 10**, retail **2.00.41**, the official patched
+**2.00.42**, and community patches through **Community Patch 3**. Everything runs locally: no game
+files are included in this repository or uploaded by the application.
 
-## Contents
+**Live application:** [Play OpenMTM2 on GitHub Pages](https://juanputrerasm.github.io/OpenMTM2/)
 
-- [Features](#features)
-- [Getting started](#getting-started)
-- [Controls](#controls)
-- [Development](#development)
-- [Documentation](#documentation)
-- [Related projects](#related-projects)
-- [Credits and license](#credits-and-license)
+![OpenMTM2 running an eight-truck race with the enhanced renderer](docs/screenshot.jpg)
+
+---
 
 ## Features
 
-OpenMTM2 contains **no game data**. It needs your own retail Monster Truck Madness 2 install
-(version 2.0.41 or 2.00.42), or one with Community Patch 3. `POD.INI` and the archives it lists
-are read, and `MONSTER.EXE` only for its version number (a community patch starts with the modern
-menus). It needs at least `STARTUP.POD`, `MUSIC.POD`, `SOUND.POD`, `COCKPIT.POD`, `TRUCK2.POD` and
-`UI.POD`; every other archive is optional.
+- **Complete single-player racing:** Circuit, Rally, Summit Rumble, drag racing, tournaments, driver
+  profiles, results and a Hall of Fame, with up to eight trucks.
+- **Faithful simulation:** clean-room truck physics, collisions and CPU drivers running in a Web Worker.
+- **Broad content support:** MTM2 Beta 10 through Community Patch 3, plus tracks from MTM1, CART
+  Precision Racing and both 4x4 Evolution games.
+- **Classic or enhanced presentation:** ten cameras, the original-style HUD, dynamic weather,
+  water, shadows, lighting, particles and optional modern scenery effects.
+- **Sound and replay:** engines, impacts, ambience, music and instant replays that can read and write
+  the game's `.rpl` format.
+- **Player choice:** truck tuning, rebindable controls, graphics presets, cheats, gamepad support,
+  free roam and an in-game console.
+- **WebXR:** menus and races work in supported standalone and PC-connected VR headsets.
 
-- **Races:** Circuit, Rally and Summit Rumble against CPU trucks, with laps, checkpoints,
-  results, driver profiles and a Hall of Fame. Professional puts every truck on the track's second
-  course when it has one.
-- **Additions:** drag races on the MTM1 strips (auto-staging, the Christmas tree, red lights and
-  lane disqualification), CPU trucks that play a Rumble for the zone, tire tracks, dust, sparks and
-  splashes, and the helicopter and pterodactyl models.
-- **Tracks of other Terminal Reality games:** CART Precision Racing (the road layer, its walls and
-  catch fences), 4x4 Evolution 1 and 2 (their terrain, models, trees and every checkpoint) and
-  Monster Truck Madness 1 (its own sky and its stadium drags), raced with MTM2's trucks and
-  physics, eight trucks at most. Add another game's `POD.INI`, or single POD files, in Options,
-  Data: the POD manager lists every mounted archive, the game it was read as and its tracks and
-  trucks.
-- **Free roam:** any track with no race on it, the player alone; 4x4 Evolution's mission tracks,
-  which have no checkpoints, are driven this way.
-- **Community Patch 3:** its MTM1 tracks, `.SI2` tracks, HD art for models, trucks, sky and ground
-  (PNG or TGA, with `_N` normal and `_AO` occlusion maps), materials, glass, track lights and
-  moving objects.
-- **Simulation:** the original truck physics, collisions and AI, reimplemented from the game's
-  documented behaviour and run at a fixed 60 Hz in a worker.
-- **Ten camera views:** the chase cameras, a cockpit with dashboard, wheel, shifter and mirror,
-  and two track cameras, with the finder ring and the course map overlay.
-- **HUD in the game's style:** timing board with Lead and Back gaps, speedometer and tachometer
-  (MPH or KPH), gear strip and the message bar.
-- **Weather and water:** Clear, Cloudy, Fog, Rain, Snow, Dusk, Night and Pitch Black, animated
-  water, underwater fog, wheel spray and ripples.
-- **Scenery of the port's own, off by default, each part with a switch in Options (Scenery):** the ground's 32 ft facets
-  rounded off and its cliffs given relief (trucks drive on the same ground as before); water
-  with depth you see into, the sky in it, a shore and a view from under it, wakes and rings
-  where the trucks stir it, and ice in Snow; fog that lies in the valleys as a sea of cloud
-  with a lit, billowing top, in drifting banks, which a truck can climb out of, and rain and
-  snow that fall through the air but not under bridges; puddles where the ground has a low
-  point, which the trucks splash through and stir; snow with depth, deep on level ground and clear along the track, that the trucks
-  plough; ground that stays sharp close up and steady far off; sunlight in the colour of its
-  hour with shadows cast by the hills; the game's own backdrops through the haze; paint that
-  mirrors the sky; lamps that glow, with beams of light in the air, tail lamps that brake
-  bright and a start gantry of real lamps; dust, powder, spray, tire smoke and sparks that take
-  the light, and ruts from every tire; ice that cracks as ice does where a truck lands on it;
-  all of it in the instant replay; and, on the flat screen, lights that glow.
-- **Instant replay:** watch the race again from any truck and any of the ten cameras, with VCR
-  controls, and save or open `.rpl` replay files.
-- **Sound and music:** engines, skids, impacts, ambience, objects' own sounds, MOD music.
-- **Garage and options:** tuning, rebindable keys, GOLD mode cheats, an enhanced look with sun
-  shadows, smooth shading and lens flare or the classic 1998 look, V-sync and a frame rate limit.
-- **Z-mode cameras and the console:** Z mode's zoom and orbit while driving, an Inertia view that
-  backs off with speed, and a drop-down console (the key left of 1) with commands for opponents,
-  laps, the track, the weather, the skill and the truck.
+Each area is described under [Feature details](#feature-details).
 
-The milestones and what is still to do are in [docs/PLAN.md](docs/PLAN.md).
+## Supported game data
+
+OpenMTM2 contains no Microsoft or Terminal Reality game data. Supply your own installation from any
+of these releases:
+
+| Release | Support |
+|---|---|
+| Beta 10 | Supported, with the classic menus by default |
+| Retail 2.00.41 | Supported, with the classic menus by default |
+| Official patch 2.00.42 | Supported, with the classic menus by default |
+| Community Patch 1, 2 and 3 | Supported, with the modern menus by default |
+
+The installer reads `POD.INI` and the archives it lists. It inspects `MONSTER.EXE` only to identify
+the version; the executable is never run. At minimum the installation must provide `STARTUP.POD`,
+`MUSIC.POD`, `SOUND.POD`, `COCKPIT.POD`, `TRUCK2.POD` and `UI.POD`. Every other archive is optional.
+
+Community Patch 3 content includes `.SI2` tracks, HD PNG and TGA art,
+normal and occlusion maps, enhanced materials and glass, track lights and moving objects.
+
+## Requirements
+
+- A modern Chrome, Edge, Firefox or Safari with JavaScript modules, Web Workers, WebGL and Origin
+  Private File System support
+- Your own Monster Truck Madness 2 installation, as described above
+- An HTTP or HTTPS origin; the application does not run directly from `file://`
+- WebXR and a compatible browser only when using VR
 
 ## Getting started
 
-1. Open the [live demo](https://juanputrerasm.github.io/OpenMTM2/) in a recent Chrome, Edge,
-   Firefox or Safari.
-2. Choose **Choose game folder** and pick the folder of your Monster Truck Madness 2 install (the
-   one holding `POD.INI`). The archives are copied once into the browser's private storage.
-3. Check in, pick a track and truck, and race.
+### Use the hosted application
 
-The install stays in the browser until you use **Change base install** or **Clear browser game
-data** in the Options.
+1. Open [OpenMTM2 on GitHub Pages](https://juanputrerasm.github.io/OpenMTM2/).
+2. Choose **Choose game folder** and select the folder containing `POD.INI`.
+3. Check in, choose a track and truck, and race.
+
+The archives are copied once to the browser's private storage and remain there until you use
+**Change base install** or **Clear browser game data** in Options. They never leave your device.
+
+### Run locally
+
+Clone the repository and serve its root with any static HTTP server:
+
+```bash
+git clone https://github.com/juanputrerasm/OpenMTM2.git
+cd OpenMTM2
+python3 -m http.server 8080
+```
+
+Then open <http://localhost:8080/>. There is no build step and no package installation.
+
+> [!NOTE]
+> A service worker keeps a local copy of the application after the first visit, so an installed
+> game can continue to work offline. A reachable server always takes precedence; Options also has
+> a **Start without the server** switch.
 
 ## Controls
 
-The defaults; every key can be rebound in Options.
+These are the defaults; every driving key can be rebound in Options.
 
 | Action | Keys |
 |---|---|
-| Accelerate, brake, steer | Arrow keys or W, S, A, D |
-| Shift up, down | Q, Z (or Page Up, Page Down) |
-| Camera view (Shift goes back) | V |
-| Tilt the chase camera up, down (held) | + and - |
-| Course map, names on the map | Tab or M, N |
-| Dashboard gauges, finder ring | G, F |
-| Horn, YeeHaw, helicopter | Space, Y, H |
+| Accelerate, brake and steer | Arrow keys or W, S, A, D |
+| Shift up / down | Q / Z or Page Up / Page Down |
+| Change camera; go back one camera | V; Shift+V |
+| Tilt the chase camera | + / - |
+| Course map; names on the map | Tab or M; N |
+| Dashboard gauges; finder ring | G; F |
+| Horn; YeeHaw; helicopter recovery | Space; Y; H |
 | Timing display | O |
-| Console | the key left of 1 |
+| Console | The key left of 1 |
 | Pause | Esc or P |
 
-## Development
+Gamepads use the browser's standard mapping. VR controllers follow the WebXR `xr-standard` layout.
 
-There is no build step and nothing to install: plain ES modules, with Three.js loaded from a CDN.
-Serve the repository root with any static server and open it:
+## Feature details
 
-```sh
-python3 -m http.server 8080
-# then open http://localhost:8080/
-```
+### Racing and game modes
 
-Opening `index.html` as a file does not work: workers and the Origin Private File System need
-`http://localhost` or HTTPS.
+- Race Circuit, Rally and Summit Rumble events against CPU trucks, with laps, checkpoints, timing,
+  results, persistent driver profiles and a Hall of Fame. Professional difficulty uses a track's
+  second course when it has one.
+- Run MTM1 drag strips with auto-staging, a working Christmas tree, red lights, lane and reversing
+  disqualifications, timing slips and drag weekends based on Community Patch 3's documented rules.
+- Explore any non-race track in Free Roam. This is also how mission tracks without checkpoints from
+  4x4 Evolution are driven.
+- CPU trucks contest the zone in Rumble events, while tire tracks, dust, sparks, splashes and moving
+  scenery bring the race to life.
 
-Once it has been opened, the browser keeps a copy of the app (a service worker, `sw.js`), so
-with the game installed the same address works offline. A server that answers is always used in
-preference, so this does not get in the way of changing the code; Options has a switch for it
-("Start without the server") if it does, for instance when another project uses the same port.
+### Simulation, cameras and HUD
+
+- The truck simulation is a clean-room implementation of the original game's documented behaviour:
+  suspension, tires, drivetrain, collisions and AI all advance at a fixed 60 Hz in a worker.
+- Ten camera views include chase, cockpit and track cameras. The cockpit has its dashboard, steering
+  wheel, shifter and mirror; Z mode adds zoom and orbit, while Inertia pulls back with speed.
+- The HUD recreates the game's timing board, Lead and Back gaps, speedometer, tachometer, gear strip,
+  finder ring, course map and message bar. Speed can be shown in MPH or KPH.
+
+### Tracks and community content
+
+- Add another game's `POD.INI` or individual POD files through **Options > Data**. The POD manager
+  shows every mounted archive, its detected game, and the tracks and trucks it supplies.
+- MTM1 tracks retain their skies and stadium drag strips. CART Precision Racing tracks include their
+  road layer, walls and catch fences. 4x4 Evolution 1 and 2 tracks include terrain, models, AI life,
+  object paths trees and checkpoints. All can be raced with MTM2 trucks and physics.
+- Community Patch 3 support covers HD model, truck, sky and terrain art; normal and occlusion maps;
+  enhanced materials and glass; track lights; moving objects; four-tire sets; and `.SI2` tracks.
+
+### Graphics, weather and water
+
+- Choose the classic 1998 presentation or the enhanced OpenMTM2 renderer. The enhanced path adds
+  sun and terrain shadows, smooth shading, terrain detail, glossy sky-reflecting paint, lens flare,
+  light beams and glowing lamps.
+- Weather includes Clear, Cloudy, Fog, Rain, Snow, Dusk, Night and Pitch Black. Rain and snow are
+  blocked by bridges; fog can settle into valleys; snow accumulates with depth and is cleared or
+  ploughed by trucks.
+- Water supports depth, reflections, shores and underwater views, with spray, wakes and ripples from
+  trucks. Snow can freeze it into ice that cracks under hard landings.
+- Optional scenery effects add rounded terrain facets, cliff relief, puddles, persistent tire ruts,
+  lit particles, detailed ground and the game's original backdrops through atmospheric haze. Each
+  feature has its own switch under **Options > Scenery**.
+
+See [the visuals guide](docs/VISUALS.md) for the rendering choices and their controls.
+
+### Audio, replay and customization
+
+- Web Audio plays engine loops, skids, impacts, splashes, ambience, moving-object sounds, menu audio
+  and MOD music from the player's installation.
+- Instant Replay records the race, switches among any truck and camera, and provides VCR-style play,
+  pause, rewind, fast-forward, slow-motion, frame-step and scrub controls. Replays can be saved to or
+  opened from the game's `.rpl` format.
+- The Garage provides truck tuning. Options include rebindable keys, graphics presets, V-sync, a
+  frame-rate limit and GOLD mode cheats. The drop-down console controls opponents, laps, track,
+  weather, skill and truck selection.
 
 ## In a headset
 
-OpenMTM2 runs in VR wherever the browser has WebXR: the browser of a standalone headset, or a
-desktop browser with a PC headset. Every menu screen and the race show an **Enter VR** button
-there. You drive from the truck's cab or from a seat behind it, with the controllers as the
-game's joystick, and set up races on a board without taking the headset off.
+OpenMTM2 runs in VR wherever the browser provides WebXR. Menus and races show an **Enter VR** button;
+you can drive from the cab or a seat behind the truck, use the controllers as a joystick, and set up
+races on a board without removing the headset.
 
-A standalone headset cannot pick a folder on your PC, so serve the game folder to it:
+A standalone headset cannot select a folder on your computer, so serve the game data to it:
 
-```sh
+```bash
 node tools/serve.mjs --game "/path/to/Monster Truck Madness 2"
-adb reverse tcp:8080 tcp:8080        # headset on a USB cable; then open http://localhost:8080/ in it
+adb reverse tcp:8080 tcp:8080
 ```
 
-or `node tools/serve.mjs --lan --game ...` for Wi-Fi (HTTPS with a certificate of its own, which
-the headset's browser asks you to accept). The Install screen then offers "Install from this
-server". Over the cable that is needed once only: the browser keeps the app too, and the same
-address then opens the game with no PC. [docs/VR.md](docs/VR.md) has the controls and the
-details.
+With a USB-connected headset, open <http://localhost:8080/> in its browser. For Wi-Fi, use
+`node tools/serve.mjs --lan --game ...`; the helper serves HTTPS with a locally generated
+certificate. See [the VR guide](docs/VR.md) for setup, controls and implementation details.
 
-### Tests
+## Architecture
 
-```sh
+| Component | Role |
+|---|---|
+| ES modules | Application flow, menus, race rules, input, audio and rendering |
+| Module Web Workers | Archive loading, asset conversion and the fixed-step vehicle simulation |
+| OPFS | Private local storage for the player's game installation and user data |
+| Three.js r169 | Terrain, vehicles, scenery, weather, effects and WebXR rendering |
+| Web Audio | Engines, effects, ambience, interface sounds and music |
+| [OpenPhotex](https://github.com/juanputrerasm/OpenPhotex) | Terminal Reality formats and the MTM2 simulation, vendored as plain ES modules |
+
+The application has no build step. The vendored OpenPhotex copy in `src/vendor/openphotex/` is
+generated from the upstream project and should not be edited directly. See
+[the architecture guide](docs/ARCHITECTURE.md) for the full module layout and data flow.
+
+## Development
+
+Serve the repository as described under [Run locally](#run-locally), then run the test suite with:
+
+```bash
 node --test tests/
 ```
 
-Node 22.18 or newer. Tests that need game files read them from `~/games/mtm2` (or
-`$OPENMTM2_GAMES/mtm2`) and skip when the install is absent.
+Tests require Node.js 22.18 or newer. Tests that use original game files look in `~/games/mtm2` or
+`$OPENMTM2_GAMES/mtm2` and skip when the installation is absent.
 
-### Rules for contributors
+Before contributing, read [AGENTS.md](AGENTS.md). In particular: do not add game data or decompiled
+code; implement Terminal Reality formats and simulation changes in OpenPhotex; and cover behaviour
+derived from the original game with tests.
 
-[AGENTS.md](AGENTS.md) has them. The important ones: no game data or decompiled code in the
-repository, file formats and the simulation live in [OpenPhotex](https://github.com/juanputrerasm/OpenPhotex)
-(vendored in `src/vendor/openphotex/`, never edited here), and every behaviour taken from the
-original game gets a test.
+The project is under active development. Completed milestones and remaining work are tracked in
+[the project plan](docs/PLAN.md).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/PLAN.md](docs/PLAN.md) | milestones from an empty repository to a complete game |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the code is organised |
-| [docs/VR.md](docs/VR.md) | the headset mode: running it, the controls, how it works |
-| [docs/VISUALS.md](docs/VISUALS.md) | the port's own scenery: smoothed ground, water, weather, light, ground detail, how far the eye sees, and what each switch does |
-| [docs/MONSTER_EXE_ANALYSIS.md](docs/MONSTER_EXE_ANALYSIS.md) | how the original game works: files, rules, HUD, cameras, weather, network, cheats |
-| [docs/MTM2_PHYSICS.md](docs/MTM2_PHYSICS.md) | the original simulation, specified for reimplementation |
-| [tools/re/README.md](tools/re/README.md) | the reverse-engineering helpers |
+| [Project plan](docs/PLAN.md) | Milestones, completed work and remaining tasks |
+| [Architecture](docs/ARCHITECTURE.md) | Modules, workers, storage and application data flow |
+| [VR](docs/VR.md) | Headset setup, controls and implementation |
+| [Visuals](docs/VISUALS.md) | Enhanced terrain, water, weather, lighting and scenery |
+| [Standalone asset inventory](docs/STANDALONE_ASSETS.md) | Original MTM2 asset dependencies that need replacement for a self-contained release |
+| [MTM2 executable analysis](docs/MONSTER_EXE_ANALYSIS.md) | Original game behaviour, rules, HUD, cameras, weather and cheats |
+| [MTM2 physics](docs/MTM2_PHYSICS.md) | The original simulation specified for reimplementation |
+| [Reverse-engineering tools](tools/re/README.md) | Helpers used to document original behaviour |
 
 ## Related projects
 
-- [OpenPhotex](https://github.com/juanputrerasm/OpenPhotex): the Terminal Reality file format
-  library and the MTM2 simulation that OpenMTM2 is built on.
-- [JSTrackViewer](https://github.com/juanputrerasm/JSTrackViewer): the track viewer much of the
-  rendering comes from.
+- [OpenPhotex](https://github.com/juanputrerasm/OpenPhotex): Terminal Reality file formats and the
+  MTM2 simulation used by OpenMTM2.
+- [JSTrackViewer](https://github.com/juanputrerasm/JSTrackViewer): browser-based 3D viewer from which
+  much of OpenMTM2's rendering work developed.
 
 ## Credits and license
 
-By Juan Pablo Utreras. Licensed under the Apache License 2.0 (see [LICENSE](LICENSE)).
+Developed by **Juan Pablo Utreras** and released under the [Apache License 2.0](LICENSE).
 
 Monster Truck Madness 2 is a trademark of Microsoft Corporation and was developed by Terminal
-Reality Inc. OpenMTM2 is an independent project, not affiliated with or endorsed by either. It
-includes none of their code or data: you need your own copy of the game.
+Reality Inc. OpenMTM2 is an independent clean-room project and is not affiliated with or endorsed by
+Microsoft or Terminal Reality. It contains none of their code or data; you must provide your own
+copy of the game.
 
-Third-party assets, each under its own license and not under Apache 2.0:
+Third-party assets retain their own licenses:
 
-- `assets/start-background.webp`, the Start screen's background, is adapted from
+- `assets/start-background.webp` is adapted from
   ["Untitled"](https://www.flickr.com/photos/fortes/222692658/) by
-  [Filipe Fortes](https://www.flickr.com/photos/fortes/), used under
-  [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/). The photo was modified;
-  the adapted image is shared under the same CC BY-SA 2.0 license.
-- `assets/fonts/league-spartan-*.woff2`, the screen headers' typeface, is
+  [Filipe Fortes](https://www.flickr.com/photos/fortes/), used and shared under
+  [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/).
+- `assets/fonts/league-spartan-*.woff2` is
   [League Spartan](https://github.com/theleagueof/league-spartan) by The League Spartan Project
-  Authors, under the [SIL Open Font License 1.1](assets/fonts/OFL.txt).
+  Authors, licensed under the [SIL Open Font License 1.1](assets/fonts/OFL.txt).

@@ -21,7 +21,10 @@ import * as THREE from "three";
 */
 const TIMING = Object.freeze({ place: [-0.8, 0.31, -1.8], width: 0.66 });
 const MESSAGE = Object.freeze({ place: [0, 0.6, -2.4], width: 1.9 });
-/** The gauges canvas is the 640 x 480 screen; these are the parts of it that hold something. */
+/**
+ * The gauges canvas is the 640 x 480 screen in a headset (the race screen sets it to that size
+ * while one shows it); these are the parts of it that hold something.
+ */
 const GAUGE_PARTS = Object.freeze([
   { crop: [21, 308, 189, 476], place: [-0.45, -0.42, -1.2], width: 0.26 },   // speedometer
   { crop: [456, 308, 624, 476], place: [0.45, -0.42, -1.2], width: 0.26 },   // tachometer
@@ -98,7 +101,7 @@ export function createVrHud(host, { timing, message, gauges }) {
     const texture = canvasTexture(gaugeCanvas);
     const material = boardMaterial(texture);
     disposables.push(texture, material);
-    const W = gaugeCanvas.width, H = gaugeCanvas.height;
+    const W = 640, H = 480;
     for (const { crop: [x0, y0, x1, y1], place, width } of GAUGE_PARTS) {
       const mesh = board(material, place);
       const uv = mesh.geometry.attributes.uv;

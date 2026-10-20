@@ -26,3 +26,16 @@ test("the dials sweep as the exe's: 0 mph at 214.5 degrees, 2.65 degrees per mph
   assert.ok(Math.abs(deg(gaugeAngle(50, 214.5, 2.65)) - 347) < 1e-9, "50 mph points just above straight right");
   assert.ok(Math.abs(deg(gaugeAngle(8000, 63, 0.0261)) - 271.8) < 1e-9, "8000 rpm points almost straight up");
 });
+
+test("at 2560 x 1440 the HUD is laid out as Community Patch 3 draws it", async () => {
+  const { gaugeLayout } = await import("../src/render/race-gauges.js");
+  const { hudFontScale } = await import("../src/render/bitmap-text.js");
+  assert.equal(hudFontScale(1440), 2, "fonts twice their size at 1440 lines");
+  assert.equal(hudFontScale(480), 1);
+  assert.equal(hudFontScale(200), 1, "never below the font's own size");
+  const layout = gaugeLayout(2560, 1440, hudFontScale(1440));
+  assert.deepEqual(layout.speedo, { x: 424, y: 1173 });
+  assert.deepEqual(layout.tacho, { x: 2132, y: 1173 });
+  assert.equal(layout.labelR, 219, "the numbers' radius grows with the height, so the dials stay round");
+  assert.deepEqual(gaugeLayout().speedo, { x: 106, y: 391 }, "640 x 480 is the exe's own screen");
+});

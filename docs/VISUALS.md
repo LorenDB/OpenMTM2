@@ -673,13 +673,24 @@ the fog's lit top.
 
 **The backdrop.** A SIT lists models that the game draws behind the world, round the camera:
 canyon walls, a range of hills. Options, Track backdrops draws them, off by default, and
-with the volume on they stand 9000 ft off, beyond the next copy of the world. At the horizon
-itself a backdrop is wholly in the haze the ground fades into, clearing over the first 1.7
-degrees, so the ground's far edge is never seen against it. Above that, only a weather with fog
-of its own (Foggy, Dense Fog, Rain, Snow; `BACKDROP_HAZED`) is seen between the eye and it, thinning as
-the line of sight climbs out of it, and in fog proper, Rain and Snow it is hidden. On a clear or
-cloudy day it stands clear: the day's haze is the ground's distance, and an HD backdrop, the
-picture of a far range in its own air already, was washed out by it. An HD backdrop (a PNG with
+with the volume on they stand 9000 ft off, beyond the next copy of the world. With a backdrop
+drawn, the sky and the backdrop are drawn first, before the world, as the game draws its
+backdrop, and the world's far fade is to the backdrop and not to the fog's colour
+(`mtmFogDissolve`, `fadesToBackdrop`): the world's opaque materials are drawn blended, wholly
+opaque until the fade begins and see-through by its end, so the whole backdrop is seen behind
+the ground's far edge, its floor too, as the game's ground stops in front of its backdrop. A
+first try dissolved the far world in a fixed pattern of pixels, which showed as grain. Faded to the fog's colour instead, the far ground had laid a band of sky blue over the
+backdrop's floor. The backdrop's floor is seen through the haze of its distance, as far off as
+the horizon. Without a backdrop the far fade is to the fog's colour, and a backdrop drawn without
+the dissolve would lose its foot in that haze over the first 1.7 degrees above the horizon, so
+the ground's far edge is never seen against it. Above that, the weather's fog or haze
+(`BACKDROP_HAZED`) is seen between the eye and it, at its own distance, thinning as the line of
+sight climbs out of it; in fog proper, Rain and Snow it is hidden. On a clear or cloudy day the
+haze is half as thick where a backdrop is drawn (`CLEAR_BACKDROP_THIN`), and the ground's fade
+begins at three quarters of the picture's end instead of half (`CLEAR_BACKDROP_FADE`): the
+backdrop keeps more than half its colour, and it is always hazier than the ground in front of
+it. Before, it stood clear while the day's full haze washed the hills in front of it blue, and
+the far range looked nearer than the hills. An HD backdrop (a PNG with
 its own alpha) is drawn first of the see-through things, before the trees' cut-out leaves,
 which write no depth and would otherwise be painted over. The dark weathers have no
 fog to do it, and their darkness takes it by a share: 0.62 at Dusk, 0.84 at Night, all of it in

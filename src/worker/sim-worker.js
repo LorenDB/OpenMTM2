@@ -9,7 +9,8 @@
 
   Everything here is portable: the same code runs in Node tests through `createSession`.
 */
-import { evoSim as E, mtm2Sim as S } from "../vendor/openphotex/index.js";
+import * as E from "../vendor/openphotex/sim/evo/index.js";
+import * as S from "../vendor/openphotex/sim/mtm2/index.js";
 import { createCrossingLog, raceGap, recordCrossings } from "../game/timing.js";
 import { buildRumbleField, createRumbleDriver, rumbleControls } from "../game/rumble-ai.js";
 import { REVERSE_SPEED, TREE_S, createDrag, dragCollision, dragLamps, dragOver, dragPlaces, dragTick, mirrorCourse, stageSpeed, stagingDistance, stillStaging } from "../game/drag-race.js";
@@ -20,11 +21,69 @@ import { createFlight, departVisual, flightVisual, nearestCourseSpot, stepFlight
 export const STEP = 1 / 60;
 
 
-/** A cheap fingerprint of a box's pose, to tell which boxes moved. */
-const poseKey = (b) => `${b.pos[0]},${b.pos[1]},${b.pos[2]},${b.matrix[2]},${b.matrix[5]},${b.matrix[6]}`;
-const MAX_CATCH_UP = 0.25;
+/** A cheap fingerprint of a box's pose, to tell which boxes moved: six numbers, into `out` from `k`. */
+function poseInto(b, out, k) {
+  out[k] = b.pos[0]; out[k + 1] = b.pos[1]; out[k + 2] = b.pos[2];
+  out[k + 3] = b.matrix[2]; out[k + 4] = b.matrix[5]; out[k + 5] = b.matrix[6];
+}
+/** Equal as their text is: NaN to NaN, and 0 to -0. */
+const same = (x, y) => x === y || (x !== x && y !== y);
+/** Whether `b` stands as the fingerprint from `k` says. */
+const posedAs = (b, out, k) => same(out[k], b.pos[0]) && same(out[k + 1], b.pos[1]) && same(out[k + 2], b.pos[2])
+  && same(out[k + 3], b.matrix[2]) && same(out[k + 4], b.matrix[5]) && same(out[k + 5], b.matrix[6]);
+export const MAX_CATCH_UP = 0.25;
+
+/**
+ * The wall-clock origin (ms) of the next tick: wall time past `MAX_CATCH_UP` that the simulation
+ * has fallen behind (a hitch, a hidden tab) is dropped, so a stall never fast-forwards the race.
+ */
+export function catchUpOrigin(originMs, tMs, simSeconds) {
+  const behind = (tMs - originMs) / 1000 - simSeconds;
+  return behind > MAX_CATCH_UP ? originMs + (behind - MAX_CATCH_UP) * 1000 : originMs;
+}
 /** Race time the fast simulation gives the trucks still racing (MONSTER_EXE_ANALYSIS.md 5). */
 const FAST_SIMULATION_S = 240;
+
+/**
+ * OpenPhotex `groundBoxesAround` (MTM2_PHYSICS.md 14.14), each cell's box made once and kept: a ground box never moves
+ * and nothing writes to it (a truck takes an immovable box as ground; a box against a box writes only the one that
+ * moves), so the box of a cell, at a copy of the world, is the same object step after step, and the same numbers as a
+ * box made afresh. The heights do not change in a race.
+ */
+export function createGroundBoxCache(ra0, ra1, stepFt = 2) {
+  // By the exact start of the copy of the world (x, then z), then the cell, -1 to 256 each way.
+  const kept = new Map();
+  const CELL = S.GROUND_BOX_CELL_FT;
+  return {
+    around(x, z, out = []) {
+      const col = (Math.trunc(x * 256) >> 13) & 255;
+      const row = (Math.trunc(z * 256) >> 13) & 255;
+      const baseX = x - S.wrapCoord(x), baseZ = z - S.wrapCoord(z);
+      let byZ = kept.get(baseX);
+      if (!byZ) kept.set(baseX, byZ = new Map());
+      let cells = byZ.get(baseZ);
+      if (!cells) byZ.set(baseZ, cells = new Map());
+      for (let dc = -1; dc <= 1; dc++) {
+        for (let dr = -1; dr <= 1; dr++) {
+          const c = (col + dc) & 255, r = (row + dr) & 255;
+          const i = r * 256 + c;
+          const lo = ra0[i] * stepFt, hi = ra1[i] * stepFt;
+          if (lo === hi) continue;
+          const key = (col + dc + 1) * 258 + (row + dr + 1);
+          let box = cells.get(key);
+          if (!box) {
+            const h = hi - lo;
+            box = S.createBox([baseX + (col + dc) * CELL + 16, lo + (stepFt === 2 ? Math.trunc(h / 2) : h / 2), baseZ + (row + dr) * CELL + 16], [CELL, h, CELL]);
+            cells.set(key, box);
+          }
+          out.push(box);
+          if (out.length > S.MAX_GROUND_BOXES) throw new Error("Too many ground boxes.");
+        }
+      }
+      return out;
+    },
+  };
+}
 
 /** A pose for drawing: position (feet), rotation matrix, and per-tire wheel state. */
 function snapshot(state) {
@@ -274,6 +333,7 @@ export function createSession(init) {
   const groundBoxStepFt = init.groundBoxStepFt > 0 ? init.groundBoxStepFt : 2;
   const ra0 = init.ra0 ? new Uint8Array(init.ra0) : null;
   const ra1 = init.ra1 ? new Uint8Array(init.ra1) : null;
+  const groundBoxes = createGroundBoxCache(ra0, ra1, groundBoxStepFt);
   const levelBoxes = [];
   /** Moving objects: type 10 boxes and their SIT bvel (MTM2_PHYSICS.md 14.18). */
   const movingObjects = [];
@@ -568,10 +628,10 @@ export function createSession(init) {
     for (let i = 0; i < trucks.length; i++) {
       for (let j = i + 1; j < trucks.length; j++) {
         const a = trucks[i], b = trucks[j];
-        const before = [...a.state.extForce, ...b.state.extForce];
+        const f = a.state.extForce, f0 = f[0], f1 = f[1], f2 = f[2];
         const met = S.collideTrucks({ s: a.state, p: a.params }, { s: b.state, p: b.params }, STEP, rules);
         // A hull against a hull: the pair's forces changed. Remember the hardest hit and where the trucks met.
-        const force = Math.hypot(a.state.extForce[0] - before[0], a.state.extForce[1] - before[1], a.state.extForce[2] - before[2]);
+        const force = Math.hypot(f[0] - f0, f[1] - f1, f[2] - f2);
         if (force > 0) {
           if (drag) dragCollision(drag, a.lane, b.lane);
           extensionSession?.touch?.(i, j);
@@ -589,7 +649,7 @@ export function createSession(init) {
     for (const [ti, t] of trucks.entries()) {
       t.nearBoxes.length = 0;
       if (t.state.heliTimer > 0) continue;
-      if (ra0 && ra1) S.groundBoxesAround(ra0, ra1, t.state.pos[0], t.state.pos[2], t.nearBoxes, groundBoxStepFt);
+      if (ra0 && ra1) groundBoxes.around(t.state.pos[0], t.state.pos[2], t.nearBoxes);
       wallsAround(t.state.pos[0], t.state.pos[2], t.radius, t.nearBoxes);
       // Each test is made with the truck as the copy nearest the thing it is tested against (OpenPhotex world/wrap.ts):
       // what stands across the world's seam is met as what stands beside the truck is.
@@ -771,12 +831,20 @@ export function createSession(init) {
     S.liftOff(s, t.params, ground, recoveryOf(t), s.contactCount ?? 0);
   }
 
+  /**
+   * Whether a step keeps the trucks' states from before it (`previous`, what a reply interpolates from). Only the last
+   * step of a catch-up's is sent, so `advance` and `finishRace` ask for that one alone; a step made any other way keeps it.
+   */
+  let keepPrevious = true;
+  /** The listed boxes' poses before a step (`poseInto`), kept from step to step. */
+  let before = new Float64Array(0);
+
   /** Step one fixed step with the held keys (the player's truck). */
   function step(input) {
     const { joystick = null, helicopter = false, slew = null, ...held } = input ?? {};
     if (gold.slew) {
       if (slew) slewMove(slew);
-      for (const t of trucks) t.previous = snapshot(t.state);
+      if (keepPrevious) for (const t of trucks) t.previous = snapshot(t.state);
       time += STEP;
       return;
     }
@@ -879,7 +947,7 @@ export function createSession(init) {
     }
     keys.shiftUp = keys.shiftDown = keys.driveMode = false;
     if (joystick) joystick.shiftUp = joystick.shiftDown = false;
-    for (const t of trucks) t.previous = snapshot(t.state);
+    if (keepPrevious) for (const t of trucks) t.previous = snapshot(t.state);
     // 4x4 Evolution 2's object paths and the track's script run from the start, as the game's (0x4f3680).
     stepScript();
     for (const run of pathRuns) {
@@ -894,7 +962,8 @@ export function createSession(init) {
       }
     }
     listBoxes();
-    const before = listed.map(poseKey);
+    if (before.length < listed.length * 6) before = new Float64Array(listed.length * 12);
+    listed.forEach((box, i) => poseInto(box, before, i * 6));
     for (const t of trucks) {
       // The player's helicopter holds the truck still and carries it itself (game/heli-flight.js).
       if (t.flight) { flyTruck(t); continue; }
@@ -936,7 +1005,7 @@ export function createSession(init) {
     if (rules.crashDamage) for (const t of trucks) noteHull(t);
     listed.forEach((box, i) => {
       S.postStepBox(box, ground);
-      if (before[i] !== poseKey(box)) dirty.add(box);
+      if (!posedAs(box, before, i * 6)) dirty.add(box);
     });
     // Which object a hard hit was against, for its own sound (SIT "@sound effect entries").
     for (const t of trucks) {
@@ -1078,23 +1147,37 @@ export function createSession(init) {
     // An extension race left early ends where it stands.
     if (extensionSession) { extensionSession.finish(); return raceView(); }
     const until = race.clock + FAST_SIMULATION_S;
-    while (race.clock < until && !race.trucks.every((rt) => rt.finished)) step({});
+    keepPrevious = false;
+    try {
+      while (race.clock < until && !race.trucks.every((rt) => rt.finished)) step({});
+    } finally {
+      keepPrevious = true;
+    }
+    for (const t of trucks) t.previous = snapshot(t.state);
     return raceView();
   }
 
   /** Catch up with `seconds` of wall time; returns the states to interpolate between. */
   function advance(seconds, input) {
     const target = Math.min(seconds, time + MAX_CATCH_UP);
-    if (time < target - MAX_CATCH_UP) time = target - MAX_CATCH_UP;
     let steps = 0;
-    while (time + STEP <= target) { step(input); steps++; }
+    try {
+      while (time + STEP <= target) {
+        // The same sum the loop tests next: whether this step is its last.
+        keepPrevious = !(time + STEP + STEP <= target);
+        step(input);
+        steps++;
+      }
+    } finally {
+      keepPrevious = true;
+    }
     const boxes = [...dirty].map(boxPose);
     dirty.clear();
     const messages = scriptMessages.splice(0);
     const poses = trucks.map((t) => ({ previous: t.previous, current: snapshot(t.state), sound: soundOf(t, ground), damage: damageOf(t), touch: takeTouch(t) }));
     return {
       previous: poses[0].previous, current: poses[0].current, alpha: (target - time) / STEP, time, steps, boxes,
-      others: poses.slice(1).map((x) => x.current), poses, race: raceView(),
+      poses, race: raceView(),
       // How far each top-crush car's cab is flattened: 0 intact, 1 as flat as it goes (its roof 0.25 ft over the body).
       crush: crushCars.map(crushShare),
       // 4x4 Evolution trees knocked over since the last reply: `{ id, pos, dir, speed }`, game feet.
@@ -1125,6 +1208,7 @@ if (typeof self !== "undefined" && typeof self.postMessage === "function" && typ
       if (!session) throw new Error("No session.");
       // The simulated time carries on from where it stopped (a new session, or after a pause).
       if (origin === null) origin = tMs - session.now() * 1000;
+      origin = catchUpOrigin(origin, tMs, session.now());
       return session.advance((tMs - origin) / 1000, input);
     },
     /** Pause: the wall clock keeps running, so restart the catch-up from the next tick. */

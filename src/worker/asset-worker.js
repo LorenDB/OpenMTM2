@@ -16,7 +16,13 @@ import { loadingScreen } from "./screen-art.js";
 import { truckEnvMap } from "./env-map.js";
 import { loadCockpit, cockpitArt } from "./cockpit-art.js";
 import { loadEffectsArt } from "./effects-art.js";
-import { decodeActPalette, decodeRawTexture, parseKlp, parseLoc, parseMod, parseMtmAmbientSounds, parseMtmSun, parseTrn, renderMod } from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeRawTexture } from "../vendor/openphotex/texture/raw.js";
+import { parseKlp, parseMtmAmbientSounds } from "../vendor/openphotex/mtm/sound.js";
+import { parseLoc } from "../vendor/openphotex/mtm/loc.js";
+import { parseMod, renderMod } from "../vendor/openphotex/audio/mod.js";
+import { parseMtmSun } from "../vendor/openphotex/mtm/sun.js";
+import { parseTrn } from "../vendor/openphotex/mtm/trn.js";
 import { decodeModel } from "./models.js";
 import { FONT_SHEETS, parseBitmapFont } from "./bitmap-font.js";
 import { readUserData, removeUserData, writeUserData } from "./user-data.js";
@@ -27,16 +33,29 @@ function withTransfer(payload, transfer) {
   return { [TRANSFER]: transfer, payload };
 }
 
+/** `bytes` with a buffer of its own to transfer: a read's own (pod-index.js), else a copy of a view into a larger one. */
+const ownBytes = (bytes) => (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice());
+
+// Promises, so requests that arrive together share one mount and one catalogue; a reset sets them to null.
 let vfs = null;
 let catalog = null;
 
-async function mounted() {
-  if (!vfs) {
-    const manifest = await readManifest();
-    if (!manifest) throw new Error("No game install yet.");
-    vfs = await mountAll(manifest);
+/** `pending`, forgotten if it fails while still current, so the next request tries again. */
+async function settle(pending, forget) {
+  try {
+    return await pending;
+  } catch (error) {
+    forget(pending);
+    throw error;
   }
-  return vfs;
+}
+
+function mounted() {
+  vfs ??= readManifest().then((manifest) => {
+    if (!manifest) throw new Error("No game install yet.");
+    return mountAll(manifest);
+  });
+  return settle(vfs, (p) => { if (vfs === p) vfs = null; });
 }
 
 /** The file system as a track of `scope` sees it (worker/vfs.js). */
@@ -120,8 +139,9 @@ const handlers = {
 
   /** `mtm1Apart`: also the MTM1 trucks that MTM2's shadow, as `MTM1:<file>` (Options, Advanced, "Keep MTM1 trucks apart"). */
   async catalog({ mtm1Apart = false } = {}) {
-    if (!catalog) catalog = await buildCatalog(await mounted());
-    return mtm1Apart ? catalog : { ...catalog, trucks: catalog.trucks.filter((truck) => !truck.apart) };
+    catalog ??= mounted().then(buildCatalog);
+    const all = await settle(catalog, (p) => { if (catalog === p) catalog = null; });
+    return mtm1Apart ? all : { ...all, trucks: all.trucks.filter((truck) => !truck.apart) };
   },
 
   /** Everything needed to draw a track; `{ path }` is its SIT, e.g. "WORLD\\TPARK.SIT". */
@@ -151,7 +171,9 @@ const handlers = {
   async uiImage({ name }) {
     if (!/^[A-Za-z0-9_-]+$/.test(String(name))) throw new Error(`Bad image name "${name}"`);
     const bytes = await (await mounted()).read(`UI\\${name.toUpperCase()}.BMP`);
-    return bytes ? withTransfer(bytes.slice(), []) : null;
+    if (!bytes) return null;
+    const own = ownBytes(bytes);
+    return withTransfer(own, [own.buffer]);
   },
 
   /** The mounted tournaments (`TOURNEY\\*.TRN`): `[{ path, trn, description }]`, the description from the text file the TRN names. */
@@ -262,7 +284,7 @@ const handlers = {
     const wav = await vfs.read(`SOUND\\${stem}.WAV`);
     if (!wav) return null;
     const klp = await vfs.read(`SOUND\\${stem}.KLP`);
-    const copy = wav.slice().buffer;
+    const copy = ownBytes(wav).buffer;
     return withTransfer({ name: stem, wav: copy, klp: klp ? parseKlp(klp) ?? lenientKlp(klp) : null }, [copy]);
   },
 

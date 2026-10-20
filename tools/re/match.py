@@ -6,6 +6,10 @@ constants, its strings and its size), the two sequences are aligned, and every p
 similarity score from its decompiled text with addresses blanked.
 
     python3 tools/re/match.py 446cd0 489ca0 468e70 4bb4b0 > re/mtm1/out/match_sim.tsv
+
+MATCH picks the two targets (default mtm1:mtm2), as fdiff.py's FDIFF does:
+
+    MATCH=cpr:mtm1 python3 tools/re/match.py 460000 479000 446cd0 489ca0 > re/cpr/out/match_mtm1.tsv
 """
 import difflib
 import os
@@ -68,9 +72,23 @@ class Target:
         return [l.strip() for l in t.splitlines() if l.strip()]
 
 
+TARGETS = {
+    "mtm1": ("mtm1/out", "~/games/mtm1", "MONSTER.EXE"),
+    "mtm2": ("out", "~/games/mtm2", "MONSTER.EXE"),
+    "evo1": ("evo1/out", "~/games/evo1", "4x4LE.exe"),
+    "evo2": ("evo2/out", "~/games/evo2", "4x42.exe"),
+    "cpr": ("cpr/out", "~/games/cpr", "CART.EXE"),
+}
+
+
+def target(name):
+    out, game, exe = TARGETS[name]
+    return Target(os.path.join(REPO, "re", out), os.environ.get(name.upper() + "_DIR", game) + "/" + exe)
+
+
 def main(lo1, hi1, lo2, hi2):
-    t1 = Target(os.path.join(REPO, "re", "mtm1", "out"), os.environ.get("MTM1_DIR", "~/games/mtm1") + "/MONSTER.EXE")
-    t2 = Target(os.path.join(REPO, "re", "out"), os.environ.get("MTM2_DIR", "~/games/mtm2") + "/MONSTER.EXE")
+    n1, n2 = os.environ.get("MATCH", "mtm1:mtm2").split(":")
+    t1, t2 = target(n1), target(n2)
     f1 = [f for f in t1.funcs if lo1 <= f[0] < hi1 and f[2] >= 24]
     f2 = [f for f in t2.funcs if lo2 <= f[0] < hi2 and f[2] >= 24]
     s1 = [t1.consts(a, s) + "|" + str(round(s, -2) if s > 300 else "s") for a, _n, s in f1]
@@ -107,7 +125,7 @@ def main(lo1, hi1, lo2, hi2):
         for k in range(b.size):
             pairs.append((b.a + k, b.b + k, sim(b.a + k, b.b + k)))
         pi, pj = b.a + b.size, b.b + b.size
-    print("mtm1\tsize\tmtm2\tsize\tsimilarity\tconstants (mtm1 | mtm2 when different)")
+    print(f"{n1}\tsize\t{n2}\tsize\tsimilarity\tconstants ({n1} | {n2} when different)")
     for i, j, r in pairs:
         a = f"{f1[i][0]:x}\t{f1[i][2]}" if i is not None else "-\t-"
         b = f"{f2[j][0]:x}\t{f2[j][2]}" if j is not None else "-\t-"

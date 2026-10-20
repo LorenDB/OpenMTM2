@@ -8,9 +8,10 @@
 
   Pure: plain data and typed arrays, no DOM, so Node tests load stock tracks with it.
 */
-import {
-  decodeActPalette, mtm2Sim, parseMtmLvl, parseMtmSit, parseTexList, parseTty, podPathTitle,
-} from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { parseMtmLvl, parseMtmSit, parseTexList, parseTty } from "../vendor/openphotex/mtm/sit.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 const GRID = 256;
 
@@ -29,9 +30,10 @@ async function readIn(vfs, folder, name) {
 /**
  * @param {ReturnType<import("./vfs.js").createVfs>} vfs
  * @param {string} sitPath e.g. "WORLD\\TPARK.SIT"
+ * @param {Uint8Array} [sitBytes] the SIT, when the caller has read it already
  */
-export async function loadLevel(vfs, sitPath) {
-  const sitBytes = await vfs.read(sitPath);
+export async function loadLevel(vfs, sitPath, sitBytes = null) {
+  sitBytes ??= await vfs.read(sitPath);
   if (!sitBytes) throw new Error(`${sitPath} is not in the mounted archives.`);
   const title = podPathTitle(sitPath);
   const sit = parseMtmSit(sitBytes, title);
@@ -43,32 +45,34 @@ export async function loadLevel(vfs, sitPath) {
   if (!lvlBytes) throw new Error(`LEVELS\\${lvlTitle} is missing.`);
   const lvl = parseMtmLvl(lvlBytes);
 
+  // The files the LVL names, read together: each a separate archive read, none waits on another. A pair is the level's
+  // own name first, then the SIT's.
+  const either = async (a, b) => (await vfs.read(a)) ?? (await vfs.read(b));
+  const [rawHeights, clrBytes, texBytes, ttyBytes, actBytes, lte, ra0, ra1, cl0] = await Promise.all([
+    readIn(vfs, "DATA", lvl.rawName), readIn(vfs, "DATA", lvl.clrName), readIn(vfs, "DATA", lvl.texName),
+    vfs.read(`DATA\\${stemOf(lvl.texName)}.TTY`), readIn(vfs, "ART", lvl.actName), readIn(vfs, "DATA", lvl.lteName),
+    either(`DATA\\${stemOf(lvlTitle)}.RA0`, `DATA\\${stem}.RA0`),
+    either(`DATA\\${stemOf(lvlTitle)}.RA1`, `DATA\\${stem}.RA1`),
+    either(`DATA\\${stemOf(lvlTitle)}.CL0`, `DATA\\${stem}.CL0`),
+  ]);
+
   // MTM: a byte a corner, 2 ft steps. CART Precision Racing: 16 bits a corner, sixteenths of a foot (the road's
   // own altitudes, in feet, then lie a median 2 ft over the ground at Laguna).
-  const rawHeights = await readIn(vfs, "DATA", lvl.rawName);
   const wide = rawHeights?.length === GRID * GRID * 2;
   if (!rawHeights || (rawHeights.length !== GRID * GRID && !wide)) throw new Error(`${lvl.rawName}: not a 256 x 256 heightfield.`);
   const heights = wide ? null : rawHeights;
   const heightsFt = wide ? Float32Array.from({ length: GRID * GRID }, (_, i) => (rawHeights[i * 2] | (rawHeights[i * 2 + 1] << 8)) / 16) : null;
-  const clrBytes = await readIn(vfs, "DATA", lvl.clrName);
   const clr = new Uint16Array(GRID * GRID);
   if (clrBytes && clrBytes.length >= GRID * GRID * 2) {
     for (let i = 0; i < clr.length; i++) clr[i] = clrBytes[i * 2] | (clrBytes[i * 2 + 1] << 8);
   }
 
-  const texBytes = await readIn(vfs, "DATA", lvl.texName);
   const textureNames = texBytes ? parseTexList(texBytes).map((n) => podPathTitle(n)) : [];
-  const ttyBytes = await vfs.read(`DATA\\${stemOf(lvl.texName)}.TTY`);
   const tty = ttyBytes ? parseTty(ttyBytes) : [];
   const textureValues = mtm2Sim.textureTypeValues(textureNames, tty);
 
-  const palette = decodeActPalette(await readIn(vfs, "ART", lvl.actName));
-  const lte = await readIn(vfs, "DATA", lvl.lteName);
-  const groundBoxes = {
-    ra0: (await vfs.read(`DATA\\${stemOf(lvlTitle)}.RA0`)) ?? (await vfs.read(`DATA\\${stem}.RA0`)),
-    ra1: (await vfs.read(`DATA\\${stemOf(lvlTitle)}.RA1`)) ?? (await vfs.read(`DATA\\${stem}.RA1`)),
-    cl0: (await vfs.read(`DATA\\${stemOf(lvlTitle)}.CL0`)) ?? (await vfs.read(`DATA\\${stem}.CL0`)),
-  };
+  const palette = decodeActPalette(actBytes);
+  const groundBoxes = { ra0, ra1, cl0 };
 
   const sky = lvl.skyRawName
     ? { name: podPathTitle(lvl.skyRawName), actName: lvl.skyActName ? podPathTitle(lvl.skyActName) : null }

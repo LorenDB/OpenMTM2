@@ -17,7 +17,7 @@
   trucks (`PRESSERS` of them, as uniforms), so a frame uploads nothing.
 */
 import * as THREE from "three";
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 const CELL_FT = 32;
 /** The Evo grass slider: how many cells each way around the camera, by level; 0 draws none. */

@@ -15,7 +15,7 @@
     .CL0 face 0 = south (+z in the scene, the lower row), 1 = north, 2 = east (+x), 3 = west,
     4 = top, 5 = bottom.
 */
-import { decodeGroundBoxes } from "../vendor/openphotex/index.js";
+import { decodeGroundBoxes } from "../vendor/openphotex/terrain/ground-boxes.js";
 import { tileCropTexels } from "./terrain-mesh.js";
 
 const CELL_FT = 32;

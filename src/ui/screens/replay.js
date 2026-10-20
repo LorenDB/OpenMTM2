@@ -10,7 +10,8 @@ import * as THREE from "three";
 import { el } from "../dom.js";
 import { mergeBindings } from "../../game/input/bindings.js";
 import { DENT_STEPS, FRAME_SECONDS, RATES, createPlayback, damageZones, levelPath } from "../../game/replay.js";
-import { mtm2Sim, parseMtmReplay, writeMtmReplay } from "../../vendor/openphotex/index.js";
+import { parseMtmReplay, writeMtmReplay } from "../../vendor/openphotex/mtm/replay.js";
+import * as mtm2Sim from "../../vendor/openphotex/sim/mtm2/index.js";
 import { COCKPIT_EYE, CAMERA_MODES, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextMode, raceCamera, zoomToFov } from "../../game/cameras.js";
 import { createWeatherScene } from "../../render/weather-scene.js";
 import { WEATHER_LOOK, isUnderwater, waterOffsetFt } from "../../game/weather.js";
@@ -23,7 +24,7 @@ import { surfaceFamily } from "../../game/sound-model.js";
 import { standOnFt } from "../../game/ice.js";
 import { ON_GROUND_FT, replayContacts } from "../../game/replay-effects.js";
 import { formatRaceTime } from "../../game/race-setup.js";
-import { createTrackWorld, disposeObject, moveObjects, skyColor, updateTrackWorld, placeSky } from "../../render/track-scene.js";
+import { createTrackWorld, disposeObject, moveObjects, skyColor, skyOf, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createTruckObject } from "../../render/truck-object.js";
 import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
 import { createStartLamps } from "../../render/start-lamps.js";
@@ -429,7 +430,7 @@ export default async function mount(container, context, { replay }) {
     startLamps?.update(camera, { daylight: WEATHER_LOOK[weatherScene.weather]?.light ?? 1 });
     weatherScene.update(dt, state.trucks.filter(Boolean).map((p) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: headlights })),
       { floorFt: water ? water.userData.levelFt + bob : null, viewHeight: canvas.height });
-    const sky = world.getObjectByName("sky");
+    const sky = skyOf(world);
     if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
     // After the sky is placed: the port's water shows it.
     // The wheels stir the water and the puddles (render/water-ripples.js), as the film runs.
@@ -438,7 +439,7 @@ export default async function mount(container, context, { replay }) {
     updateTrackWorld(world, camera, dt);
     if (shadows) {
       shadows.setupMaterials();
-      shadows.invalidateDynamic();
+      shadows.invalidateIfMoved();
       shadows.update();
     }
     caption.update(dt);

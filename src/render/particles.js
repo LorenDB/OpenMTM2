@@ -20,6 +20,8 @@ import { VEIL_GLSL, veilUniforms } from "./atmosphere.js";
 import { puffNoise } from "./noise-textures.js";
 
 const GRAVITY = 32.2;
+/** Scratch for a streak's velocity and a spark's light, each frame. */
+const _way = [0, 0, 0], _lit = [0, 0, 0];
 /** The noise inside a puff repeats every this many feet. */
 const PUFF_NOISE_FT = 26;
 
@@ -428,7 +430,8 @@ export function createParticles({ scene, ground, random = Math.random, over = nu
         const weight = s.kind.weight ?? 1;
         if (s.terminal) {
           // A spark or a drop is braked by the air toward its terminal speed; a spark cools as it flies (game/particles.js).
-          const v = sparkFlight([s.vx, s.vy, s.vz], dt, s.terminal, GRAVITY);
+          _way[0] = s.vx; _way[1] = s.vy; _way[2] = s.vz;
+          const v = sparkFlight(_way, dt, s.terminal, GRAVITY, _way);
           s.vx = v[0]; s.vy = v[1]; s.vz = v[2];
           if (s.kind.glow) s.heat *= Math.exp(-dt / (s.life * 0.5));
         } else s.vy -= GRAVITY * weight * dt;
@@ -462,14 +465,21 @@ export function createParticles({ scene, ground, random = Math.random, over = nu
         const fade = Math.min(1, (1 - t) / 0.25);
         if (kind.glow) {
           // Its light is its heat's (game/particles.js `sparkGlow`).
-          const lit = sparkGlow(s.heat);
+          const lit = sparkGlow(s.heat, _lit);
           hue[o] = lit[0] * fade; hue[o + 1] = lit[1] * fade; hue[o + 2] = lit[2] * fade;
           hue[o + 3] = kind.opacity;
         } else { hue[o] = s.r; hue[o + 1] = s.g; hue[o + 2] = s.b; hue[o + 3] = s.opacity * fade; }
         glow[i] = kind.glow;
       }
       streakBuffers.geometry.instanceCount = streaks.length;
-      if (streaks.length) streakBuffers.iPlace.needsUpdate = streakBuffers.iWay.needsUpdate = streakBuffers.iTone.needsUpdate = streakBuffers.iGlow.needsUpdate = true;
+      // Only the streaks there are, as with the puffs.
+      if (streaks.length) {
+        for (const attribute of [streakBuffers.iPlace, streakBuffers.iWay, streakBuffers.iTone, streakBuffers.iGlow]) {
+          attribute.clearUpdateRanges();
+          attribute.addUpdateRange(0, streaks.length * attribute.itemSize);
+          attribute.needsUpdate = true;
+        }
+      }
     },
     /** How many of each are in the air, for tests in the browser. */
     get counts() { return { puffs: puffs.length, streaks: streaks.length }; },

@@ -5,7 +5,7 @@
   step is one call of the game's routine, which raises the zone's level to the force's and pushes
   the body's vertices (`dent`). Pure, so it runs under Node.
 */
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 /** Steps handled for one zone in one frame, so a long stall cannot flatten a model. */
 export const MAX_STEPS_PER_FRAME = 6;

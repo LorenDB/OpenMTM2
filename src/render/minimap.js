@@ -91,8 +91,19 @@ export function createCourseMap(course, { font = null, open = false, areas = nul
   const offsets = loop.length > 2 ? edgeOffsets(loop, MAP_HALF_WIDTH_FT, open) : [];
   let shown = false, blink = 0;
 
+  // The map's size on the page, read again only when it or its frame changes size: a read each frame, after the name tags
+  // have moved, would make the browser lay the page out again then and there.
+  let measured = null;
+  const measure = () => [canvas.clientWidth || canvas.parentElement?.clientWidth || 640, canvas.clientHeight || canvas.parentElement?.clientHeight || 480];
+  let watching = null;
   function fit() {
-    const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 640, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 480;
+    if (!watching && typeof ResizeObserver === "function" && canvas.parentElement) {
+      watching = new ResizeObserver(() => { measured = null; });
+      watching.observe(canvas);
+      watching.observe(canvas.parentElement);
+    }
+    if (!watching || !measured) measured = measure();
+    const [w, h] = measured;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     return [w, h];
   }
@@ -100,8 +111,10 @@ export function createCourseMap(course, { font = null, open = false, areas = nul
   return {
     element: canvas,
     get visible() { return shown; },
-    toggle() { shown = !shown; canvas.hidden = !shown; return shown; },
-    setVisible(on) { shown = !!on; canvas.hidden = !shown; },
+    toggle() { shown = !shown; canvas.hidden = !shown; measured = null; return shown; },
+    setVisible(on) { shown = !!on; canvas.hidden = !shown; measured = null; },
+    /** Stops watching the map's size. */
+    dispose() { watching?.disconnect(); watching = null; },
     /**
      * `trucks`: `{ pos, heading, place, label }` in game feet, the player first; `label` (a truck's or a driver's
      * name, or null) is shown with the place (the Names key, game/names.js). `focus`: the truck the map centres on

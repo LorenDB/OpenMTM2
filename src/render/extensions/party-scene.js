@@ -4,7 +4,7 @@
   and its replay both draw them, from the rink the race was played on.
 */
 import * as THREE from "three";
-import { mtm2Sim } from "../../vendor/openphotex/index.js";
+import * as mtm2Sim from "../../vendor/openphotex/sim/mtm2/index.js";
 import { toSceneMatrix } from "../../shared/scene-frame.js";
 import { TEAM_COLOURS } from "../../game/extensions/hockey.js";
 import { tintObjects } from "../track-scene.js";

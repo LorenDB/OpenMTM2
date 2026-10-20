@@ -18,10 +18,13 @@
   The physics is MTM2's (docs/PLAN.md Stage 3.1): the manifest gives the wheel positions and the hull points, the
   wheel models their size (`tire`), and everything else is the monster truck's.
 */
-import {
-  CMD_NORMAL_SCALE, CMD_POSITION_SCALE, CMD_UV_SCALE, EVO_WHEEL_KEYS, MTM_WHEEL_KEYS, cmdFaceTriangles, cmdWingPackages, parseCprCmd,
-  evoSim, parseEvoParts, parseTruckManifest, podPathTitle,
-} from "../vendor/openphotex/index.js";
+import { CMD_NORMAL_SCALE, CMD_POSITION_SCALE, CMD_UV_SCALE, cmdFaceTriangles, cmdWingPackages, parseCprCmd } from "../vendor/openphotex/cpr/cmd.js";
+import { EVO_WHEEL_KEYS } from "../vendor/openphotex/evo/trk.js";
+import { MTM_WHEEL_KEYS } from "../vendor/openphotex/truck/mtm-trk.js";
+import { parseEvoParts } from "../vendor/openphotex/evo/parts.js";
+import { parseTruckManifest } from "../vendor/openphotex/truck/manifest.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import * as evoSim from "../vendor/openphotex/sim/evo/index.js";
 import { loadArtTexture } from "./art-texture.js";
 import { decodeSmfModel, loadEvoModelTextures, loadEvoTexture } from "./evo-models.js";
 import { decodeModel } from "./models.js";

@@ -22,7 +22,7 @@
   The object's own frames run as its class has them, on a path or not.
 */
 
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 
 const MPH = 1.46667;
 const SAMPLES = 64;

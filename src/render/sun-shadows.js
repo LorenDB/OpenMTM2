@@ -153,6 +153,51 @@ export class SunShadows {
     this._dynamic = true;
   }
 
+  /**
+   * What `invalidateIfMoved` watches: the trucks' root objects (each node's place and whether it is shown, the lamps
+   * aside, which cast nothing), the objects the simulation moves and the trees that fall (`world.userData.shadowMotion`,
+   * render/track-scene.js), and the keyframed models while the world's clock runs.
+   */
+  watchMotion(world, trucks) {
+    this._motionWorld = world;
+    this._motionSerial = world.userData.shadowMotion ?? 0;
+    this._motionClock = world.userData.animationTime ?? 0;
+    let animated = false;
+    world.traverse((o) => { if (o.isMesh && o.userData.frameCount > 1 && o.castShadow) animated = true; });
+    this._animated = animated;
+    this._settle = 0;
+    this._watched = trucks.map((root) => {
+      const nodes = [];
+      const walk = (node) => {
+        if (node.name === "lamps" || node.userData.reflection) return;
+        nodes.push(node);
+        for (const child of node.children) walk(child);
+      };
+      walk(root);
+      return { root, nodes, pose: null };
+    });
+  }
+
+  /**
+   * `invalidateDynamic`, only when something that casts moved since the last call (see `watchMotion`): a still
+   * scene, a paused race or trucks waiting on the grid, redraws no shadow map. Without `watchMotion`, always.
+   */
+  invalidateIfMoved() {
+    const world = this._motionWorld;
+    if (!world) { this._dynamic = true; return; }
+    let moved = false;
+    const serial = world.userData.shadowMotion ?? 0;
+    if (serial !== this._motionSerial) { this._motionSerial = serial; moved = true; }
+    const clock = world.userData.animationTime ?? 0;
+    if (clock !== this._motionClock) { this._motionClock = clock; if (this._animated) moved = true; }
+    for (const watched of this._watched) if (truckMoved(watched)) moved = true;
+    // The far cascades redraw one frame in two, four, eight: once things stop, each gets its turn to draw them stopped.
+    if (moved) this._settle = 1 << (CASCADES - 1);
+    else if (this._settle > 0) this._settle--;
+    else return;
+    this._dynamic = true;
+  }
+
   setIntensity(value) {
     for (const light of this._csm.lights) light.intensity = value;
   }
@@ -358,10 +403,11 @@ export class SunShadows {
         this._nativeRender.call(renderer.shadowMap, lights, scene, camera);
         return;
       }
-      const ours = new Set(this._csm.lights);
-      const pending = [], rest = [];
+      this._ours ??= new Set(this._csm.lights);
+      const pending = this._pending ??= [], rest = this._rest ??= [];
+      pending.length = rest.length = 0;
       for (const light of lights) {
-        if (ours.has(light) && light.shadow?.needsUpdate) pending.push(light);
+        if (this._ours.has(light) && light.shadow?.needsUpdate) pending.push(light);
         else rest.push(light);
       }
       // The cascades are drawn below. Left set, the pass over the other lights would draw them as well.
@@ -543,6 +589,38 @@ const _center = new THREE.Vector3();
 const _zero = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
 const _sphere = new THREE.Sphere();
+/** How far a truck's part has to move, feet (or turn, as a quaternion's part), for its shadow to be drawn again. */
+const MOTION_EPSILON = 1e-3;
+
+/** Whether any node of a watched truck moved, or was shown or hidden, since the last call; records its place. */
+function truckMoved(watched) {
+  const { nodes } = watched;
+  const size = nodes.length * 11;
+  const fresh = !watched.pose;
+  if (fresh) watched.pose = new Float64Array(size);
+  const pose = watched.pose;
+  let moved = fresh;
+  for (let i = 0, k = 0; i < nodes.length; i++, k += 11) {
+    const node = nodes[i];
+    // A node placed by its matrix keeps its place there; the rest by position, turn and scale.
+    let a, b, c, d, e, f, g, h, j, l;
+    if (node.matrixAutoUpdate) {
+      const { position: p, quaternion: q, scale: z } = node;
+      a = p.x; b = p.y; c = p.z; d = q.x; e = q.y; f = q.z; g = q.w; h = z.x; j = z.y; l = z.z;
+    } else {
+      const m = node.matrix.elements;
+      a = m[12]; b = m[13]; c = m[14]; d = m[0]; e = m[1]; f = m[2]; g = m[4]; h = m[5]; j = m[6]; l = m[8];
+    }
+    const shown = node.visible ? 1 : 0;
+    if (!moved && (Math.abs(pose[k] - a) > MOTION_EPSILON || Math.abs(pose[k + 1] - b) > MOTION_EPSILON || Math.abs(pose[k + 2] - c) > MOTION_EPSILON
+      || Math.abs(pose[k + 3] - d) > MOTION_EPSILON || Math.abs(pose[k + 4] - e) > MOTION_EPSILON || Math.abs(pose[k + 5] - f) > MOTION_EPSILON
+      || Math.abs(pose[k + 6] - g) > MOTION_EPSILON || Math.abs(pose[k + 7] - h) > MOTION_EPSILON || Math.abs(pose[k + 8] - j) > MOTION_EPSILON
+      || Math.abs(pose[k + 9] - l) > MOTION_EPSILON || pose[k + 10] !== shown)) moved = true;
+    pose[k] = a; pose[k + 1] = b; pose[k + 2] = c; pose[k + 3] = d; pose[k + 4] = e;
+    pose[k + 5] = f; pose[k + 6] = g; pose[k + 7] = h; pose[k + 8] = j; pose[k + 9] = l; pose[k + 10] = shown;
+  }
+  return moved;
+}
 
 /**
  * Turn on the sun's shadows for a track being drawn: the cascades replace the plain sun light,
@@ -578,8 +656,9 @@ export function enableSunShadows({ renderer, scene, camera, world, sun, trucks =
   tile?.traverse((o) => {
     if (o.isMesh && o.name !== "terrain" && o.name !== "water" && o.name !== "road" && casts(o)) o.castShadow = true;
   });
-  // A truck's lamps are light, not things: a beam drawn in the air casts no shadow.
-  for (const truck of trucks) truck.traverse((o) => { if (o.isMesh && o.parent?.name !== "lamps") { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
+  // A truck's lamps are light, not things: a beam drawn in the air casts no shadow. Nor does a body's reflection
+  // (render/truck-reflection.js), the body drawn again over itself: its shadow would be the body's, drawn twice.
+  for (const truck of trucks) truck.traverse((o) => { if (o.isMesh && o.parent?.name !== "lamps" && !o.userData.reflection) { o.castShadow = true; o.receiveShadow = true; if (o.material) o.material.shadowSide = o.material.side; } });
   // The placed models are instanced over every copy; only the original's instances cast (track-scene.js).
   world.getObjectByName("objects")?.traverse((o) => { if (o.isInstancedMesh) o.castShadow = true; });
   // 4x4 Evolution's forest is drawn once, by chunks at the copy nearest the camera (track-scene.js `createForest`): each
@@ -614,5 +693,6 @@ export function enableSunShadows({ renderer, scene, camera, world, sun, trucks =
   shadows.setEnabled(true);
   sun.visible = false;
   if (natural) shadows.keepStatic(renderer, world, trucks);
+  shadows.watchMotion(world, trucks);
   return shadows;
 }

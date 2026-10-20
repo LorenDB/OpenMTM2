@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  BACKDROP_DARK, BACKDROP_DISTANCE_FT, BACKDROP_FOOT, CLEAR_FADE, CLEAR_HALF, FOG_BANKS, FOG_FADE_FROM, FOG_REACH, ICE_SNOW_SHARE, PRECIPITATION, SNOW_SETTLE_SECONDS, SNOW_START, WET,
+  BACKDROP_DARK, BACKDROP_DISTANCE_FT, BACKDROP_FOOT, CLEAR_BACKDROP_FADE, CLEAR_BACKDROP_THIN, CLEAR_FADE, CLEAR_HALF, FOG_BANKS, FOG_FADE_FROM, FOG_REACH, ICE_SNOW_SHARE, PRECIPITATION, SNOW_SETTLE_SECONDS, SNOW_START, WET,
   FOG_TOP, backdropHides, fogAtHeight, fogBank, fogColumn, fogLight, fogProfile, fogTopLit, fogHides, fogSliceEnd, fogVolume, groundWetness, precipitationOf, puddlesFilled, snowDown, snowSettled,
 } from "../src/game/atmosphere.js";
 import { WEATHER_LOOK } from "../src/game/weather.js";
@@ -75,22 +75,48 @@ test("a clear day has a haze that gives the distance depth and ends where the pi
   const hall = fogVolume(0, { startFt: 2500, endFt: 7000 }, { indoor: true });
   assert.ok(fogHides(hall, 1000) < 0.02 && fogHides(clear, 1000) > fogHides(hall, 1000) * 5);
   assert.equal(hall.farFt, clear.farFt);
+  // With a track's backdrop drawn the haze is thinner, and the ground fades later; the picture still ends where it did.
+  assert.equal(CLEAR_BACKDROP_THIN, 2);
+  const backed = fogVolume(0, { startFt: 2500, endFt: 7000 }, { backdrop: true });
+  near(Math.LN2 / backed.densityPerFt, 7000 * CLEAR_HALF * CLEAR_BACKDROP_THIN, 1e-6);
+  assert.equal(backed.fadeStartFt, 7000 * CLEAR_BACKDROP_FADE);
+  assert.equal(backed.farFt, clear.farFt);
+  assert.equal(fogHides(backed, 7000), 1);
+  assert.ok(fogHides(backed, 2500) < fogHides(clear, 2500));
+  // A weather with fog of its own keeps it, backdrop or not.
+  assert.equal(fogVolume(2, undefined, { backdrop: true }).densityPerFt, fogVolume(2).densityPerFt);
   // The haze of a clear day is deep: an eye a few hundred feet up still looks through most of it.
   assert.ok(clear.scaleHeightFt >= 1000 && fogVolume(1).scaleHeightFt >= 1000);
 });
 
-test("a track's backdrop: its foot in the haze the ground fades into, the rest clear but in fog proper, Rain and Snow", () => {
+test("a track's backdrop: its foot in the haze the ground fades into, the rest behind the weather's fog or haze", () => {
   const clear = fogVolume(0, { startFt: 2500, endFt: 7000 });
   assert.ok(BACKDROP_DISTANCE_FT > 8192, "it stands beyond the next copy of the wrapped world");
   // At the horizon the ground's own far fade has closed, and the backdrop's foot is in the same haze.
   assert.equal(backdropHides(clear, 0, 0), 1);
   assert.equal(backdropHides(clear, -0.1, 0), 1);
-  // Above its foot, on a clear day (or Cloudy, or a dark weather) it stands clear: the day's haze is the ground's distance.
-  for (const weather of [0, 1, 6, 7, 8]) assert.equal(backdropHides(fogVolume(weather), BACKDROP_FOOT * 1.01, weather), 0, `weather ${weather}`);
+  // Above its foot, a dark weather has no volume: its darkness veils the backdrop instead (BACKDROP_DARK).
+  for (const weather of [6, 7, 8]) assert.equal(backdropHides(fogVolume(weather), BACKDROP_FOOT * 1.01, weather), 0, `weather ${weather}`);
   // Fog proper, Snow and Rain hide what stands at the horizon; the low fogs let a very high peak through, as they let the sky.
   for (const weather of [2, 3, 4, 5]) assert.ok(backdropHides(fogVolume(weather), 0.05, weather) > 0.99, `weather ${weather}`);
   assert.ok(backdropHides(fogVolume(2), 0.5, 2) < 0.7 && backdropHides(fogVolume(5), 0.5, 5) > 0.85, "Foggy lies low; Snow fills the air");
   assert.equal(backdropHides(null, 0.1), 0);
+  // Clear and Cloudy: with the backdrop drawn the haze is thinner, and the backdrop is seen through it at its own distance.
+  // It keeps most of its colour, and is hazier than the ground in front of it, which was washed blue while it stood clear.
+  for (const weather of [0, 1]) {
+    const thin = fogVolume(weather, { startFt: 2500, endFt: 7000 }, { backdrop: true });
+    const seen = backdropHides(thin, 0.06, weather);
+    assert.ok(seen > 0.3 && seen < 0.55, `weather ${weather}: ${seen}`);
+    assert.ok(1 - Math.exp(-thin.densityPerFt * 6500) < backdropHides(thin, 0.03, weather), `weather ${weather}: a hill 6500 ft off`);
+    assert.ok(backdropHides(thin, 0.3, weather) < seen, "higher up it climbs out of the haze");
+  }
+  // With the backdrop drawn the world dissolves into it at the far fade, as the game's ground stops in front of it: the
+  // whole backdrop is seen, its floor below the horizon too, through the haze of its distance and no more.
+  const backed = fogVolume(0, { startFt: 2500, endFt: 7000 }, { backdrop: true });
+  assert.equal(backed.dissolve, true);
+  assert.equal(clear.dissolve, false);
+  assert.equal(backdropHides(backed, -0.05, 0), backdropHides(backed, 0, 0));
+  assert.ok(backdropHides(backed, 0, 0) < 0.6, "its floor is not lost in the haze");
   // The dark weathers have no fog to do it: their darkness takes the backdrop by a share, all of it in Pitch Black.
   assert.ok(BACKDROP_DARK[6] > 0.4 && BACKDROP_DARK[6] < BACKDROP_DARK[7] && BACKDROP_DARK[7] < 1);
   assert.equal(BACKDROP_DARK[8], 1);

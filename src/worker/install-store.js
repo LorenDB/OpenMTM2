@@ -202,18 +202,15 @@ export async function installMounts(manifest) {
   const ini = parsePodIni(await readTextFile(`${INSTALL_DIR}/POD.INI`));
   const sizes = new Map(manifest.archives.map((a) => [a.name, a.size]));
   const unmounted = new Set(manifest.unmounted ?? []);
-  const mounts = [];
-  for (const name of ini.keys) {
-    if (!sizes.has(name) || unmounted.has(name)) continue;
-    const path = `${INSTALL_DIR}/${name}`;
-    const file = await readFile(path);
+  // Each archive's directory is read at once; the mounts keep POD.INI's order.
+  return Promise.all(ini.keys.filter((name) => sizes.has(name) && !unmounted.has(name)).map(async (name) => {
+    const file = await readFile(`${INSTALL_DIR}/${name}`);
     const archive = await indexPodFile(file);
-    mounts.push({
+    return {
       key: `install:${name}`, name, archive, readEntry: (entry) => readPodEntryBytes(file, entry),
       family: "MTM", game: "MTM2", source: "Base MTM2 install", size: sizes.get(name), removable: !isRequiredPod(name), install: true,
-    });
-  }
-  return mounts;
+    };
+  }));
 }
 
 export async function mountInstall(manifest) {

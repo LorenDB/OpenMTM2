@@ -234,20 +234,25 @@ export function sparkVelocity({ vel = [0, 0, 0], other = [0, 0, 0], normal = [0,
  * and braked by the air toward its terminal speed `terminalFtS`: the drag goes with the square of
  * its speed. Taken implicitly, so it is steady however long the step.
  */
-export function sparkFlight(v, dt, terminalFtS, gravity = 32.2) {
-  const fallen = [v[0], v[1] - gravity * dt, v[2]];
-  const speed = Math.hypot(fallen[0], fallen[1], fallen[2]);
+export function sparkFlight(v, dt, terminalFtS, gravity = 32.2, out = [0, 0, 0]) {
+  const x = v[0], y = v[1] - gravity * dt, z = v[2];
+  const speed = Math.hypot(x, y, z);
   const brake = 1 / (1 + (gravity * speed * dt) / (terminalFtS * terminalFtS));
-  return fallen.map((c) => c * brake);
+  out[0] = x * brake; out[1] = y * brake; out[2] = z * brake;
+  return out;
 }
 
-/** A fleck's light at `heat` (1 as it leaves, falling to nothing as it goes out), linear: white hot, orange, dull red, dark. */
-export function sparkGlow(heat) {
+/**
+ * A fleck's light at `heat` (1 as it leaves, falling to nothing as it goes out), linear: white hot, orange, dull red, dark.
+ * Written into `out` when given (a frame's thousands of sparks), else a new array.
+ */
+export function sparkGlow(heat, out = [0, 0, 0]) {
   const h = Math.max(0, heat), { hot, warm, cold } = SPARKS;
-  if (h >= 0.6) { const t = Math.min(1, (h - 0.6) / 0.4); return [0, 1, 2].map((k) => warm[k] + (hot[k] - warm[k]) * t); }
-  if (h >= 0.25) { const t = (h - 0.25) / 0.35; return [0, 1, 2].map((k) => cold[k] + (warm[k] - cold[k]) * t); }
+  if (h >= 0.6) { const t = Math.min(1, (h - 0.6) / 0.4); for (let k = 0; k < 3; k++) out[k] = warm[k] + (hot[k] - warm[k]) * t; return out; }
+  if (h >= 0.25) { const t = (h - 0.25) / 0.35; for (let k = 0; k < 3; k++) out[k] = cold[k] + (warm[k] - cold[k]) * t; return out; }
   const t = h / 0.25;
-  return cold.map((c) => c * t);
+  for (let k = 0; k < 3; k++) out[k] = cold[k] * t;
+  return out;
 }
 
 /**

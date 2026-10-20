@@ -4,7 +4,8 @@
   into (i >> 4) - 26, one of the sixteen sky colours at palette entries 230 to 245 (0x522ee0): the colours of that
   weather's sky, entries 192 to 207 of its .ACT, as the sky itself takes them (worker/track-build.js `loadSky`).
 */
-import { decodeActPalette, decodeRawTexture } from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeRawTexture } from "../vendor/openphotex/texture/raw.js";
 
 /** The weathers whose sky the body mirrors, and that sky's art. */
 const SKY_OF = Object.freeze({ 4: "CCLOUDS", 6: "DUSKSKY", 7: "NITESKY" });

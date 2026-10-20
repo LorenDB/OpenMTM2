@@ -32,12 +32,12 @@ import { createScenery } from "../../render/scenery.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
 import { createRelief } from "../../game/terrain-relief.js";
 import { createWaterMirror } from "../../render/water-mirror.js";
-import { createTrackWorld, disposeObject, moveObjects, skyColor, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
+import { createTrackWorld, disposeObject, moveObjects, skyColor, skyOf, updateSky, updateTrackWorld, placeSky } from "../../render/track-scene.js";
 import { createWaterSurface } from "../../render/water-effects.js";
 import { toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
 import { createWeatherScene } from "../../render/weather-scene.js";
 import { terrainOfBuild } from "../../shared/build-terrain.js";
-import { mtm2Sim } from "../../vendor/openphotex/index.js";
+import * as mtm2Sim from "../../vendor/openphotex/sim/mtm2/index.js";
 import { CONSOLE_KEYS, createConsole, distanceCommand } from "../console.js";
 import { el } from "../dom.js";
 import { GRASS_RADII, grassLevel } from "../../render/evo-grass.js";
@@ -403,7 +403,7 @@ export default async function mount(container, context, params) {
     // How far under the eye is, for the lens: it comes on over the first half foot (docs/VISUALS.md, "Under water").
     scenery.underwater(under && water ? (water.userData.levelFt + water.position.y - camera.position.y) / 0.5 : 0);
     // The sky goes with the camera, up and down too: however high it flies, the dome is never reached.
-    const sky = world.getObjectByName("sky");
+    const sky = skyOf(world);
     // A sky fixed in the world (a Terminal Velocity or Hellbender level's ceiling) stays where it is: it can be reached.
     if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
     // After the sky is placed: the port's water shows it.
@@ -411,7 +411,7 @@ export default async function mount(container, context, params) {
     updateTrackWorld(world, camera, paused ? 0 : dt);
     if (shadows) {
       shadows.setupMaterials();
-      shadows.invalidateDynamic();
+      shadows.invalidateIfMoved();
       shadows.update();
     }
     flare?.update(camera, sunTravel, true, weatherScene.weather <= 1 && context.settings.sunFlare !== false, flareBlocked);

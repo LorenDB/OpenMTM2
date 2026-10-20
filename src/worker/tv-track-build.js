@@ -31,10 +31,15 @@
   Not built: tunnel levels (they are separate levels, seen only from inside), Hellbender's cavern under the ground
   and the objects that stand in it, powerups, texture animation, and star-field skies (drawn as the horizon colour).
 */
-import {
-  TR_ANGLE_TO_RAD, decodeRawTexture, defPlacementToEditor, isNullAssetName, mtm2Sim, parseDef, parseHbNavPoints, parseNavPoints, parseTexList,
-  parseTvLvl, podPathTitle, rawTextureSide, skyGradient, skyHorizon,
-} from "../vendor/openphotex/index.js";
+import { TR_ANGLE_TO_RAD, defPlacementToEditor, parseDef } from "../vendor/openphotex/tv/def.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
+import { isNullAssetName, parseTvLvl } from "../vendor/openphotex/tv/lvl.js";
+import { parseHbNavPoints } from "../vendor/openphotex/tv/hb-nav.js";
+import { parseNavPoints } from "../vendor/openphotex/tv/nav.js";
+import { parseTexList } from "../vendor/openphotex/mtm/sit.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import { skyGradient, skyHorizon } from "../vendor/openphotex/texture/sky.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 import { loadArtTexture } from "./art-texture.js";
 import { decodeModel } from "./models.js";
@@ -42,7 +47,7 @@ import { createPaletteResolver } from "./palette-resolver.js";
 import { buildGroundBoxMesh } from "./ground-box-mesh.js";
 import { buildTerrainAtlas, buildTerrainMesh } from "./terrain-mesh.js";
 import { loadRaceVehicles } from "./track-build.js";
-import { buildTruckRender } from "./truck-build.js";
+import { buildTrucks, cachedTruckRender } from "./truck-build.js";
 
 const GRID = 256;
 const CELL_FT = 32;
@@ -268,9 +273,7 @@ export async function buildTvTrackRender(vfs, lvlPath, { truckFiles = [], tileOv
   const truckPalettes = createPaletteResolver(mtm, "MTM2", null);
   const { blimp, heli } = await loadRaceVehicles(mtm, truckPalettes);
   const truckModels = {};
-  for (const file of truckFiles.map((f) => podPathTitle(f).toUpperCase())) {
-    if (!(file in truckModels)) truckModels[file] = await buildTruckRender(mtm, file, truckPalettes);
-  }
+  await buildTrucks(truckModels, truckFiles, (file) => cachedTruckRender(mtm, file, truckPalettes));
 
   let lowest = Infinity;
   for (const h of heights) if (h < lowest) lowest = h;

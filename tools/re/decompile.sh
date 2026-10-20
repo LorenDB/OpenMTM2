@@ -5,6 +5,7 @@
 #   MTM1_DIR=~/games/mtm1 tools/re/decompile.sh mtm1       (MTM1, into re/mtm1/)
 #   EVO2_DIR=~/games/evo2 tools/re/decompile.sh evo2       (4x4 Evo 2, into re/evo2/)
 #   EVO1_DIR=~/games/evo1 tools/re/decompile.sh evo1       (4x4 Evo 1, into re/evo1/)
+#   CPR_DIR=~/games/cpr tools/re/decompile.sh cpr          (CART Precision Racing, into re/cpr/)
 # Needs Ghidra (brew install ghidra) and Python 3. Takes a few minutes.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -29,6 +30,12 @@ elif [ "$TARGET" = evo1 ]; then
   GAME_DIR=${EVO1_DIR:-$HOME/games/evo1}
   WORK="$REPO/re/evo1"
   EXE=4x4LE.exe
+  SCRIPTS="-postScript FindFuncs.java -postScript ExportAll.java"
+elif [ "$TARGET" = cpr ]; then
+  # CART Precision Racing (CART.EXE, 15 January 1998): MSVC with MFC, like MTM2.
+  GAME_DIR=${CPR_DIR:-$HOME/games/cpr}
+  WORK="$REPO/re/cpr"
+  EXE=CART.EXE
   SCRIPTS="-postScript FindFuncs.java -postScript ExportAll.java"
 else
   GAME_DIR=${MTM2_DIR:-$HOME/games/mtm2}

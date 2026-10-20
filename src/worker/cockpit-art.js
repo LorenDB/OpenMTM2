@@ -11,7 +11,10 @@
   the front panel it names (`ART\PBIG<h>.RAW` with its `.ACT`), for the screen heights 480, 400
   and 200.
 */
-import { decodeActPalette, decodeIndexedImage, parseCockpitLayout, podPathTitle } from "../vendor/openphotex/index.js";
+import { decodeActPalette } from "../vendor/openphotex/texture/act.js";
+import { decodeIndexedImage } from "../vendor/openphotex/texture/raw.js";
+import { parseCockpitLayout } from "../vendor/openphotex/mtm/cockpit.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
 
 const stemOf = (name) => name.replace(/\.raw$/i, "").toUpperCase();
 const WHEEL_KEYS = ["C00", ...[5, 10, 15, 20, 25, 30, 35].flatMap((d) => [`L${String(d).padStart(2, "0")}`, `R${String(d).padStart(2, "0")}`])];

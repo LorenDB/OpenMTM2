@@ -19,6 +19,8 @@ browser and reads the player's own install. `docs/PLAN.md` holds the milestones;
 - Plain ES modules, no bundler, no build step. Three.js r169 comes from the import map in
   `index.html`; workers cannot use import maps, so the vendored OpenPhotex is imported by
   relative path everywhere.
+- Import the vendored OpenPhotex module by module (`vendor/openphotex/pod/parse.js`), never through its
+  `index.js`: the index loads the whole library, three times over (the page and both workers).
 - `src/vendor/openphotex/` is generated. Never edit it: change OpenPhotex
   (`~/dev/OpenPhotex`), then `npm run build && npm run vendor -- <this repo>/src/vendor/openphotex`.
 - File formats belong in OpenPhotex, never here. So does the simulation

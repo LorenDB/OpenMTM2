@@ -4,7 +4,7 @@
   angles, sized by its model's vertex bounds when it has one, else by the SIT.
 */
 import * as THREE from "three";
-import { mtm2Sim } from "../vendor/openphotex/index.js";
+import * as mtm2Sim from "../vendor/openphotex/sim/mtm2/index.js";
 import { toSceneMatrix } from "../shared/scene-frame.js";
 
 export const OVERLAY_MODES = Object.freeze(["off", "wireframe", "solid"]);

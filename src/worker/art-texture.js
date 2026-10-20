@@ -7,7 +7,7 @@
 
   A texture may also carry a normal map, `ART\<stem>_N.PNG` or `.TGA` (never a .RAW): linear data, DirectX green-down.
 */
-import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/index.js";
+import { decodeRawTexture, rawTextureSide } from "../vendor/openphotex/texture/raw.js";
 import { loadTextureSource } from "./level-load.js";
 import { decodeTrueColorTexture, hdDimensionRefusal } from "./image-decoder.js";
 

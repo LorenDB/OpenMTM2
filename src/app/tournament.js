@@ -7,7 +7,7 @@
   The tournaments: the stock ones are the mounted `TOURNEY\*.TRN` (Monster Truck Triathlon and the
   like; both games ship them), the player's own are kept with the player's data (`tournaments`).
 */
-import { parseTrn, writeTrn } from "../vendor/openphotex/index.js";
+import { parseTrn, writeTrn } from "../vendor/openphotex/mtm/trn.js";
 import { cpuNames } from "../game/race-setup.js";
 import {
   MAX_TOURNAMENTS, currentEvent, dragEventPoints, gotoEvent, recordEvent, standings, startTournament, tournamentFromTrn, trnOf,

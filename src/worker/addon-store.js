@@ -15,7 +15,11 @@
   key); an archive not in it yet comes after the listed ones.
 */
 import { readFile, readTextFile, removePath, writeBytesToFile } from "../shared/opfs.js";
-import { detectSitOrigin, isEvoSit, parseEvoSit, parseTruckManifest, parseTvLvl, podPathTitle } from "../vendor/openphotex/index.js";
+import { detectSitOrigin } from "../vendor/openphotex/mtm/sit.js";
+import { isEvoSit, parseEvoSit } from "../vendor/openphotex/evo/sit.js";
+import { parseTruckManifest } from "../vendor/openphotex/truck/manifest.js";
+import { parseTvLvl } from "../vendor/openphotex/tv/lvl.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
 import { copyFile, installMounts, reapplyPodIni, unmountInstallArchive } from "./install-store.js";
 import { indexPodFile, readPodEntryBytes } from "./pod-index.js";
 import { createVfs, gameFamily } from "./vfs.js";
@@ -213,10 +217,10 @@ export function orderMounts(mounts, order) {
 
 /** Every archive mounted: the install's in POD.INI order, then the added ones, rearranged by the stored order. */
 export async function mountAll(installManifest) {
-  const addons = await readAddons();
-  const mounts = await installMounts(installManifest);
+  const [addons, mounts] = await Promise.all([readAddons(), installMounts(installManifest)]);
   let learned = false;
-  for (const a of addons.archives) {
+  // Each added archive is opened at once; they keep their stored order.
+  const added = await Promise.all(addons.archives.map(async (a) => {
     try {
       const file = await readFile(a.path);
       const archive = await indexPodFile(file);
@@ -225,12 +229,13 @@ export async function mountAll(installManifest) {
         a.game = await archiveGame(file, archive).catch(() => null);
         learned ||= !!a.game;
       }
-      mounts.push({
+      return {
         key: a.key, name: a.name, archive, readEntry: (entry) => readPodEntryBytes(file, entry),
         family: gameFamily(a.game), game: a.game, source: a.source === "folder" ? `${a.label} folder` : "Added by hand", size: a.size, removable: true,
-      });
-    } catch { /* an archive that no longer opens is left out */ }
-  }
+      };
+    } catch { return null; /* an archive that no longer opens is left out */ }
+  }));
+  mounts.push(...added.filter(Boolean));
   if (learned) await writeAddons(addons).catch(() => {});
   return createVfs(orderMounts(mounts, addons.order));
 }

@@ -4,7 +4,8 @@ The decompiled output lives in <repo>/re/ (git-ignored, never published). RE_TAR
 executable: mtm2 (the default; output in re/out, game folder ~/games/mtm2 or MTM2_DIR) or mtm1
 (output in re/mtm1/out, game folder ~/games/mtm1 or MTM1_DIR) or evo2 (4x4 Evolution 2,
 4x42.exe; output in re/evo2/out, game folder ~/games/evo2 or EVO2_DIR) or evo1 (4x4 Evolution,
-4x4LE.exe; output in re/evo1/out).
+4x4LE.exe; output in re/evo1/out) or cpr (CART Precision Racing, CART.EXE; output in
+re/cpr/out, game folder ~/games/cpr or CPR_DIR).
 """
 import bisect
 import json
@@ -18,7 +19,7 @@ TARGET = os.environ.get("RE_TARGET", "mtm2")
 OUT = os.path.join(RE_DIR, "out") if TARGET == "mtm2" else os.path.join(RE_DIR, TARGET, "out")
 GAME_DIR = os.path.expanduser(os.environ.get(TARGET.upper() + "_DIR", "~/games/" + TARGET))
 MTM2_DIR = GAME_DIR
-EXE = os.path.join(GAME_DIR, {"evo2": "4x42.exe", "evo1": "4x4LE.exe"}.get(TARGET, "MONSTER.EXE"))
+EXE = os.path.join(GAME_DIR, {"evo2": "4x42.exe", "evo1": "4x4LE.exe", "cpr": "CART.EXE"}.get(TARGET, "MONSTER.EXE"))
 IMAGE_BASE = 0x400000
 
 _pe = None

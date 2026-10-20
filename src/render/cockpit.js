@@ -5,7 +5,9 @@
   layout's centres, the steering wheel frame for the steering angle, the shifter frame for the
   gear, the shift light and the mirror frame. The finder is the 60 x 60 ring at the top right
   with the next checkpoint's number, an arrow at its top and a dot that circles it; both are green
-  while the checkpoint is within 22.5 degrees of straight ahead (0x4ed31d).
+  while the checkpoint is within 22.5 degrees of straight ahead (0x4ed31d). It has its own small
+  canvas in device pixels: the ring is drawn as a circle in the colour and thickness of the
+  `FI480` art (not the bitmap scaled up), once for each size, and the rest at a whole-number scale.
 */
 import { drawNeedle, gaugeAngle } from "./race-gauges.js";
 import { drawText, textWidth } from "./bitmap-text.js";
@@ -39,6 +41,25 @@ export function finderAngle(from, yaw, to) {
 /** Green while the target is within 22.5 degrees of straight ahead. */
 export const finderLinedUp = (angle) => angle >= 67.5 && angle <= 112.5;
 
+/** The finder ring's colour and inner and outer radii, read from its 60 x 60 art (pure black is cut out). */
+export function ringShape(image) {
+  const shape = { color: "#000080", inner: 22, outer: 30 };
+  if (!image) return shape;
+  const { width, height } = image, rgba = ArrayBuffer.isView(image.rgba) ? image.rgba : new Uint8Array(image.rgba);
+  let n = 0, r = 0, g = 0, b = 0, inner = Infinity, outer = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (!rgba[i + 3]) continue;
+      n++; r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2];
+      const d = Math.hypot(x + 0.5 - width / 2, y + 0.5 - height / 2);
+      inner = Math.min(inner, d); outer = Math.max(outer, d);
+    }
+  }
+  if (!n) return shape;
+  return { color: `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(b / n)})`, inner: Math.floor(inner), outer: Math.ceil(outer) };
+}
+
 function layer(className) {
   const canvas = document.createElement("canvas");
   canvas.className = className;
@@ -68,9 +89,27 @@ export function createCockpit(art, { needle = null, font = null, units = "mph" }
     Object.assign(mirror2d.style, { left: `${(mirrorRect[0] / 640) * 100}%`, top: `${(mirrorRect[1] / 480) * 100}%`, width: `${(mirrorRect[2] / 640) * 100}%`, height: `${(mirrorRect[3] / 480) * 100}%` });
   }
   const mirrorCtx = mirror2d.getContext("2d");
-  const finder = layer("race-finder");
+  const finder = document.createElement("canvas");
+  finder.className = "race-finder";
+  finder.hidden = true;
+  finder.width = finder.height = 60;
   const finderCtx = finder.getContext("2d");
-  let lastFinder = "";
+  const ringLook = ringShape(art.finder?.ring);
+  let lastFinder = "", finderScale = 1, ring = null;
+  /** The ring at the finder's scale, drawn once for each size: a real circle, smooth at any size. */
+  const ringCanvas = () => {
+    if (ring) return ring;
+    const s = finderScale, { color, inner, outer } = ringLook;
+    ring = document.createElement("canvas");
+    ring.width = ring.height = 60 * s;
+    const g = ring.getContext("2d");
+    g.strokeStyle = color;
+    g.lineWidth = (outer - inner) * s;
+    g.beginPath();
+    g.arc(30 * s, 30 * s, ((inner + outer) / 2) * s, 0, Math.PI * 2);
+    g.stroke();
+    return ring;
+  };
 
   return {
     dashboard: dash,
@@ -120,6 +159,22 @@ export function createCockpit(art, { needle = null, font = null, units = "mph" }
       mirror2d.height = height;
       mirrorCtx.putImageData(new ImageData(turned, width, height), 0, 0);
     },
+    /**
+     * Place the finder on a `width` x `height` view (device pixels, `ratio` of them per CSS pixel) at
+     * `scale` device pixels per art pixel: its centre `36 * scale` from the right edge and 37/480 of
+     * the height down, as Community Patch 3 places it (MONSTER_EXE_ANALYSIS.md 11).
+     */
+    setFinderSize(width, height, scale = 1, ratio = 1) {
+      const size = 60 * scale;
+      if (scale !== finderScale || finder.width !== size) {
+        finderScale = scale;
+        finder.width = finder.height = size;
+        ring = null;
+      }
+      const left = Math.round(width - 36 * scale) - 30 * scale, top = Math.round((37 * height) / 480) - 30 * scale;
+      Object.assign(finder.style, { left: `${left / ratio}px`, top: `${top / ratio}px`, width: `${size / ratio}px`, height: `${size / ratio}px` });
+      lastFinder = "";
+    },
     /** `angle` from `finderAngle`; `number` the next checkpoint's number; `visible` hides it. */
     setFinder({ visible, angle = 90, number = 1 }) {
       finder.hidden = !visible;
@@ -127,21 +182,22 @@ export function createCockpit(art, { needle = null, font = null, units = "mph" }
       const key = `${Math.round(angle)}|${number}`;
       if (key === lastFinder) return;
       lastFinder = key;
-      finderCtx.clearRect(0, 0, 640, 480);
-      const x0 = 640 - 60 - 6, y0 = 7, cx = x0 + 30, cy = y0 + 30;
+      const s = finderScale, cx = 30 * s, cy = 30 * s;
+      finderCtx.clearRect(0, 0, finder.width, finder.height);
+      finderCtx.imageSmoothingEnabled = false;
+      finderCtx.drawImage(ringCanvas(), 0, 0);
       const green = finderLinedUp(angle);
-      finderCtx.drawImage(finderArt.ring, x0, y0);
       const arrow = green ? finderArt.arrowGreen : finderArt.arrowRed, dot = green ? finderArt.dotGreen : finderArt.dotRed;
-      if (arrow) finderCtx.drawImage(arrow, cx - 6, cy - 3 - 18);
+      if (arrow) finderCtx.drawImage(arrow, cx - 6 * s, cy - 21 * s, 12 * s, 6 * s);
       if (dot) {
-        const a = (angle * Math.PI) / 180, r = 23;
-        finderCtx.drawImage(dot, Math.round(cx + Math.cos(a) * r - 3), Math.round(cy - Math.sin(a) * r - 3));
+        const a = (angle * Math.PI) / 180, r = 23 * s;
+        finderCtx.drawImage(dot, Math.round(cx + Math.cos(a) * r - 3 * s), Math.round(cy - Math.sin(a) * r - 3 * s), 6 * s, 6 * s);
       }
       const text = String(number);
       if (font) {
-        const left = Math.round(cx - textWidth(font, text) / 2);
-        drawText(finderCtx, font, text, left + 1, cy - 8 + 1, { color: "#000" });
-        drawText(finderCtx, font, text, left, cy - 8, { color: "#e0e0e0" });
+        const left = Math.round(cx - textWidth(font, text, s) / 2);
+        drawText(finderCtx, font, text, left + s, cy - 8 * s + s, { color: "#000", scale: s });
+        drawText(finderCtx, font, text, left, cy - 8 * s, { color: "#e0e0e0", scale: s });
       }
     },
   };

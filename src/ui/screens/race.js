@@ -38,7 +38,7 @@ import { createKeyboardInput } from "../../game/input/keyboard.js";
 import { mergeBindings } from "../../game/input/bindings.js";
 import { SunFlare, sunBlocked } from "../../render/sun-flare.js";
 import { enableSunShadows } from "../../render/sun-shadows.js";
-import { mtm2Sim } from "../../vendor/openphotex/index.js";
+import * as mtm2Sim from "../../vendor/openphotex/sim/mtm2/index.js";
 import { COCKPIT_EYE, CAMERA_CLEAR_FT, CAMERA_MODES, CAMERA_PITCH_MAX, CAMERA_PITCH_RATE, INERTIA_MODE, cameraMode, modeForShortcut, blimpCamera, blimpCameraNoCourse, courseCentroid, createChaseCamera, fovFor, groundHeightFn, nextInList, nextMode, raceCamera, shortViews, zoomToFov } from "../../game/cameras.js";
 import { createBlimp, hasBlimp } from "../../game/blimp.js";
 import { soundRange, surfaceFamily } from "../../game/sound-model.js";
@@ -59,7 +59,7 @@ import { WEATHER_LOOK, WEATHER_NAMES, isUnderwater, resolveWeather, waterOffsetF
 import { beamAir, headlightPool, lampsAtStart, toggleLamps } from "../../game/truck-lights.js";
 import { createGoldMode } from "../gold-mode.js";
 import { createGamepadInput } from "../../game/input/gamepad.js";
-import { createTextPanel, loadFont } from "../../render/bitmap-text.js";
+import { createTextPanel, hudFontScale, loadFont } from "../../render/bitmap-text.js";
 import { createRaceGauges } from "../../render/race-gauges.js";
 import { createWaterEffects, createWaterSurface } from "../../render/water-effects.js";
 import { createReplayRecorder } from "../../game/replay.js";
@@ -72,10 +72,10 @@ import { createCaption } from "../../render/caption.js";
 import { courseLoop, createCourseMap } from "../../render/minimap.js";
 import { createSummitSounds } from "../../game/summit-sounds.js";
 import { createCockpit, finderAngle } from "../../render/cockpit.js";
-import { cpuNames, formatRaceTime, raceEntrants, summitBoard } from "../../game/race-setup.js";
+import { cpuNames, formatRaceTime, raceDrivers, seatDrivers, summitBoard } from "../../game/race-setup.js";
 import {
   addFallingTree, createModelLibrary, createTrackWorld, disposeObject, moveObjects, poseFallingTree, removeFallingTree, setForestTree,
-  setStartLights, skyColor, updateSky, updateTrackWorld, placeSky,
+  setStartLights, skyColor, skyOf, updateSky, updateTrackWorld, placeSky,
 } from "../../render/track-scene.js";
 import { createTruckObject, interpolatePose } from "../../render/truck-object.js";
 import { nearestCopy, toSceneMatrix, wrapFt } from "../../shared/scene-frame.js";
@@ -152,18 +152,38 @@ export function zPhysicsLine(sound, physics) {
 export const SPECTATOR_FLY_KEY = "KeyB";
 export const SPECTATOR_CAPTION = "Spectator mode. Left, Right: another truck. V: view. B: free camera";
 
-export default async function mount(container, context, params) {
+/** Compile what `scene` draws for `camera` and upload its textures; a failure leaves it to the first frames. */
+async function warmScene(renderer, scene, camera) {
   try {
-    return await mountRace(container, context, params);
+    await renderer.compileAsync(scene, camera);
+    const textures = new Set();
+    scene.traverseVisible((object) => {
+      for (const material of Array.isArray(object.material) ? object.material : object.material ? [object.material] : []) {
+        for (const value of Object.values(material)) if (value?.isTexture && !value.isRenderTargetTexture) textures.add(value);
+        for (const uniform of Object.values(material.uniforms ?? {})) if (uniform?.value?.isTexture && !uniform.value.isRenderTargetTexture) textures.add(uniform.value);
+      }
+    });
+    for (const texture of textures) renderer.initTexture(texture);
+  } catch (error) {
+    console.warn("Warming the scene's shaders failed; the first frames will build them.", error);
+  }
+}
+
+export default async function mount(container, context, params) {
+  // What a race that fails to start must still stop (the simulation worker, started before the track is in).
+  const owned = [];
+  try {
+    return await mountRace(container, context, params, owned);
   } catch (error) {
     console.error(error);
+    for (const stop of owned) { try { stop(); } catch { /* already gone */ } }
     container.replaceChildren();
     await loadReport(container, context, params.track, { heading: "This track could not be loaded", lines: [String(error?.message ?? error)], fatal: true });
     return {};
   }
 }
 
-async function mountRace(container, context, params) {
+async function mountRace(container, context, params, owned = []) {
   const { track, laps, difficulty, truck: playerTruck, trucks: catalogTrucks, setup, weather: chosenWeather } = params;
   /** Optional race behavior supplied by the extension loader, or null for the track's own race. */
   const extension = !params.demo ? resolveRaceExtension(params.gameMode, track) : null;
@@ -199,6 +219,37 @@ async function mountRace(container, context, params) {
   const loading = el("div", { class: "race-loading" });
   const loadingText = el("p", { class: "race-loading-text" }, `Loading ${track.name}…`);
   loading.append(loadingText);
+  const truckName = (file) => catalogTrucks.find((t) => t.file === file)?.name ?? file;
+  const mtm1Options = { sky: context.settings.mtm1EarthSky === true };
+  // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
+  applyGraphics(context.settings, graphicsHardware());
+  // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
+  setLightsInFog(visualSettings(context.settings).weather);
+  // The simulation worker is started now, so its modules load while the track is built.
+  const sim = new WorkerClient(new URL("../../worker/sim-worker.js", import.meta.url));
+  owned.push(() => sim.terminate());
+  // The loading screen's art is asked for before the track, which keeps the worker busy (shown below).
+  const loadingArt = context.assets.call("loadingScreen", { raceType: track.raceType });
+  loadingArt.catch(() => {});
+  const driver = currentDriver(await getProfiles(context));
+  // The track is asked for first, so the worker builds it while the fonts and the cockpit's art come in. Who races is
+  // drawn before it is built, for a full grid (game/race-setup.js `raceDrivers`), so the worker builds those trucks only
+  // and not the whole catalogue; the grid's size trims the field once the track is in.
+  const drivers = eventPass ? null
+    : raceDrivers({ playerTruck, trucks: catalogTrucks, opponents, playerName: driver.name, spectator, names: cpuNames(context.settings.aiNames) });
+  const raceTruckFiles = [...new Set([playerTruck, ...(eventPass ? eventPass.entrants : drivers).map((e) => e.file)])];
+  const buildRequest = context.assets.call("trackRender", {
+    evoForest: context.settings.evoForest !== false,
+    path: track.path, scope: track.scope, detailLevel: extension?.detailLevel ?? context.settings.detailLevel, raceType: track.raceType,
+    truckFiles: raceTruckFiles, weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap ?? context.settings.terrainOverlap !== false,
+    // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
+    visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
+    smoothTiles: context.settings.look === "enhanced",
+    // The enhanced look draws the sun's shadows: a 4x4 Evolution level's painted ones are left off (worker/evo-track-build.js).
+    sunShadows: context.settings.look === "enhanced",
+  });
+  // Awaited below; marked as handled now, so a failure while the fonts load is not reported as unhandled first.
+  buildRequest.catch(() => {});
   // The HUD is drawn with the game's own fonts (ART\FNT1_480 for rows, FNT2_480 for messages).
   const [hudFont, messageFont, lcdFont, needle, cockpitArt, effectsArt] = await Promise.all([
     loadFont(context.assets, "FNT1_480"), loadFont(context.assets, "FNT2_480"), loadFont(context.assets, "FNTO_480"), context.assets.call("needle").catch(() => null),
@@ -206,7 +257,8 @@ async function mountRace(container, context, params) {
   ]);
   const scale = Math.max(1, window.innerHeight / 480);
   // The timing board is in the Small LCD font, whose digits all have the same width (the clock reads "0 1:04.91").
-  const hud = createTextPanel(lcdFont ?? hudFont, { width: 206, scale, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY });
+  // 202 font pixels wide: Community Patch 3's board, labels 198 font pixels from the values' right edge.
+  const hud = createTextPanel(lcdFont ?? hudFont, { width: 202, scale, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY });
   hud.element.classList.add("race-hud");
   hud.element.hidden = context.settings.timingHud === false;
   // A watched race with the camera flown free: the watched truck's times give way to the race's lap and clock, at the top.
@@ -226,7 +278,13 @@ async function mountRace(container, context, params) {
   // The headset's own copies of the rows and messages, at a size it shows sharply (render/xr/vr-hud.js).
   const vrTiming = createTextPanel(lcdFont ?? hudFont, { width: 206, scale: 3, rowHeight: 15, labelColor: HUD_GREY, valueColor: HUD_GREY, backing: "rgba(0, 0, 0, 0.34)" });
   const vrMessage = createTextPanel(messageFont, { width: 360, scale: 2, align: "center", backing: "rgba(0, 0, 0, 0.42)" });
-  const setHud = (rows) => { hud.set(rows); vrTiming.set(rows); };
+  // The headset's copy is drawn only while a headset shows it; the rows it missed are drawn when it begins to.
+  let vrRowsMissed = null;
+  const setHud = (rows) => {
+    hud.set(rows);
+    if (host.presenting) { vrTiming.set(rows); vrRowsMissed = null; } else vrRowsMissed = rows;
+  };
+  const syncVrHud = () => { if (vrRowsMissed && host.presenting) { vrTiming.set(vrRowsMissed); vrRowsMissed = null; } };
   const showMessage = (text) => { caption.show(text, Infinity); vrMessage.set([text]); };
   host.menu.setFonts(messageFont, hudFont);
   const pauseMenu = el("div", { class: "race-pause", hidden: true });
@@ -237,7 +295,7 @@ async function mountRace(container, context, params) {
   container.append(view);
 
   let disposed = false;
-  const cleanups = [() => { enterVr.dispose(); context.xr.setBoard(null); }];
+  const cleanups = [() => { enterVr.dispose(); context.xr.setBoard(null); }, () => sim.terminate()];
   // Every cleanup runs, whatever another one throws (a skipped one leaves the track's music and the simulation running
   // under the menus); and what is set up after the screen was left is released at once.
   const release = (f) => { try { f(); } catch (error) { console.error(error); } };
@@ -252,35 +310,19 @@ async function mountRace(container, context, params) {
   };
 
   // The loading screen art, scaled to the window.
-  context.assets.call("loadingScreen", { raceType: track.raceType }).then((image) => {
+  loadingArt.then((image) => {
     if (!image || disposed) return;
     const art = el("canvas", { class: "race-loading-art", width: image.width, height: image.height });
     art.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(image.rgba.buffer ?? image.rgba), image.width, image.height), 0, 0);
     loading.prepend(art);
   }).catch(() => {});
 
-  const truckName = (file) => catalogTrucks.find((t) => t.file === file)?.name ?? file;
-  const mtm1Options = { sky: context.settings.mtm1EarthSky === true };
-  // Auto picks again for this machine. A stored preset writes its own switches (game/graphics.js).
-  applyGraphics(context.settings, graphicsHardware());
-  // Before any material is made: whether the light the port drew from the start is dimmed in the fog.
-  setLightsInFog(visualSettings(context.settings).weather);
-  const build = await context.assets.call("trackRender", {
-    evoForest: context.settings.evoForest !== false,
-    path: track.path, scope: track.scope, detailLevel: extension?.detailLevel ?? context.settings.detailLevel, raceType: track.raceType,
-    truckFiles: catalogTrucks.map((t) => t.file), weather: weatherId, mtm1: mtm1Options, tileOverlap: params.tileOverlap ?? context.settings.terrainOverlap !== false,
-    // The port's own scenery, each part as Options has it (game/visuals.js; docs/VISUALS.md).
-    visuals: trackVisuals(context.settings, { weather: weatherId, weatherMask: track.weatherMask }),
-    smoothTiles: context.settings.look === "enhanced",
-    // The enhanced look draws the sun's shadows: a 4x4 Evolution level's painted ones are left off (worker/evo-track-build.js).
-    sunShadows: context.settings.look === "enhanced",
-  });
+  const build = await buildRequest;
   if (disposed) return { unmount };
   if (build.problems?.length && !demo) {
     const go = await loadReport(view, context, track, { heading: "Files this track names are missing", lines: build.problems, fatal: false });
     if (!go || disposed) return { unmount };
   }
-  const driver = currentDriver(await getProfiles(context));
   // The course map (Map key), from the SIT's primary course.
   // Professional puts every truck on course 2 when the SIT has one (MONSTER_EXE_ANALYSIS.md 9); the map still draws course 1.
   // A drag strip's courses are its lanes instead (6.4): course 1 is lane 0's, whatever the difficulty.
@@ -292,11 +334,11 @@ async function mountRace(container, context, params) {
   });
   minimap.setVisible(!!context.settings.minimap);
   view.append(minimap.element);
+  cleanups.push(() => minimap.dispose());
   const grid = build.sim.grid;
-  const usable = catalogTrucks.filter((t) => build.truckModels[t.file]);
   const entrants = eventPass
     ? eventPass.entrants.filter((e) => build.truckModels[e.file] && e.slot < grid.length)
-    : raceEntrants({ playerTruck, trucks: usable, slots: grid.length, opponents, playerName: driver.name, spectator, names: cpuNames(context.settings.aiNames) });
+    : seatDrivers(drivers.filter((d) => build.truckModels[d.file]), grid.length);
   const extensionTerrain = extension ? terrainOfBuild(build) : null;
   const extensionRace = prepareExtensionRace(extension, {
     build, entrants, length: laps,
@@ -469,8 +511,6 @@ async function mountRace(container, context, params) {
     cleanups.push(() => { shadows?.dispose?.(); flare?.dispose(); });
   }
 
-  const sim = new WorkerClient(new URL("../../worker/sim-worker.js", import.meta.url));
-  cleanups.push(() => sim.terminate());
   const init = {
     ...simGroundOfBuild(build),
     startOnNearestSegment: !!build.sim.startOnNearestSegment,
@@ -522,10 +562,16 @@ async function mountRace(container, context, params) {
     extension: extensionRace?.simulation ?? null,
   };
   // Where the player's truck starts, for the frames before the simulation's first reply.
-  const startPose = await sim.call("init", init);
+  // The terrain's buffers are the payload's own copies (shared/build-terrain.js): handed over, not copied again.
+  const startPose = await sim.call("init", init, [init.heights, init.heightsFt, init.fineFt].filter(Boolean));
   const vrCockpit = await context.assets.call("cockpitPanel").catch(() => null);
   if (disposed) return { unmount };
   if (spectator) caption.show(SPECTATOR_CAPTION, 8);
+  // The scene's shaders are built and its textures sent to the graphics card now, behind the loading screen, the
+  // shaders side by side where the browser can (three.js `compileAsync`); not one at a time inside the first frames.
+  shadows?.setupMaterials();
+  await warmScene(renderer, scene, camera);
+  if (disposed) return { unmount };
   // The loading screen stays until the first frames have been drawn at an even pace (`ready` in the frame loop below):
   // the race's clock starts only then, so the countdown is not spent while shaders compile and textures go up.
   loadingText.textContent = `${t("Getting ready")}…`;
@@ -785,7 +831,30 @@ async function mountRace(container, context, params) {
     if (actions.recenter) host.recenter();
   };
 
+  /*
+    The HUD in device pixels, as Community Patch 3 draws it (MONSTER_EXE_ANALYSIS.md 11): fonts at a
+    whole-number scale (render/bitmap-text.js `hudFontScale`), the timing board's first letter at
+    3/640 of the width and its rows' tops at 16/480 of the height, the gauges over the whole view.
+    In a headset the gauges go back to the 640 x 480 screen the headset's copy is cut from.
+  */
+  const layoutHud = () => {
+    if (host.presenting) { gauges.setSize(640, 480, 1); return; }
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.round(view.clientWidth * ratio), height = Math.round(view.clientHeight * ratio);
+    if (!width || !height) return;
+    const s = hudFontScale(height);
+    hud.setScale(s, ratio);
+    flyHud.setScale(s, ratio);
+    // The board's canvas has 2 font pixels of margin before its first letter and above its first row.
+    Object.assign(hud.element.style, { left: `${(Math.round((3 * width) / 640) - 2 * s) / ratio}px`, top: `${(Math.round((16 * height) / 480) - 2 * s) / ratio}px` });
+    flyHud.element.style.top = hud.element.style.top;
+    gauges.setSize(width, height, s);
+    cockpit?.setFinderSize(width, height, s, ratio);
+  };
+  cleanups.push(host.on("start", layoutHud));
+
   const resize = () => {
+    layoutHud();
     // A headset sizes its own pictures; the canvas is left alone while it is drawn to.
     if (host.presenting) return;
     const { clientWidth: w, clientHeight: h } = canvas;
@@ -797,6 +866,11 @@ async function mountRace(container, context, params) {
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
   cleanups.push(() => observer.disconnect());
+  // The view's size for the name tags, read when it changes rather than in every frame (which lays the page out again).
+  let viewSize = [view.clientWidth, view.clientHeight];
+  const viewObserver = new ResizeObserver(() => { viewSize = [view.clientWidth, view.clientHeight]; });
+  viewObserver.observe(view);
+  cleanups.push(() => viewObserver.disconnect());
   resize();
   // In a headset the flat camera stands in for the head; afterwards it is the chase camera again.
   cleanups.push(host.on("end", () => {
@@ -812,7 +886,10 @@ async function mountRace(container, context, params) {
     const model = build.truckModels[e.file];
     // `wheels`: its dust and sparks against a stock truck's, by its tires' volume (game/tire-effects.js `wheelShare`);
     // `tread`: how wide its tire tracks are, by its tires' width (`treadShare`).
-    return { hubs: model.anchors, radius: tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft), wheels: wheelShare(model.tire), tread: treadShare(model.tire) };
+    const radius = tireRadiusFt(model.parts.tireRight ?? model.parts.tireLeft);
+    // `presses`: how far round it the grass lies down (render/evo-grass.js), feet: its farthest hub, then its tire.
+    const presses = Math.max(0, ...model.anchors.filter(Boolean).map((h) => Math.hypot(h[0], h[2]))) * 0.7 + radius;
+    return { hubs: model.anchors, radius, presses, wheels: wheelShare(model.tire), tread: treadShare(model.tire) };
   });
   // The shade each truck keeps the sky's light off (render/contact-shade.js): strongest where the sun's own shadow is faint.
   const contactShade = scenery.contactShade(seats);
@@ -1166,6 +1243,7 @@ async function mountRace(container, context, params) {
     // The FPS counter follows the Options at once (Save in the pause menu's dialog).
     if (fpsCounter.visible !== !!context.settings.fpsCounter) fpsCounter.setVisible(!!context.settings.fpsCounter);
     fpsCounter.update(dt);
+    syncVrHud();
     if (replaying) return;
     // The draw distance follows the Options at once (Save in the pause menu's dialog).
     const cells = Math.max(16, Math.min(256, context.settings.drawCells ?? 128));
@@ -1307,7 +1385,7 @@ async function mountRace(container, context, params) {
       }
       camera.getWorldDirection(forwardVector);
       audio.setListener(camera.position, forwardVector, camera.up);
-      nameTags.update(camera, view.clientWidth, view.clientHeight, truckLabels(latest.race?.extension), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0), extensionMarks(latest.race?.extension));
+      nameTags.update(camera, viewSize[0], viewSize[1], truckLabels(latest.race?.extension), shown.map((p) => p.pos), entrants.map((_, i) => i === 0 && viewMode === 0), extensionMarks(latest.race?.extension));
       weatherScene.update(dt, shown.map((p, i) => ({ x: p.pos[0], y: p.pos[1], z: p.pos[2], heading: p.euler[2], lit: lamps[i] === 2, pool: pools[i], matrix: p.matrix })),
         { floorFt: waterLevelNow, viewHeight: host.presenting ? HEADSET_VIEW_HEIGHT : canvas.height, lite: host.presenting });
       // In a headset the seat follows the player's truck and the flat camera takes the head's place. The
@@ -1386,7 +1464,7 @@ async function mountRace(container, context, params) {
         level: water ? water.userData.levelFt + water.position.y : null, weather: weatherScene.weather,
       });
     }
-    const sky = world.getObjectByName("sky");
+    const sky = skyOf(world);
     // The sky goes with the camera, up as well as across: it is never reached (render/track-scene.js `placeSky`).
     if (sky) { placeSky(sky, camera); sky.visible = weatherScene.skyShown; }
     if (latest?.crush) world.userData.crush = latest.crush;
@@ -1413,12 +1491,12 @@ async function mountRace(container, context, params) {
       for (let i = falls.length - 1; i >= 0; i--) if (falls[i].done) falls.splice(i, 1);
     }
     // 4x4 Evolution's grass lies down under the trucks (render/evo-grass.js), game feet.
-    if (build.grass && context.settings.evoGrass !== false && shownPoses) world.userData.grassPressers = shownPoses.flatMap((p, i) => (p ? [[p.pos[0], p.pos[2], Math.max(...seats[i].hubs.map((h) => Math.hypot(h[0], h[2]))) * 0.7 + seats[i].radius]] : []));
+    if (build.grass && context.settings.evoGrass !== false && shownPoses) world.userData.grassPressers = shownPoses.flatMap((p, i) => (p ? [[p.pos[0], p.pos[2], seats[i].presses]] : []));
     updateTrackWorld(world, camera, dt, { viewRange: host.presenting ? sight : undefined, fineRange: host.presenting ? HEADSET_FINE_RANGE_FT : undefined });
     animateRex(paused ? 0 : dt);
     if (shadows) {
       shadows.setupMaterials();
-      shadows.invalidateDynamic();
+      shadows.invalidateIfMoved();
       shadows.update();
     }
     if (flare) {
@@ -1631,7 +1709,7 @@ async function mountRace(container, context, params) {
           if (freeRoam) return "Free roam has no opponents (freeroam 0 first).";
           if (entrants.length >= Math.min(8, grid.length)) return "The grid is full.";
           const racing = new Set(entrants.map((e) => e.file));
-          const pick = rest ? findTruck(rest) : usable.find((item) => !racing.has(item.file)) ?? usable[0];
+          const pick = rest ? findTruck(rest) : catalogTrucks.find((item) => !racing.has(item.file)) ?? catalogTrucks[0];
           if (!pick) return `No truck named ${rest}.`;
           if (racing.has(pick.file)) return `${pick.name} is already racing.`;
           restart({ opponents: [...bots().map((e) => e.file), pick.file] });

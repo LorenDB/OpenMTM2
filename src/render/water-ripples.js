@@ -24,6 +24,8 @@ import { PUDDLE_RANGE_FT, PUDDLE_WATERLINE, puddleDepthAt } from "../game/ground
 import { WATER_RIPPLES, landingStir, puddleStir, wheelStir } from "../game/water.js";
 
 const { windowTexels: SIDE, texelFt: TEXEL_FT, stepS: STEP_S, mostSteps: MOST_STEPS, fastestFtPerS, calmS, foamHalfLifeS, stirs: STIRS } = WATER_RIPPLES;
+/** Seconds unstirred after which the field is still to the eye: eight of its decay times, waves and foam alike. */
+const QUIET_S = 8 * Math.max(calmS, foamHalfLifeS / Math.LN2);
 const glsl = (n) => n.toFixed(5);
 /** A wheel is on the ground, for a puddle, when its tire's foot is within this of it, feet. */
 const ON_GROUND_FT = 0.5;
@@ -116,7 +118,7 @@ export function createWaterRipples({ renderer, groundTexture = null, levelFt = n
   /** What the shaders that read the field are given: the field, and where it lies (its corner on the map, feet; 1 / its width; whether it runs). */
   const shared = { uRipples: { value: read.texture }, uRippleAt: { value: new THREE.Vector4() } };
   /** The window's corner, in whole points of the field, or null while the field is calm and not running. */
-  let corner = null, clock = 0, time = 0, stirredFor = 0;
+  let corner = null, clock = 0, time = 0, stirredFor = 0, stillFor = 0;
   /** Where each wheel was a frame ago, by truck and wheel, for how fast it moves and whether it has just come down into the water. */
   const before = new Map();
   let stirs = [], levelNow = levelFt ?? 0, frozen = false, puddleDrop = null;
@@ -183,6 +185,10 @@ export function createWaterRipples({ renderer, groundTexture = null, levelFt = n
       const dt = stirredFor;
       stirredFor = 0;
       if (!running()) { corner = null; shared.uRippleAt.value.w = 0; return; }
+      // Nothing stirred it for long enough that its waves and foam have died away: it is not stepped, nor read, until a
+      // wheel stirs it again, and then it starts calm, as it is.
+      stillFor = stirs.length ? 0 : stillFor + dt;
+      if (stillFor > QUIET_S) { corner = null; shared.uRippleAt.value.w = 0; return; }
       // The window about the eye, in whole points, and how far it moved.
       const cx = Math.round(eye[0] / TEXEL_FT) - SIDE / 2, cz = Math.round(eye[2] / TEXEL_FT) - SIDE / 2;
       if (!corner) {

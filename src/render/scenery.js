@@ -149,7 +149,8 @@ export function createScenery({ scene, camera, world, sun, build, settings, grou
       const down = Math.min(1, (groundSurface?.snowDown ?? 0) / SNOW_LINE.creepsUntil);
       if (down <= 0) return 0;
       if (deckAt(x, z, y) !== null) return (settled ? SNOW_MAX_FT * snowDrift(x, z) * settled.courseShareAt(x, z) : SNOW_MAX_FT * 0.5) * down;
-      return (snowCover ? snowCover.depthAt(x, z) : SNOW_MAX_FT * 0.5) * down;
+      // The mesh's own depth where it has one: the cover's, worked out afresh, costs a few hundred patch evaluations.
+      return (snowCover ? (drawn?.hasSnow ? drawn.snowAt(x, z) : snowCover.depthAt(x, z)) : SNOW_MAX_FT * 0.5) * down;
     },
     strikeIce: (x, z, speedFtPerS) => water?.strike(x, z, speedFtPerS, random) ?? 0,
     /** A truck's body dragged over the ice, `points` of it down on it this frame (render/water-surface.js `drag`). */

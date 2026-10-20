@@ -7,7 +7,9 @@
   corner), and the axle model. The four wheel anchors are the TRK's
   `static_bpos` values in body feet (FR, FL, RR, RL); a tire model is drawn with its origin there.
 */
-import { MTM_WHEEL_KEYS, normalizePodPath, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
+import { MTM_WHEEL_KEYS } from "../vendor/openphotex/truck/mtm-trk.js";
+import { normalizePodPath, podPathTitle } from "../vendor/openphotex/pod/paths.js";
+import { parseTruckManifest } from "../vendor/openphotex/truck/manifest.js";
 import { decodeModel } from "./models.js";
 import { artStem, loadAoMap, loadArtTexture, loadNormalMap } from "./art-texture.js";
 import { buildForeignTruckRender, parseForeignTruckId } from "./foreign-truck-build.js";
@@ -49,6 +51,65 @@ async function model(vfs, name) {
   return bytes ? decodeModel(bytes, file) : null;
 }
 
+/** How many bytes of built trucks are kept for the next build (a preview, a race, a restart). */
+const TRUCK_CACHE_BYTES = 128 * 1024 * 1024;
+/** Per VFS view: file -> { promise, bytes }, least recently used first. A new set of mounts is a new view. */
+const TRUCK_CACHE = new WeakMap();
+
+function bufferBytes(value, seen = new Set()) {
+  if (!value || typeof value !== "object") return 0;
+  if (ArrayBuffer.isView(value)) {
+    if (seen.has(value.buffer)) return 0;
+    seen.add(value.buffer);
+    return value.buffer.byteLength;
+  }
+  let sum = 0;
+  for (const v of Array.isArray(value) ? value : Object.values(value)) sum += bufferBytes(v, seen);
+  return sum;
+}
+
+/**
+ * `buildTruckRender`, kept: a truck built once for a view of the archives is built from memory the next time, as a
+ * copy, since a reply hands its buffers to the page. Its textures do not depend on the track: a model's palette is
+ * found before the track's is ever asked for (OpenPhotex `paletteCandidates`, MTM2 and CPR origins).
+ */
+export async function cachedTruckRender(vfs, trkName, paletteResolver) {
+  const key = String(trkName).toUpperCase();
+  if (!TRUCK_CACHE.has(vfs)) TRUCK_CACHE.set(vfs, new Map());
+  const cache = TRUCK_CACHE.get(vfs);
+  let hit = cache.get(key);
+  if (hit) {
+    cache.delete(key);
+    cache.set(key, hit);
+  } else {
+    hit = { promise: buildTruckRender(vfs, trkName, paletteResolver), bytes: 0 };
+    cache.set(key, hit);
+    hit.promise.then((truck) => {
+      hit.bytes = bufferBytes(truck);
+      let total = 0;
+      for (const item of cache.values()) total += item.bytes;
+      // The least recently used go first, never the one just built.
+      for (const [k, item] of cache) {
+        if (total <= TRUCK_CACHE_BYTES || item === hit) break;
+        cache.delete(k);
+        total -= item.bytes;
+      }
+    }, () => { if (cache.get(key) === hit) cache.delete(key); });
+  }
+  const truck = await hit.promise;
+  return truck ? structuredClone(truck) : truck;
+}
+
+/**
+ * The race's trucks, `files`, into `models` by file title, those it holds already left as they are: built at once, and
+ * written in the order named.
+ */
+export async function buildTrucks(models, files, build) {
+  const fresh = [...new Set(files.map((f) => podPathTitle(f).toUpperCase()))].filter((file) => !(file in models));
+  const built = await Promise.all(fresh.map(build));
+  fresh.forEach((file, i) => { models[file] = built[i]; });
+}
+
 /**
  * @param {ReturnType<import("./vfs.js").createVfs>} vfs
  * @param {string} trkName e.g. "bigfoot.trk"
@@ -71,16 +132,19 @@ export async function buildTruckRender(vfs, trkName, paletteResolver) {
   if (!bytes) return null;
   const { manifest } = parseTruckManifest(bytes, title);
   const tireBase = manifest.tireModelBaseName ?? "";
-  const parts = {
-    body: await model(vfs, manifest.truckModelBaseName),
-    tireLeft: await model(vfs, `${tireBase}16L`),
-    tireRight: await model(vfs, `${tireBase}16R`),
+  // The parts' models, read and decoded at once.
+  const partNames = {
+    body: manifest.truckModelBaseName,
+    tireLeft: `${tireBase}16L`,
+    tireRight: `${tireBase}16R`,
     // Community Patch 3 trucks may carry a tire per corner (16FR, 16FL, 16RR, 16RL), used where present (JSTruckViewer).
-    tireFR: await model(vfs, `${tireBase}16FR`), tireFL: await model(vfs, `${tireBase}16FL`),
-    tireRR: await model(vfs, `${tireBase}16RR`), tireRL: await model(vfs, `${tireBase}16RL`),
-    axle: await model(vfs, manifest.axleModelName),
-    driveshaft: await model(vfs, "DRVSHAFT"),
+    tireFR: `${tireBase}16FR`, tireFL: `${tireBase}16FL`,
+    tireRR: `${tireBase}16RR`, tireRL: `${tireBase}16RL`,
+    axle: manifest.axleModelName,
+    driveshaft: "DRVSHAFT",
   };
+  const partModels = await Promise.all(Object.values(partNames).map((name) => model(vfs, name)));
+  const parts = Object.fromEntries(Object.keys(partNames).map((key, i) => [key, partModels[i]]));
   // Monster Truck Madness 1's TRK names the whole tire model (`tireModelName wheel13.bin`), one for every corner, where
   // MTM2's names a base that takes the level of detail and the side. Its wheels are centred and even, so one serves both.
   if (!parts.tireLeft && !parts.tireRight && !parts.tireFR && tireBase) {
@@ -96,24 +160,31 @@ export async function buildTruckRender(vfs, trkName, paletteResolver) {
     return a ? [a.x, a.y, a.z] : null;
   });
 
-  const textures = {};
+  // Each texture the parts name, the first mesh to name it saying whether it is a cutout, and a mesh's own texture with
+  // its normal and occlusion maps; all read at once, then kept in the order they were named.
+  const wanted = new Map();
   for (const part of Object.values(parts)) {
     for (const mesh of part?.meshes ?? []) {
       for (const frame of (mesh.textureFrames ?? []).slice(1)) {
-        if (!(frame in textures)) textures[frame] = await loadArtTexture(vfs, frame, paletteResolver, { cutout: mesh.cutout });
+        if (!wanted.has(frame)) wanted.set(frame, { cutout: mesh.cutout, maps: false });
       }
       const name = mesh.textureName;
-      if (!name || name in textures) continue;
-      textures[name] = await loadArtTexture(vfs, name, paletteResolver, { cutout: mesh.cutout });
-      const normal = await loadNormalMap(vfs, name);
-      if (normal) textures[`${artStem(name)}_N`] = normal;
-      const ao = await loadAoMap(vfs, name);
-      if (ao) textures[`${artStem(name)}_AO`] = ao;
+      if (name && !wanted.has(name)) wanted.set(name, { cutout: mesh.cutout, maps: true });
     }
   }
-  for (const name of suspension ? [suspension.shockTexture, suspension.barTexture] : []) {
-    textures[name] = await loadArtTexture(vfs, name, paletteResolver);
-  }
+  const loads = await Promise.all([...wanted].map(([name, { cutout, maps }]) => Promise.all([
+    loadArtTexture(vfs, name, paletteResolver, { cutout }), maps ? loadNormalMap(vfs, name) : null, maps ? loadAoMap(vfs, name) : null,
+  ])));
+  const textures = {};
+  [...wanted.keys()].forEach((name, i) => {
+    const [image, normal, ao] = loads[i];
+    textures[name] = image;
+    if (normal) textures[`${artStem(name)}_N`] = normal;
+    if (ao) textures[`${artStem(name)}_AO`] = ao;
+  });
+  const suspensionArt = suspension ? [suspension.shockTexture, suspension.barTexture] : [];
+  const suspensionImages = await Promise.all(suspensionArt.map((name) => loadArtTexture(vfs, name, paletteResolver)));
+  suspensionArt.forEach((name, i) => { textures[name] = suspensionImages[i]; });
   // The lamps (game/truck-lights.js): each with its lens bitmap and, when it throws a beam, the cone's texture.
   const lights = (manifest.lights ?? []).map((l) => ({
     type: l.type ?? 0, pos: [l.pos?.x ?? 0, l.pos?.y ?? 0, l.pos?.z ?? 0], radius: l.bitmapRadius ?? 0,
@@ -122,10 +193,9 @@ export async function buildTruckRender(vfs, trkName, paletteResolver) {
     coneTexture: (l.coneTexture ?? "").toUpperCase(), source: (l.sourceBitmap ?? "").toUpperCase(),
     msOn: l.msOn ?? 0, msOff: l.msOff ?? 0,
   }));
-  const lightTextures = {};
-  for (const name of new Set(lights.flatMap((l) => [l.source, l.coneLength > 0 ? l.coneTexture : ""]).filter(Boolean))) {
-    lightTextures[name] = await loadArtTexture(vfs, name, paletteResolver);
-  }
+  const lightNames = [...new Set(lights.flatMap((l) => [l.source, l.coneLength > 0 ? l.coneTexture : ""]).filter(Boolean))];
+  const lightImages = await Promise.all(lightNames.map((name) => loadArtTexture(vfs, name, paletteResolver)));
+  const lightTextures = Object.fromEntries(lightNames.map((name, i) => [name, lightImages[i]]));
   const scrapePoints = (manifest.scrapePoints ?? []).map((v) => [v.x, v.y, v.z]);
   return { file: title, name: manifest.truckName, parts, anchors, scrapePoints, textures, suspension, lights, lightTextures };
 }

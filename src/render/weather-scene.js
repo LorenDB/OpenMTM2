@@ -20,7 +20,7 @@ import { UNDERWATER_FOG_FT, WEATHER_LOOK } from "../game/weather.js";
 import { UNDERWATER } from "../game/water.js";
 import { BACKDROP_DARK } from "../game/atmosphere.js";
 import { DEFAULT_POOL, placeHeadlightPools } from "../game/truck-lights.js";
-import { atmosphere } from "./atmosphere.js";
+import { atmosphere, fadesToBackdrop } from "./atmosphere.js";
 import { joinSheets } from "../game/sheets.js";
 import { createBillboards } from "./billboards.js";
 
@@ -63,6 +63,8 @@ function sprite() {
 export function createWeatherScene(env) {
   const { scene, camera, world, sun, ambient, skyAverage, look, random = Math.random } = env;
   let drawDistance = env.drawDistance ?? 20000;
+  // Whether the track's backdrop is drawn (track-scene.js `createTrackWorld`): a clear day's haze is thinner with it.
+  const hasBackdrop = !!world.getObjectByName("backdrops");
   const volume = env.volume ?? null, groundSurface = env.groundSurface ?? null, lightRig = env.lightRig ?? null;
   const root = new THREE.Group();
   root.name = "weather";
@@ -77,7 +79,9 @@ export function createWeatherScene(env) {
       const m = o.material;
       if (!lit.has(m)) {
         const twin = new THREE.MeshLambertMaterial({ map: m.map, vertexColors: m.vertexColors });
-        lit.set(m, env.dressGround?.(twin) ?? groundSurface?.dress(twin) ?? twin);
+        const dressed = env.dressGround?.(twin) ?? groundSurface?.dress(twin) ?? twin;
+        // With the track's backdrop drawn, the far ground fades into it as the unlit ground does (track-scene.js).
+        lit.set(m, world.userData.fadesToBackdrop ? fadesToBackdrop(dressed) : dressed);
       }
       surfaces.push({ mesh: o, unlit: m, lit: lit.get(m) });
     }
@@ -171,7 +175,7 @@ export function createWeatherScene(env) {
     }
     // The fog as a volume, where the weather has fog of its own and the camera is above the water; a fog with a top is
     // seen beyond as far as a clear day's haze lets the eye see.
-    volume?.fog({ underwater, clearRange: { startFt: Math.min(2500, drawDistance * 0.35), endFt: Math.min(7000, drawDistance * 0.9) } });
+    volume?.fog({ underwater, clearRange: { startFt: Math.min(2500, drawDistance * 0.35), endFt: Math.min(7000, drawDistance * 0.9) }, backdrop: hasBackdrop });
     // The backdrop's veil is the fog's colour: it follows the fog, also back out of the water.
     veilBackdrop();
   }

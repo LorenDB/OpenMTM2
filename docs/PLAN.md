@@ -249,7 +249,7 @@ Things the port adds on purpose. They are marked here so the original game's spe
 - **Water drops** (done): drops thrown up and out where a wheel runs through water, more and higher with speed, and a burst on entering it; Options switches Water splashes. Wheel dust is drawn 2.2 times the game's size and a collision's dark grey smoke 3.2 times.
 - **Modern menus on the classic layout** (done): the modern skin lays every screen out as the classic one does on a plain 640 x 480 stage: the title, the labels the art would carry, the same panels, and the bottom bar drawn as real buttons (the current screen marked), plus a Back button on every screen but Start.
 - **Version-aware menus** (done): the picked folder's `MONSTER.EXE` version is read (its FileVersion resource) and kept in the install manifest; only 2.00.41 and 2.00.42 get the classic menu art, any other build (CP3 among them) the modern menus. An install made before this was recorded is taken as retail.
-- **Watermark** (done): "OpenMTM2 v0.5.3" in the game's font in the corner of every screen (`src/app/version.js`).
+- **Watermark** (done): "OpenMTM2 v0.5.4" in the game's font in the corner of every screen (`src/app/version.js`).
 - **Camera shortcuts** (done): Ctrl or Alt with 1 to 9 and 0 pick the ten views (1 cockpit, 2 Chase Near, ...).
 - **Helicopter rotors** (done): the model has none; a spinning main and tail rotor are added.
 - **Instant helicopter** (done): the Helicopter key works at any time and at once; see the helicopter section of the exe analysis for how the original behaved.
@@ -701,7 +701,8 @@ builds them (`track-loader.js`, `terrain-builder.js`, `def-loader.js`, `hb-under
 
 - **Surfaces:** each `.TEX` texture's own surface value; MTM2's trucks feel mud, snow, ice and rock.
 - **Trees** in their sectors with the game's slot, yaw and height; a forest generated on tracks
-  without a `.VEG` ("Evo forest"); a truck knocks a tree over.
+  without a `.VEG` ("Evo forest"); a truck knocks a tree over. Far trees are the `.VEG`'s cards, as
+  in the game.
 - **Grass** around the camera by each texture's vegetation class, pressed under trucks ("Evo grass").
 - **Shade** (`.RTD`) and **shadow tiles** (`.SDW`) under a sun.
 - **Particles:** debris by surface from spinning and sliding tires, Autumn's leaves ("Evo particles").

@@ -9,7 +9,10 @@
 
   Pure: it reads through a VFS (see vfs.js) and returns plain data.
 */
-import { isEvoSit, parseEvoSit, parseMtmSit, parseTruckManifest, podPathTitle } from "../vendor/openphotex/index.js";
+import { isEvoSit, parseEvoSit } from "../vendor/openphotex/evo/sit.js";
+import { parseMtmSit } from "../vendor/openphotex/mtm/sit.js";
+import { parseTruckManifest } from "../vendor/openphotex/truck/manifest.js";
+import { podPathTitle } from "../vendor/openphotex/pod/paths.js";
 import { courseLengthFt } from "./cpr-road.js";
 import { FOREIGN_TRUCK_GAMES, foreignTruckId } from "./foreign-truck-build.js";
 import { mtm1TruckId } from "./truck-build.js";
@@ -248,6 +251,31 @@ export function defaultLaps(raceType, trackLength) {
  * @param {ReturnType<import("./vfs.js").createVfs>} vfs
  * @returns {Promise<{ tracks: object[], trucks: object[], problems: string[] }>}
  */
+/**
+ * `read(item)` for every item, started now, at most `width` at a time: each archive read waits on the disk, not on the
+ * one before it. The promises come back in the items' order; one that fails is reported where it is awaited.
+ */
+export function readAhead(items, read, width = 32) {
+  let active = 0;
+  const waiting = [];
+  const run = async (item) => {
+    if (active < width) active++;
+    else await new Promise((resolve) => waiting.push(resolve));
+    try {
+      return await read(item);
+    } finally {
+      // The slot goes straight to the next read in line, or is given back.
+      const next = waiting.shift();
+      if (next) next(); else active--;
+    }
+  };
+  return items.map((item) => {
+    const promise = run(item);
+    promise.catch(() => {});
+    return promise;
+  });
+}
+
 export async function buildCatalog(vfs) {
   const problems = [];
   const tracks = [];
@@ -260,15 +288,19 @@ export async function buildCatalog(vfs) {
   const situations = [...vfs.list(".SI2"), ...vfs.list(".SIT")]
     .map((hit, index) => ({ hit, index })).sort((a, b) => order(a.hit) - order(b.hit) || a.index - b.index).map(({ hit }) => hit);
   const seenStems = new Set();
+  const picked = [];
   for (const first of situations) {
     const stem = stemOf(first.path);
     if (seenStems.has(stem)) continue;
     seenStems.add(stem);
-    const { path, mount } = si2.get(stem) ?? first;
+    picked.push(si2.get(stem) ?? first);
+  }
+  // Other games' tracks are listed apart (CPR below; 4x4 Evolution with docs/PLAN.md F4).
+  const mtmSits = picked.filter((hit) => (hit.mount.family ?? "MTM") === "MTM");
+  const sitReads = readAhead(mtmSits, (hit) => hit.mount.readEntry(hit.entry));
+  for (const [i, { path, mount }] of mtmSits.entries()) {
     try {
-      // Other games' tracks are listed apart (CPR below; 4x4 Evolution with docs/PLAN.md F4).
-      if ((mount.family ?? "MTM") !== "MTM") continue;
-      const sit = parseMtmSit(await mount.readEntry((si2.get(stem) ?? first).entry), podPathTitle(path));
+      const sit = parseMtmSit(await sitReads[i], podPathTitle(path));
       // MTM2 tracks, and the MTM1 ones a Community Patch 3 install carries (its GAME.POD): the game loads both (level type 4).
       if (sit.origin !== "MTM2" && sit.origin !== "MTM1") continue;
       // A situation without its level cannot be driven (MTM1's HILLCLIM.SIT ships with no HILLCLIM.LVL).
@@ -306,14 +338,17 @@ export async function buildCatalog(vfs) {
       problems.push(`${path}: ${err.message}`);
     }
   }
-  tracks.push(...await cprTracks(vfs, problems), ...await evoTracks(vfs, problems), ...await tvLevels(vfs, problems));
+  // The other games' lists are made at once, and kept in this order.
+  const [cpr, evo, tv] = await Promise.all([cprTracks(vfs, problems), evoTracks(vfs, problems), tvLevels(vfs, problems)]);
+  tracks.push(...cpr, ...evo, ...tv);
   const trucks = [];
-  for (const { path, mount } of vfs.list(".TRK")) {
-    // A CPR `.TRK` is a track's road layer and an Evo one another manifest: neither is an MTM truck. An archive whose
-    // game is not known ("") may be an add-on truck's: its manifest says below whether it is one.
-    if (!["MTM", ""].includes(mount.family ?? "MTM")) continue;
+  // A CPR `.TRK` is a track's road layer and an Evo one another manifest: neither is an MTM truck. An archive whose
+  // game is not known ("") may be an add-on truck's: its manifest says below whether it is one.
+  const manifests = vfs.list(".TRK").filter(({ mount }) => ["MTM", ""].includes(mount.family ?? "MTM"));
+  const manifestReads = readAhead(manifests, ({ path }) => vfs.read(path));
+  for (const [i, { path, mount }] of manifests.entries()) {
     try {
-      const parsed = parseTruckManifest(await vfs.read(path), podPathTitle(path));
+      const parsed = parseTruckManifest(await manifestReads[i], podPathTitle(path));
       if (parsed.kind !== "mtm") continue;
       const file = podPathTitle(path);
       trucks.push({
@@ -330,7 +365,7 @@ export async function buildCatalog(vfs) {
       problems.push(`${path}: ${err.message}`);
     }
   }
-  trucks.push(...await mtm1ApartTrucks(vfs, problems));
-  trucks.push(...await foreignTrucks(vfs, problems));
+  const [apart, foreign] = await Promise.all([mtm1ApartTrucks(vfs, problems), foreignTrucks(vfs, problems)]);
+  trucks.push(...apart, ...foreign);
   return { tracks, trucks, problems };
 }

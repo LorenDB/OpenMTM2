@@ -5,7 +5,7 @@
   one-shots are heard from a random spot around the listener, as the file gives no positions.
 */
 import { nextDelay, objectHitSound } from "../game/sound-model.js";
-import { weatherMaskIncludes } from "../vendor/openphotex/index.js";
+import { weatherMaskIncludes } from "../vendor/openphotex/mtm/sound.js";
 
 const THUNDER = ["THUNDR3B", "THUNDR5", "THUNDR6B", "THUNDR9B"];
 

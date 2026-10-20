@@ -17,7 +17,14 @@ import { frame, uiImageUrl } from "../frame.js";
 
 const SUPPORTED = new Set(["circuit", "rally", "summit", "drag", "freeroam"]);
 
+/** The race screen's modules (three.js and the renderer, a few hundred files), fetched and compiled while a race is picked. */
+function prefetchRace() {
+  const load = () => import("./race.js").catch(() => {});
+  if (typeof requestIdleCallback === "function") requestIdleCallback(load, { timeout: 3000 }); else setTimeout(load, 500);
+}
+
 export default async function mount(container, context) {
+  prefetchRace();
   const { settings } = context;
   const catalog = await context.assets.call("catalog");
   const tracks = catalog.tracks.filter((item) => settings.showHiddenTracks || !item.hidden);
